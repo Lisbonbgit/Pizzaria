@@ -22,9 +22,11 @@ class PizzariaAPITester:
         url = f"{self.base_url}/{endpoint}"
         test_headers = {'Content-Type': 'application/json'}
         
-        if self.token and not headers:
+        # Add auth token if available and not explicitly overridden
+        if self.token and (headers is None or 'Authorization' not in headers):
             test_headers['Authorization'] = f'Bearer {self.token}'
-        elif headers:
+        
+        if headers:
             test_headers.update(headers)
 
         self.tests_run += 1

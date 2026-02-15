@@ -1,0 +1,160 @@
+{
+  "design_system": {
+    "identity": {
+      "name": "Elegant Pizzeria",
+      "tone": "Sophisticated, Appetizing, Warm, Efficient",
+      "description": "A seamless blend of Italian tradition and modern speed. The interface feels like a candlelit dinner: warm, intimate, and focused on the food."
+    },
+    "typography": {
+      "font_family": {
+        "headings": "Playfair Display, serif",
+        "body": "Manrope, sans-serif",
+        "mono": "JetBrains Mono, monospace"
+      },
+      "scale": {
+        "h1": "text-4xl md:text-5xl font-bold tracking-tight",
+        "h2": "text-3xl md:text-4xl font-semibold tracking-tight",
+        "h3": "text-2xl md:text-3xl font-medium",
+        "body_lg": "text-lg leading-relaxed",
+        "body": "text-base leading-relaxed",
+        "caption": "text-sm text-muted-foreground uppercase tracking-widest"
+      },
+      "usage": {
+        "headings": "Use Playfair Display for all Section Titles and Product Names to evoke elegance.",
+        "body": "Use Manrope for descriptions, prices, and UI elements for maximum legibility.",
+        "price": "Use Manrope font-bold text-lg for prices."
+      }
+    },
+    "colors": {
+      "palette": {
+        "primary": {
+          "DEFAULT": "#5C0002",
+          "foreground": "#FAFAFA",
+          "description": "Rosewood Red - Deep, wine-like red for primary actions and brand presence."
+        },
+        "secondary": {
+          "DEFAULT": "#F5F5F0",
+          "foreground": "#2A2A2A",
+          "description": "Warm Stone - Off-white paper texture for light mode backgrounds."
+        },
+        "accent": {
+          "DEFAULT": "#C5A059",
+          "foreground": "#1A1A1A",
+          "description": "Gold Leaf - For premium tags, selected states, and highlights."
+        },
+        "background": {
+          "light": "#F9F9F7",
+          "dark": "#121212"
+        },
+        "surface": {
+          "light": "#FFFFFF",
+          "dark": "#1E1E1E"
+        },
+        "status": {
+          "success": "#2E7D32",
+          "warning": "#F57F17",
+          "error": "#B71C1C",
+          "info": "#0277BD"
+        }
+      },
+      "gradients": {
+        "hero_overlay": "linear-gradient(to bottom, rgba(0,0,0,0.2), rgba(0,0,0,0.8))",
+        "gold_shimmer": "linear-gradient(45deg, #C5A059, #E5C585, #C5A059)"
+      }
+    },
+    "spacing": {
+      "container": "container mx-auto px-4 md:px-6",
+      "section_padding": "py-12 md:py-24",
+      "card_padding": "p-6",
+      "grid_gap": "gap-6 md:gap-8"
+    },
+    "radius": {
+      "default": "rounded-lg",
+      "card": "rounded-xl",
+      "button": "rounded-full"
+    },
+    "shadows": {
+      "card": "shadow-[0_2px_8px_rgba(0,0,0,0.08)]",
+      "card_hover": "shadow-[0_8px_24px_rgba(92,0,2,0.12)]",
+      "dropdown": "shadow-xl border border-stone-100"
+    }
+  },
+  "visual_assets": {
+    "image_style": {
+      "filter": "contrast-110 saturate-110",
+      "overlay": "Use a subtle black gradient overlay on hero images to ensure text readability.",
+      "corners": "rounded-lg overflow-hidden"
+    },
+    "image_urls": {
+      "hero": {
+        "main_ambiance": "https://images.unsplash.com/photo-1709548145082-04d0cde481d4?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "description": "Dimly lit elegant restaurant vibe."
+      },
+      "products": {
+        "pizza_margherita": "https://images.unsplash.com/photo-1574071318508-1cdbab80d002?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "pizza_pepperoni": "https://images.unsplash.com/photo-1621510564330-c87695020b53?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "appetizer_bruschetta": "https://images.unsplash.com/photo-1626634896715-88334e9da24f?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "dessert_tiramisu": "https://images.unsplash.com/photo-1569153421157-7f8fc8a4badc?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "drink_wine": "https://images.unsplash.com/photo-1649695121711-2f2ea8e8faf4?crop=entropy&cs=srgb&fm=jpg&q=85",
+        "drink_cocktail": "https://images.unsplash.com/photo-1564947774160-532ef016eaa6?crop=entropy&cs=srgb&fm=jpg&q=85"
+      },
+      "placeholders": {
+        "user_avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix"
+      }
+    },
+    "icons": {
+      "library": "lucide-react",
+      "style": "Stroke width 1.5px, delicate and refined."
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 rounded-full px-8 py-6 font-medium shadow-lg transition-all active:scale-95",
+      "secondary": "bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-full px-6 py-4 font-medium transition-all",
+      "outline": "border-2 border-primary text-primary hover:bg-primary hover:text-white rounded-full px-6 py-4 font-medium transition-all",
+      "ghost": "hover:bg-stone-100 text-stone-800 rounded-lg px-4 py-2"
+    },
+    "cards": {
+      "product": "bg-white dark:bg-stone-900 rounded-xl overflow-hidden border border-stone-100 dark:border-stone-800 hover:shadow-card_hover transition-shadow group cursor-pointer",
+      "admin": "bg-white dark:bg-stone-900 rounded-lg border border-stone-200 dark:border-stone-800 p-6"
+    },
+    "inputs": {
+      "default": "rounded-md border-stone-200 focus:border-primary focus:ring-primary/20 bg-stone-50"
+    },
+    "navigation": {
+      "bottom_bar": "fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-lg border-t border-stone-100 p-4 flex justify-around items-center z-50",
+      "admin_sidebar": "w-64 bg-stone-900 text-stone-300 h-screen fixed left-0 top-0 p-4 border-r border-stone-800"
+    }
+  },
+  "layout_strategies": {
+    "customer_app": {
+      "structure": "Mobile-first, single column stream. Categories are sticky on scroll or accessible via bottom nav.",
+      "hero": "Full-width immersive image with gradient overlay. Restaurant name in large Serif font.",
+      "product_list": "List view with large thumbnails on mobile, Grid view (3-col) on desktop.",
+      "cart_modal": "Slide-over drawer from right. Clean summary with clear 'Checkout' CTA."
+    },
+    "admin_dashboard": {
+      "structure": "Sidebar navigation (left) + Main Content Area.",
+      "kitchen_display": "Dark mode MANDATORY. High contrast cards. 3-4 columns grid. Color-coded headers for time elapsed.",
+      "tables_view": "Grid of tables with status indicators (Empty, Occupied, Bill Requested)."
+    }
+  },
+  "motion": {
+    "transitions": "transition-all duration-300 ease-out",
+    "hover_effects": "hover:-translate-y-1",
+    "page_load": "animate-in fade-in slide-in-from-bottom-4 duration-500"
+  },
+  "accessibility": {
+    "contrast": "Ensure text contrast ratio of 4.5:1. Use 'text-stone-900' on 'bg-stone-50' for body.",
+    "touch_targets": "Minimum 44px for all mobile interactive elements.",
+    "focus_states": "Visible focus ring with 'ring-2 ring-primary ring-offset-2' on keyboard navigation."
+  },
+  "universal_guidelines": [
+    "Do not use gradients for backgrounds unless specified (use solid warm neutrals or dark grays).",
+    "Use 'Playfair Display' ONLY for headings. Use 'Manrope' for everything else.",
+    "Avoid generic 'blue' for links/buttons. Use Brand Red or Gold.",
+    "Mobile images must be optimized and not take up more than 40% of the screen height in list views.",
+    "All prices should be formatted as '€ 12.00'.",
+    "Admin KDS (Kitchen Display System) MUST be high-contrast Dark Mode."
+  ]
+}

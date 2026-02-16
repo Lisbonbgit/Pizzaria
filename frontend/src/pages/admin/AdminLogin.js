@@ -30,7 +30,10 @@ const AdminLogin = () => {
       const response = await authAPI.login(email, password);
       login(response.data.access_token, response.data.user);
       toast.success('Login efetuado com sucesso');
-      navigate('/admin');
+      // Small delay to ensure localStorage is updated before navigation
+      setTimeout(() => {
+        navigate('/admin', { replace: true });
+      }, 100);
     } catch (err) {
       console.error('Login error:', err);
       if (err.response?.status === 401) {

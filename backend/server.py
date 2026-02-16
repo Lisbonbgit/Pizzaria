@@ -521,14 +521,14 @@ async def login_admin(credentials: AdminUserLogin):
     )
 
 @api_router.get("/auth/me", response_model=AdminUserResponse)
-async def get_me(authorization: str = None):
+async def get_me(authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
     return AdminUserResponse(id=user["id"], email=user["email"], name=user["name"])
 
 # ==================== CATEGORY ROUTES ====================
 
 @api_router.post("/categories", response_model=CategoryResponse)
-async def create_category(category: CategoryCreate, authorization: str = None):
+async def create_category(category: CategoryCreate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     cat_id = str(uuid.uuid4())
@@ -549,7 +549,7 @@ async def list_categories(active_only: bool = False):
     return [CategoryResponse(**cat) for cat in categories]
 
 @api_router.put("/categories/{category_id}", response_model=CategoryResponse)
-async def update_category(category_id: str, update: CategoryUpdate, authorization: str = None):
+async def update_category(category_id: str, update: CategoryUpdate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
@@ -564,7 +564,7 @@ async def update_category(category_id: str, update: CategoryUpdate, authorizatio
     return CategoryResponse(**cat)
 
 @api_router.delete("/categories/{category_id}")
-async def delete_category(category_id: str, authorization: str = None):
+async def delete_category(category_id: str, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     result = await db.categories.delete_one({"id": category_id})
@@ -575,7 +575,7 @@ async def delete_category(category_id: str, authorization: str = None):
 # ==================== PRODUCT ROUTES ====================
 
 @api_router.post("/products", response_model=ProductResponse)
-async def create_product(product: ProductCreate, authorization: str = None):
+async def create_product(product: ProductCreate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     prod_id = str(uuid.uuid4())
@@ -614,7 +614,7 @@ async def get_product(product_id: str):
     return ProductResponse(**product)
 
 @api_router.put("/products/{product_id}", response_model=ProductResponse)
-async def update_product(product_id: str, update: ProductUpdate, authorization: str = None):
+async def update_product(product_id: str, update: ProductUpdate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     update_data = {}
@@ -638,7 +638,7 @@ async def update_product(product_id: str, update: ProductUpdate, authorization: 
     return ProductResponse(**prod)
 
 @api_router.delete("/products/{product_id}")
-async def delete_product(product_id: str, authorization: str = None):
+async def delete_product(product_id: str, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     result = await db.products.delete_one({"id": product_id})
@@ -647,7 +647,7 @@ async def delete_product(product_id: str, authorization: str = None):
     return {"message": "Produto eliminado"}
 
 @api_router.post("/products/upload-image")
-async def upload_product_image(file: UploadFile = File(...), authorization: str = None):
+async def upload_product_image(file: UploadFile = File(...), authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     if not file.content_type.startswith("image/"):
@@ -668,7 +668,7 @@ async def upload_product_image(file: UploadFile = File(...), authorization: str 
 # ==================== TABLE ROUTES ====================
 
 @api_router.post("/tables", response_model=TableResponse)
-async def create_table(table: TableCreate, authorization: str = None):
+async def create_table(table: TableCreate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     # Check if table number exists
@@ -709,7 +709,7 @@ async def get_table_by_number(table_number: int):
     return TableResponse(**table)
 
 @api_router.put("/tables/{table_id}", response_model=TableResponse)
-async def update_table(table_id: str, update: TableUpdate, authorization: str = None):
+async def update_table(table_id: str, update: TableUpdate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     update_data = {k: v for k, v in update.model_dump().items() if v is not None}
@@ -729,7 +729,7 @@ async def update_table(table_id: str, update: TableUpdate, authorization: str = 
     return TableResponse(**table)
 
 @api_router.delete("/tables/{table_id}")
-async def delete_table(table_id: str, authorization: str = None):
+async def delete_table(table_id: str, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     result = await db.tables.delete_one({"id": table_id})
@@ -817,7 +817,7 @@ async def list_orders(
     status: Optional[str] = None,
     table_number: Optional[int] = None,
     date: Optional[str] = None,
-    authorization: str = None
+    authorization: Optional[str] = Header(None)
 ):
     await get_current_user(authorization)
     
@@ -847,7 +847,7 @@ async def get_order(order_id: str):
     return OrderResponse(**order)
 
 @api_router.put("/orders/{order_id}/status", response_model=OrderResponse)
-async def update_order_status(order_id: str, update: OrderStatusUpdate, authorization: str = None):
+async def update_order_status(order_id: str, update: OrderStatusUpdate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     valid_statuses = ["received", "preparing", "ready", "delivered", "cancelled"]
@@ -865,7 +865,7 @@ async def update_order_status(order_id: str, update: OrderStatusUpdate, authoriz
     return OrderResponse(**order)
 
 @api_router.put("/orders/{order_id}/paid", response_model=OrderResponse)
-async def mark_order_paid(order_id: str, authorization: str = None):
+async def mark_order_paid(order_id: str, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     result = await db.orders.update_one(
@@ -879,7 +879,7 @@ async def mark_order_paid(order_id: str, authorization: str = None):
     return OrderResponse(**order)
 
 @api_router.post("/orders/{order_id}/reprint")
-async def reprint_order(order_id: str, background_tasks: BackgroundTasks, authorization: str = None):
+async def reprint_order(order_id: str, background_tasks: BackgroundTasks, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
@@ -910,7 +910,7 @@ async def reprint_order(order_id: str, background_tasks: BackgroundTasks, author
 # ==================== PRINT JOB ROUTES ====================
 
 @api_router.get("/print-jobs")
-async def list_print_jobs(status: Optional[str] = None, authorization: str = None):
+async def list_print_jobs(status: Optional[str] = None, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     query = {}
@@ -923,7 +923,7 @@ async def list_print_jobs(status: Optional[str] = None, authorization: str = Non
 # ==================== SETTINGS ROUTES ====================
 
 @api_router.get("/settings/printer")
-async def get_printer_settings(authorization: str = None):
+async def get_printer_settings(authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     settings = await db.settings.find_one({"key": "printer"}, {"_id": 0})
@@ -939,7 +939,7 @@ async def get_printer_settings(authorization: str = None):
     return settings.get("value", {})
 
 @api_router.put("/settings/printer")
-async def update_printer_settings(config: PrinterConfigUpdate, authorization: str = None):
+async def update_printer_settings(config: PrinterConfigUpdate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     current = await db.settings.find_one({"key": "printer"}, {"_id": 0})
@@ -957,7 +957,7 @@ async def update_printer_settings(config: PrinterConfigUpdate, authorization: st
     return new_value
 
 @api_router.post("/settings/printer/test")
-async def test_printer(authorization: str = None):
+async def test_printer(authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     settings = await db.settings.find_one({"key": "printer"}, {"_id": 0})
@@ -982,7 +982,7 @@ async def test_printer(authorization: str = None):
 # ==================== DASHBOARD ROUTES ====================
 
 @api_router.get("/dashboard/stats", response_model=DashboardStats)
-async def get_dashboard_stats(authorization: str = None):
+async def get_dashboard_stats(authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)

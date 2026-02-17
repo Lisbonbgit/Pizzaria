@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 import bcrypt
 import jwt
 import socket
-import struct
 import asyncio
 import qrcode
 import io
 import base64
+import secrets
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -34,6 +34,9 @@ db = client[os.environ['DB_NAME']]
 # JWT Configuration
 JWT_SECRET = os.environ.get('JWT_SECRET', 'pizzaria-secret-key-2024')
 JWT_ALGORITHM = "HS256"
+
+# Print Agent API Key (generate on first run or from env)
+PRINT_AGENT_API_KEY = os.environ.get('PRINT_AGENT_API_KEY', None)
 
 # Create the main app
 app = FastAPI(title="Pizzaria API")
@@ -183,21 +186,48 @@ class OrderResponse(BaseModel):
     print_status: str
     created_at: str
 
-class PrinterConfig(BaseModel):
+# ==================== PRINTER MODELS ====================
+
+class PrinterCreate(BaseModel):
+    name: str
     ip: str
     port: int = 9100
     width: int = 80  # 58 or 80mm
     cut_paper: bool = True
-    copies: int = 1
-    restaurant_name: Optional[str] = "Pizzaria"
+    active: bool = True
 
-class PrinterConfigUpdate(BaseModel):
+class PrinterUpdate(BaseModel):
+    name: Optional[str] = None
     ip: Optional[str] = None
     port: Optional[int] = None
     width: Optional[int] = None
     cut_paper: Optional[bool] = None
-    copies: Optional[int] = None
-    restaurant_name: Optional[str] = None
+    active: Optional[bool] = None
+
+class PrinterResponse(BaseModel):
+    id: str
+    name: str
+    ip: str
+    port: int
+    width: int
+    cut_paper: bool
+    active: bool
+    created_at: str
+
+class PrintJobResponse(BaseModel):
+    id: str
+    order_id: str
+    printer_id: str
+    printer_name: str
+    status: str
+    attempts: int
+    error: Optional[str]
+    created_at: str
+    updated_at: str
+
+class PrintJobStatusUpdate(BaseModel):
+    status: str
+    error: Optional[str] = None
 
 class DashboardStats(BaseModel):
     total_orders_today: int
@@ -237,9 +267,22 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
 
-# ==================== ESC/POS PRINTING ====================
+async def verify_print_agent_key(x_api_key: Optional[str] = Header(None)) -> bool:
+    """Verify Print Agent API Key"""
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="API Key não fornecida")
+    
+    # Check in database
+    agent_config = await db.settings.find_one({"key": "print_agent"}, {"_id": 0})
+    if not agent_config or agent_config.get("value", {}).get("api_key") != x_api_key:
+        raise HTTPException(status_code=401, detail="API Key inválida")
+    
+    return True
 
-class ESCPOSPrinter:
+# ==================== ESC/POS FORMATTING ====================
+
+class ESCPOSFormatter:
+    """Format orders for ESC/POS thermal printers"""
     ESC = b'\x1b'
     GS = b'\x1d'
     
@@ -256,9 +299,7 @@ class ESCPOSPrinter:
     DOUBLE_SIZE = GS + b'!\x30'
     NORMAL_SIZE = GS + b'!\x00'
     
-    def __init__(self, ip: str, port: int = 9100, width: int = 80):
-        self.ip = ip
-        self.port = port
+    def __init__(self, width: int = 80):
         self.width = width
         self.chars_per_line = 48 if width == 80 else 32
     
@@ -271,7 +312,7 @@ class ESCPOSPrinter:
         except:
             return text.encode('utf-8', errors='replace')
     
-    def format_order(self, order: dict, restaurant_name: str = "Pizzaria") -> bytes:
+    def format_order(self, order: dict, printer_name: str = "", restaurant_name: str = "Pizzaria") -> bytes:
         data = bytearray()
         data.extend(self.INIT)
         
@@ -282,6 +323,10 @@ class ESCPOSPrinter:
         data.extend(self._text(f"{restaurant_name}\n"))
         data.extend(self.NORMAL_SIZE)
         data.extend(self.BOLD_OFF)
+        
+        # Printer name (if specified)
+        if printer_name:
+            data.extend(self._text(f"[{printer_name}]\n"))
         
         # Order number
         data.extend(self.DOUBLE_SIZE)
@@ -358,7 +403,7 @@ class ESCPOSPrinter:
         
         return bytes(data)
     
-    def format_test(self, restaurant_name: str = "Pizzaria") -> bytes:
+    def format_test(self, printer_name: str = "", restaurant_name: str = "Pizzaria") -> bytes:
         data = bytearray()
         data.extend(self.INIT)
         data.extend(self.CENTER)
@@ -366,6 +411,8 @@ class ESCPOSPrinter:
         data.extend(self.DOUBLE_SIZE)
         data.extend(self._text(f"{restaurant_name}\n"))
         data.extend(self.NORMAL_SIZE)
+        if printer_name:
+            data.extend(self._text(f"[{printer_name}]\n"))
         data.extend(self._line('='))
         data.extend(self._text("TESTE DE IMPRESSAO\n"))
         data.extend(self._text(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"))
@@ -375,113 +422,6 @@ class ESCPOSPrinter:
         data.extend(self._text("\n\n\n"))
         data.extend(self.BOLD_OFF)
         return bytes(data)
-    
-    async def print(self, data: bytes, cut: bool = True) -> tuple[bool, str]:
-        try:
-            loop = asyncio.get_event_loop()
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(10)
-            
-            await loop.run_in_executor(None, sock.connect, (self.ip, self.port))
-            await loop.run_in_executor(None, sock.sendall, data)
-            
-            if cut:
-                await loop.run_in_executor(None, sock.sendall, self.CUT)
-            
-            sock.close()
-            return True, "Impressão enviada com sucesso"
-        except socket.timeout:
-            return False, "Timeout ao conectar com a impressora"
-        except ConnectionRefusedError:
-            return False, "Conexão recusada pela impressora"
-        except Exception as e:
-            return False, f"Erro de impressão: {str(e)}"
-
-# ==================== PRINT JOB QUEUE ====================
-
-async def process_print_job(job_id: str):
-    """Process a print job from the queue"""
-    job = await db.print_jobs.find_one({"id": job_id}, {"_id": 0})
-    if not job:
-        return
-    
-    # Get printer config
-    config = await db.settings.find_one({"key": "printer"}, {"_id": 0})
-    if not config or not config.get("value", {}).get("ip"):
-        await db.print_jobs.update_one(
-            {"id": job_id},
-            {"$set": {"status": "failed", "error": "Impressora não configurada", "updated_at": datetime.now(timezone.utc).isoformat()}}
-        )
-        return
-    
-    printer_settings = config["value"]
-    printer = ESCPOSPrinter(
-        ip=printer_settings["ip"],
-        port=printer_settings.get("port", 9100),
-        width=printer_settings.get("width", 80)
-    )
-    
-    # Update status to printing
-    await db.print_jobs.update_one(
-        {"id": job_id},
-        {"$set": {"status": "printing", "updated_at": datetime.now(timezone.utc).isoformat()}}
-    )
-    
-    # Get order data
-    order = await db.orders.find_one({"id": job["order_id"]}, {"_id": 0})
-    if not order:
-        await db.print_jobs.update_one(
-            {"id": job_id},
-            {"$set": {"status": "failed", "error": "Pedido não encontrado", "updated_at": datetime.now(timezone.utc).isoformat()}}
-        )
-        return
-    
-    # Format and print
-    data = printer.format_order(order, printer_settings.get("restaurant_name", "Pizzaria"))
-    copies = printer_settings.get("copies", 1)
-    
-    for i in range(copies):
-        success, message = await printer.print(data, printer_settings.get("cut_paper", True))
-        if not success:
-            attempts = job.get("attempts", 0) + 1
-            if attempts < 3:
-                # Retry later
-                await db.print_jobs.update_one(
-                    {"id": job_id},
-                    {"$set": {
-                        "status": "pending",
-                        "attempts": attempts,
-                        "error": message,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }}
-                )
-            else:
-                # Mark as failed
-                await db.print_jobs.update_one(
-                    {"id": job_id},
-                    {"$set": {
-                        "status": "failed",
-                        "attempts": attempts,
-                        "error": message,
-                        "updated_at": datetime.now(timezone.utc).isoformat()
-                    }}
-                )
-                # Update order print status
-                await db.orders.update_one(
-                    {"id": job["order_id"]},
-                    {"$set": {"print_status": "failed"}}
-                )
-            return
-    
-    # Success
-    await db.print_jobs.update_one(
-        {"id": job_id},
-        {"$set": {"status": "printed", "updated_at": datetime.now(timezone.utc).isoformat()}}
-    )
-    await db.orders.update_one(
-        {"id": job["order_id"]},
-        {"$set": {"print_status": "printed"}}
-    )
 
 # ==================== AUTH ROUTES ====================
 
@@ -775,7 +715,7 @@ async def get_next_order_number():
     return count + 1
 
 @api_router.post("/orders", response_model=OrderResponse)
-async def create_order(order: OrderCreate, background_tasks: BackgroundTasks):
+async def create_order(order: OrderCreate):
     order_number = await get_next_order_number()
     order_id = str(uuid.uuid4())
     
@@ -794,21 +734,39 @@ async def create_order(order: OrderCreate, background_tasks: BackgroundTasks):
     }
     await db.orders.insert_one(order_doc)
     
-    # Create print job
-    print_job_id = str(uuid.uuid4())
-    print_job = {
-        "id": print_job_id,
-        "order_id": order_id,
-        "status": "pending",
-        "attempts": 0,
-        "error": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.print_jobs.insert_one(print_job)
+    # Create print jobs for all active printers
+    active_printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
     
-    # Process print job in background
-    background_tasks.add_task(process_print_job, print_job_id)
+    if active_printers:
+        for printer in active_printers:
+            print_job_id = str(uuid.uuid4())
+            print_job = {
+                "id": print_job_id,
+                "order_id": order_id,
+                "printer_id": printer["id"],
+                "printer_name": printer["name"],
+                "status": "pending",
+                "attempts": 0,
+                "error": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.print_jobs.insert_one(print_job)
+    else:
+        # Create a single pending job without printer (to be processed when agent connects)
+        print_job_id = str(uuid.uuid4())
+        print_job = {
+            "id": print_job_id,
+            "order_id": order_id,
+            "printer_id": None,
+            "printer_name": "Default",
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.print_jobs.insert_one(print_job)
     
     return OrderResponse(**order_doc)
 
@@ -879,19 +837,142 @@ async def mark_order_paid(order_id: str, authorization: Optional[str] = Header(N
     return OrderResponse(**order)
 
 @api_router.post("/orders/{order_id}/reprint")
-async def reprint_order(order_id: str, background_tasks: BackgroundTasks, authorization: Optional[str] = Header(None)):
+async def reprint_order(order_id: str, printer_id: Optional[str] = None, authorization: Optional[str] = Header(None)):
+    """Reprint order to specific printer or all active printers"""
     await get_current_user(authorization)
     
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
     
-    # Create new print job
+    if printer_id:
+        # Reprint to specific printer
+        printer = await db.printers.find_one({"id": printer_id}, {"_id": 0})
+        if not printer:
+            raise HTTPException(status_code=404, detail="Impressora não encontrada")
+        
+        print_job_id = str(uuid.uuid4())
+        print_job = {
+            "id": print_job_id,
+            "order_id": order_id,
+            "printer_id": printer_id,
+            "printer_name": printer["name"],
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.print_jobs.insert_one(print_job)
+        return {"message": f"Impressão agendada para {printer['name']}", "print_job_id": print_job_id}
+    else:
+        # Reprint to all active printers
+        printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
+        if not printers:
+            raise HTTPException(status_code=400, detail="Nenhuma impressora ativa configurada")
+        
+        job_ids = []
+        for printer in printers:
+            print_job_id = str(uuid.uuid4())
+            print_job = {
+                "id": print_job_id,
+                "order_id": order_id,
+                "printer_id": printer["id"],
+                "printer_name": printer["name"],
+                "status": "pending",
+                "attempts": 0,
+                "error": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.print_jobs.insert_one(print_job)
+            job_ids.append(print_job_id)
+        
+        return {"message": f"Impressão agendada para {len(printers)} impressoras", "print_job_ids": job_ids}
+
+# ==================== PRINTER MANAGEMENT ROUTES ====================
+
+@api_router.post("/printers", response_model=PrinterResponse)
+async def create_printer(printer: PrinterCreate, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    
+    printer_id = str(uuid.uuid4())
+    printer_doc = {
+        "id": printer_id,
+        "name": printer.name,
+        "ip": printer.ip,
+        "port": printer.port,
+        "width": printer.width,
+        "cut_paper": printer.cut_paper,
+        "active": printer.active,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.printers.insert_one(printer_doc)
+    return PrinterResponse(**printer_doc)
+
+@api_router.get("/printers", response_model=List[PrinterResponse])
+async def list_printers(active_only: bool = False, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    
+    query = {"active": True} if active_only else {}
+    printers = await db.printers.find(query, {"_id": 0}).to_list(100)
+    return [PrinterResponse(**p) for p in printers]
+
+@api_router.get("/printers/{printer_id}", response_model=PrinterResponse)
+async def get_printer(printer_id: str, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    
+    printer = await db.printers.find_one({"id": printer_id}, {"_id": 0})
+    if not printer:
+        raise HTTPException(status_code=404, detail="Impressora não encontrada")
+    return PrinterResponse(**printer)
+
+@api_router.put("/printers/{printer_id}", response_model=PrinterResponse)
+async def update_printer(printer_id: str, update: PrinterUpdate, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    
+    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+    
+    result = await db.printers.update_one({"id": printer_id}, {"$set": update_data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Impressora não encontrada")
+    
+    printer = await db.printers.find_one({"id": printer_id}, {"_id": 0})
+    return PrinterResponse(**printer)
+
+@api_router.delete("/printers/{printer_id}")
+async def delete_printer(printer_id: str, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    
+    result = await db.printers.delete_one({"id": printer_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Impressora não encontrada")
+    return {"message": "Impressora eliminada"}
+
+@api_router.post("/printers/{printer_id}/test")
+async def test_printer_connection(printer_id: str, authorization: Optional[str] = Header(None)):
+    """Test printer connection - creates a test print job for the agent"""
+    await get_current_user(authorization)
+    
+    printer = await db.printers.find_one({"id": printer_id}, {"_id": 0})
+    if not printer:
+        raise HTTPException(status_code=404, detail="Impressora não encontrada")
+    
+    # Get restaurant name from settings
+    settings = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
+    restaurant_name = settings.get("value", {}).get("name", "Pizzaria") if settings else "Pizzaria"
+    
+    # Create a test print job
     print_job_id = str(uuid.uuid4())
     print_job = {
         "id": print_job_id,
-        "order_id": order_id,
+        "order_id": None,  # Test job, no order
+        "printer_id": printer_id,
+        "printer_name": printer["name"],
         "status": "pending",
+        "is_test": True,
         "attempts": 0,
         "error": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -899,85 +980,207 @@ async def reprint_order(order_id: str, background_tasks: BackgroundTasks, author
     }
     await db.print_jobs.insert_one(print_job)
     
-    # Update order print status
-    await db.orders.update_one({"id": order_id}, {"$set": {"print_status": "pending"}})
-    
-    # Process in background
-    background_tasks.add_task(process_print_job, print_job_id)
-    
-    return {"message": "Impressão agendada", "print_job_id": print_job_id}
+    return {"message": "Teste de impressão agendado", "print_job_id": print_job_id}
 
-# ==================== PRINT JOB ROUTES ====================
+# ==================== PRINT JOBS ROUTES ====================
 
 @api_router.get("/print-jobs")
-async def list_print_jobs(status: Optional[str] = None, authorization: Optional[str] = Header(None)):
+async def list_print_jobs(
+    status: Optional[str] = None,
+    order_id: Optional[str] = None,
+    printer_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None)
+):
     await get_current_user(authorization)
     
     query = {}
     if status:
         query["status"] = status
+    if order_id:
+        query["order_id"] = order_id
+    if printer_id:
+        query["printer_id"] = printer_id
     
-    jobs = await db.print_jobs.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    jobs = await db.print_jobs.find(query, {"_id": 0}).sort("created_at", -1).to_list(200)
     return jobs
 
-# ==================== SETTINGS ROUTES ====================
-
-@api_router.get("/settings/printer")
-async def get_printer_settings(authorization: Optional[str] = Header(None)):
+@api_router.get("/print-jobs/{job_id}")
+async def get_print_job(job_id: str, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
-    settings = await db.settings.find_one({"key": "printer"}, {"_id": 0})
+    job = await db.print_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Print job não encontrado")
+    return job
+
+# ==================== PRINT AGENT API ====================
+
+@api_router.get("/agent/pending-jobs")
+async def get_pending_jobs_for_agent(x_api_key: Optional[str] = Header(None)):
+    """Get pending print jobs for the print agent"""
+    await verify_print_agent_key(x_api_key)
+    
+    # Get pending jobs with their printer info and order info
+    jobs = await db.print_jobs.find(
+        {"status": "pending"},
+        {"_id": 0}
+    ).sort("created_at", 1).to_list(50)
+    
+    result = []
+    for job in jobs:
+        # Get printer info
+        printer = None
+        if job.get("printer_id"):
+            printer = await db.printers.find_one({"id": job["printer_id"]}, {"_id": 0})
+        
+        # Get order info (if not a test job)
+        order = None
+        if job.get("order_id"):
+            order = await db.orders.find_one({"id": job["order_id"]}, {"_id": 0})
+        
+        # Get restaurant name
+        settings = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
+        restaurant_name = settings.get("value", {}).get("name", "Pizzaria") if settings else "Pizzaria"
+        
+        result.append({
+            "job": job,
+            "printer": printer,
+            "order": order,
+            "restaurant_name": restaurant_name,
+            "is_test": job.get("is_test", False)
+        })
+    
+    return result
+
+@api_router.put("/agent/jobs/{job_id}/status")
+async def update_job_status_from_agent(
+    job_id: str,
+    update: PrintJobStatusUpdate,
+    x_api_key: Optional[str] = Header(None)
+):
+    """Update print job status from the print agent"""
+    await verify_print_agent_key(x_api_key)
+    
+    valid_statuses = ["printing", "printed", "failed"]
+    if update.status not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Estado inválido. Valores válidos: {valid_statuses}")
+    
+    job = await db.print_jobs.find_one({"id": job_id}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Print job não encontrado")
+    
+    update_data = {
+        "status": update.status,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    
+    if update.status == "failed":
+        update_data["error"] = update.error
+        update_data["attempts"] = job.get("attempts", 0) + 1
+    
+    await db.print_jobs.update_one({"id": job_id}, {"$set": update_data})
+    
+    # Update order print status if this is not a test job
+    if job.get("order_id"):
+        # Check all print jobs for this order
+        order_jobs = await db.print_jobs.find(
+            {"order_id": job["order_id"]},
+            {"_id": 0, "status": 1}
+        ).to_list(100)
+        
+        # Determine overall print status
+        statuses = [j["status"] for j in order_jobs]
+        if update.status == "printed":
+            # Check if this was the status update we just made
+            statuses = [s if s != "pending" else update.status for s in statuses]
+        
+        if all(s == "printed" for s in statuses):
+            order_print_status = "printed"
+        elif any(s == "failed" for s in statuses):
+            order_print_status = "partial" if any(s == "printed" for s in statuses) else "failed"
+        elif any(s == "printing" for s in statuses):
+            order_print_status = "printing"
+        else:
+            order_print_status = "pending"
+        
+        await db.orders.update_one(
+            {"id": job["order_id"]},
+            {"$set": {"print_status": order_print_status}}
+        )
+    
+    return {"message": "Status atualizado", "status": update.status}
+
+@api_router.get("/agent/printers")
+async def get_printers_for_agent(x_api_key: Optional[str] = Header(None)):
+    """Get all printers configuration for the agent"""
+    await verify_print_agent_key(x_api_key)
+    
+    printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
+    return printers
+
+# ==================== PRINT AGENT CONFIGURATION ====================
+
+@api_router.get("/settings/print-agent")
+async def get_print_agent_settings(authorization: Optional[str] = Header(None)):
+    """Get or generate print agent API key"""
+    await get_current_user(authorization)
+    
+    settings = await db.settings.find_one({"key": "print_agent"}, {"_id": 0})
     if not settings:
-        return {
-            "ip": "",
-            "port": 9100,
-            "width": 80,
-            "cut_paper": True,
-            "copies": 1,
-            "restaurant_name": "Pizzaria"
+        # Generate new API key
+        api_key = secrets.token_urlsafe(32)
+        settings = {
+            "key": "print_agent",
+            "value": {
+                "api_key": api_key,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
         }
+        await db.settings.insert_one(settings)
+    
     return settings.get("value", {})
 
-@api_router.put("/settings/printer")
-async def update_printer_settings(config: PrinterConfigUpdate, authorization: Optional[str] = Header(None)):
+@api_router.post("/settings/print-agent/regenerate")
+async def regenerate_print_agent_key(authorization: Optional[str] = Header(None)):
+    """Regenerate print agent API key"""
     await get_current_user(authorization)
     
-    current = await db.settings.find_one({"key": "printer"}, {"_id": 0})
-    current_value = current.get("value", {}) if current else {}
-    
-    update_data = {k: v for k, v in config.model_dump().items() if v is not None}
-    new_value = {**current_value, **update_data}
-    
+    api_key = secrets.token_urlsafe(32)
     await db.settings.update_one(
-        {"key": "printer"},
-        {"$set": {"key": "printer", "value": new_value}},
+        {"key": "print_agent"},
+        {"$set": {
+            "key": "print_agent",
+            "value": {
+                "api_key": api_key,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+        }},
         upsert=True
     )
     
-    return new_value
+    return {"api_key": api_key, "message": "Nova API key gerada"}
 
-@api_router.post("/settings/printer/test")
-async def test_printer(authorization: Optional[str] = Header(None)):
+# ==================== RESTAURANT SETTINGS ====================
+
+@api_router.get("/settings/restaurant")
+async def get_restaurant_settings(authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
     
-    settings = await db.settings.find_one({"key": "printer"}, {"_id": 0})
-    if not settings or not settings.get("value", {}).get("ip"):
-        raise HTTPException(status_code=400, detail="Impressora não configurada")
+    settings = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
+    if not settings:
+        return {"name": "Pizzaria"}
+    return settings.get("value", {"name": "Pizzaria"})
+
+@api_router.put("/settings/restaurant")
+async def update_restaurant_settings(data: dict, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
     
-    config = settings["value"]
-    printer = ESCPOSPrinter(
-        ip=config["ip"],
-        port=config.get("port", 9100),
-        width=config.get("width", 80)
+    await db.settings.update_one(
+        {"key": "restaurant"},
+        {"$set": {"key": "restaurant", "value": data}},
+        upsert=True
     )
-    
-    data = printer.format_test(config.get("restaurant_name", "Pizzaria"))
-    success, message = await printer.print(data, config.get("cut_paper", True))
-    
-    if not success:
-        raise HTTPException(status_code=500, detail=message)
-    
-    return {"message": "Teste de impressão enviado com sucesso"}
+    return data
 
 # ==================== DASHBOARD ROUTES ====================
 
@@ -1045,7 +1248,6 @@ async def seed_database():
     
     # Create products
     products = [
-        # Pizzas
         {
             "id": str(uuid.uuid4()),
             "name": "Margherita",
@@ -1053,15 +1255,8 @@ async def seed_database():
             "category_id": pizza_cat_id,
             "base_price": 9.50,
             "image_url": "https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=800",
-            "variations": [
-                {"name": "Pequena", "price": 7.50},
-                {"name": "Média", "price": 9.50},
-                {"name": "Grande", "price": 12.50}
-            ],
-            "extras": [
-                {"name": "Borda recheada", "price": 2.00},
-                {"name": "Extra queijo", "price": 1.50}
-            ],
+            "variations": [{"name": "Pequena", "price": 7.50}, {"name": "Média", "price": 9.50}, {"name": "Grande", "price": 12.50}],
+            "extras": [{"name": "Borda recheada", "price": 2.00}, {"name": "Extra queijo", "price": 1.50}],
             "available": True,
             "featured": True,
             "created_at": datetime.now(timezone.utc).isoformat()
@@ -1073,15 +1268,8 @@ async def seed_database():
             "category_id": pizza_cat_id,
             "base_price": 11.00,
             "image_url": "https://images.unsplash.com/photo-1621510564330-c87695020b53?w=800",
-            "variations": [
-                {"name": "Pequena", "price": 9.00},
-                {"name": "Média", "price": 11.00},
-                {"name": "Grande", "price": 14.00}
-            ],
-            "extras": [
-                {"name": "Borda recheada", "price": 2.00},
-                {"name": "Extra pepperoni", "price": 2.00}
-            ],
+            "variations": [{"name": "Pequena", "price": 9.00}, {"name": "Média", "price": 11.00}, {"name": "Grande", "price": 14.00}],
+            "extras": [{"name": "Borda recheada", "price": 2.00}, {"name": "Extra pepperoni", "price": 2.00}],
             "available": True,
             "featured": True,
             "created_at": datetime.now(timezone.utc).isoformat()
@@ -1093,15 +1281,8 @@ async def seed_database():
             "category_id": pizza_cat_id,
             "base_price": 12.50,
             "image_url": "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=800",
-            "variations": [
-                {"name": "Pequena", "price": 10.50},
-                {"name": "Média", "price": 12.50},
-                {"name": "Grande", "price": 15.50}
-            ],
-            "extras": [
-                {"name": "Borda recheada", "price": 2.00},
-                {"name": "Mel", "price": 1.00}
-            ],
+            "variations": [{"name": "Pequena", "price": 10.50}, {"name": "Média", "price": 12.50}, {"name": "Grande", "price": 15.50}],
+            "extras": [{"name": "Borda recheada", "price": 2.00}, {"name": "Mel", "price": 1.00}],
             "available": True,
             "featured": False,
             "created_at": datetime.now(timezone.utc).isoformat()
@@ -1113,20 +1294,12 @@ async def seed_database():
             "category_id": pizza_cat_id,
             "base_price": 10.50,
             "image_url": "https://images.unsplash.com/photo-1511689660979-10d2b1aada49?w=800",
-            "variations": [
-                {"name": "Pequena", "price": 8.50},
-                {"name": "Média", "price": 10.50},
-                {"name": "Grande", "price": 13.50}
-            ],
-            "extras": [
-                {"name": "Borda recheada", "price": 2.00},
-                {"name": "Extra cogumelos", "price": 1.50}
-            ],
+            "variations": [{"name": "Pequena", "price": 8.50}, {"name": "Média", "price": 10.50}, {"name": "Grande", "price": 13.50}],
+            "extras": [{"name": "Borda recheada", "price": 2.00}, {"name": "Extra cogumelos", "price": 1.50}],
             "available": True,
             "featured": False,
             "created_at": datetime.now(timezone.utc).isoformat()
         },
-        # Drinks
         {
             "id": str(uuid.uuid4()),
             "name": "Coca-Cola",
@@ -1147,10 +1320,7 @@ async def seed_database():
             "category_id": drinks_cat_id,
             "base_price": 1.50,
             "image_url": "https://images.unsplash.com/photo-1559839914-17aae19cec71?w=800",
-            "variations": [
-                {"name": "Com gás", "price": 1.50},
-                {"name": "Sem gás", "price": 1.50}
-            ],
+            "variations": [{"name": "Com gás", "price": 1.50}, {"name": "Sem gás", "price": 1.50}],
             "extras": [],
             "available": True,
             "featured": False,
@@ -1163,16 +1333,12 @@ async def seed_database():
             "category_id": drinks_cat_id,
             "base_price": 4.50,
             "image_url": "https://images.unsplash.com/photo-1649695121711-2f2ea8e8faf4?w=800",
-            "variations": [
-                {"name": "Tinto", "price": 4.50},
-                {"name": "Branco", "price": 4.50}
-            ],
+            "variations": [{"name": "Tinto", "price": 4.50}, {"name": "Branco", "price": 4.50}],
             "extras": [],
             "available": True,
             "featured": False,
             "created_at": datetime.now(timezone.utc).isoformat()
         },
-        # Starters
         {
             "id": str(uuid.uuid4()),
             "name": "Bruschetta",
@@ -1181,9 +1347,7 @@ async def seed_database():
             "base_price": 5.50,
             "image_url": "https://images.unsplash.com/photo-1626634896715-88334e9da24f?w=800",
             "variations": [],
-            "extras": [
-                {"name": "Extra queijo parmesão", "price": 1.00}
-            ],
+            "extras": [{"name": "Extra queijo parmesão", "price": 1.00}],
             "available": True,
             "featured": False,
             "created_at": datetime.now(timezone.utc).isoformat()
@@ -1196,14 +1360,11 @@ async def seed_database():
             "base_price": 4.00,
             "image_url": "https://images.unsplash.com/photo-1619535860434-ba1d8fa12536?w=800",
             "variations": [],
-            "extras": [
-                {"name": "Com queijo", "price": 1.50}
-            ],
+            "extras": [{"name": "Com queijo", "price": 1.50}],
             "available": True,
             "featured": False,
             "created_at": datetime.now(timezone.utc).isoformat()
         },
-        # Desserts
         {
             "id": str(uuid.uuid4()),
             "name": "Tiramisù",
@@ -1251,17 +1412,38 @@ async def seed_database():
     }
     await db.admin_users.insert_one(admin)
     
-    # Set default printer settings
+    # Create default printer
+    printer_id = str(uuid.uuid4())
+    printer = {
+        "id": printer_id,
+        "name": "Cozinha",
+        "ip": "192.168.1.100",
+        "port": 9100,
+        "width": 80,
+        "cut_paper": True,
+        "active": False,  # Inactive by default until configured
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.printers.insert_one(printer)
+    
+    # Generate print agent API key
+    api_key = secrets.token_urlsafe(32)
     await db.settings.update_one(
-        {"key": "printer"},
-        {"$set": {"key": "printer", "value": {
-            "ip": "",
-            "port": 9100,
-            "width": 80,
-            "cut_paper": True,
-            "copies": 1,
-            "restaurant_name": "Pizzaria"
-        }}},
+        {"key": "print_agent"},
+        {"$set": {
+            "key": "print_agent",
+            "value": {
+                "api_key": api_key,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+        }},
+        upsert=True
+    )
+    
+    # Set restaurant name
+    await db.settings.update_one(
+        {"key": "restaurant"},
+        {"$set": {"key": "restaurant", "value": {"name": "Pizzaria"}}},
         upsert=True
     )
     
@@ -1271,7 +1453,8 @@ async def seed_database():
             "categories": len(categories),
             "products": len(products),
             "tables": len(tables),
-            "admin": {"email": "admin@pizzaria.pt", "password": "admin123"}
+            "admin": {"email": "admin@pizzaria.pt", "password": "admin123"},
+            "print_agent_api_key": api_key
         }
     }
 

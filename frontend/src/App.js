@@ -46,6 +46,7 @@ function App() {
             <Route path="/admin/orders" element={<ProtectedRoute><AdminOrders /></ProtectedRoute>} />
             <Route path="/admin/menu" element={<ProtectedRoute><AdminMenu /></ProtectedRoute>} />
             <Route path="/admin/tables" element={<ProtectedRoute><AdminTables /></ProtectedRoute>} />
+            <Route path="/admin/printers" element={<ProtectedRoute><AdminPrinters /></ProtectedRoute>} />
             <Route path="/admin/settings" element={<ProtectedRoute><AdminSettings /></ProtectedRoute>} />
             
             {/* Fallback */}

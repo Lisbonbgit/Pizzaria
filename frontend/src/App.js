@@ -14,6 +14,7 @@ import AdminOrders from "@/pages/admin/AdminOrders";
 import AdminMenu from "@/pages/admin/AdminMenu";
 import AdminTables from "@/pages/admin/AdminTables";
 import AdminSettings from "@/pages/admin/AdminSettings";
+import AdminPrinters from "@/pages/admin/AdminPrinters";
 
 // Context
 import { CartProvider } from "@/context/CartContext";

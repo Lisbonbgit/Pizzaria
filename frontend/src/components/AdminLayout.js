@@ -20,6 +20,7 @@ const navItems = [
   { path: '/admin/orders', label: 'Pedidos', icon: ClipboardList },
   { path: '/admin/menu', label: 'Menu', icon: UtensilsCrossed },
   { path: '/admin/tables', label: 'Mesas', icon: Grid3X3 },
+  { path: '/admin/printers', label: 'Impressoras', icon: Printer },
   { path: '/admin/settings', label: 'Definições', icon: Settings },
 ];
 

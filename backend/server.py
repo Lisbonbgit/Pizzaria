@@ -1162,6 +1162,14 @@ async def regenerate_print_agent_key(authorization: Optional[str] = Header(None)
 
 # ==================== RESTAURANT SETTINGS ====================
 
+@api_router.get("/settings/restaurant/public")
+async def get_restaurant_settings_public():
+    """Public endpoint for restaurant settings (for menu page)"""
+    settings = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
+    if not settings:
+        return {"name": "Pizzaria"}
+    return settings.get("value", {"name": "Pizzaria"})
+
 @api_router.get("/settings/restaurant")
 async def get_restaurant_settings(authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)

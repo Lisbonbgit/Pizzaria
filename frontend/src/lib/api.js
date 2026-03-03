@@ -127,7 +127,13 @@ export const settingsAPI = {
   updatePrinter: (data) => 
     api.put('/settings/printer', data),
   testPrinter: () => 
-    api.post('/settings/printer/test')
+    api.post('/settings/printer/test'),
+  getRestaurant: () =>
+    api.get('/settings/restaurant'),
+  getRestaurantPublic: () =>
+    api.get('/settings/restaurant/public'),
+  updateRestaurant: (data) =>
+    api.put('/settings/restaurant', data)
 };
 
 // Dashboard API

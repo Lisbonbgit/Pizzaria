@@ -12,7 +12,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { useCart } from '@/context/CartContext';
-import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, seedAPI } from '@/lib/api';
+import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, seedAPI, settingsAPI } from '@/lib/api';
 
 const MenuPage = () => {
   const [searchParams] = useSearchParams();
@@ -34,6 +34,7 @@ const MenuPage = () => {
 
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
+  const [restaurantName, setRestaurantName] = useState('Pizzaria');
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -72,13 +73,15 @@ const MenuPage = () => {
       // Try to seed if needed
       await seedAPI.seed().catch(() => {});
       
-      const [catsRes, prodsRes] = await Promise.all([
+      const [catsRes, prodsRes, settingsRes] = await Promise.all([
         categoriesAPI.list(true),
-        productsAPI.list(null, true)
+        productsAPI.list(null, true),
+        settingsAPI.getRestaurantPublic()
       ]);
       
       setCategories(catsRes.data);
       setProducts(prodsRes.data);
+      setRestaurantName(settingsRes.data.name || 'Pizzaria');
       
       if (catsRes.data.length > 0 && !selectedCategory) {
         setSelectedCategory(catsRes.data[0].id);
@@ -217,7 +220,7 @@ const MenuPage = () => {
         <div className="absolute inset-0 menu-hero-gradient" />
         <div className="absolute inset-0 flex flex-col justify-end p-6">
           <h1 className="font-heading text-4xl md:text-5xl font-bold text-white tracking-tight">
-            Pizzaria
+            {restaurantName}
           </h1>
           {tableNumber && (
             <Badge variant="secondary" className="mt-2 w-fit text-sm px-3 py-1">

@@ -109,14 +109,6 @@ const AdminLogin = () => {
               )}
             </Button>
           </form>
-          
-          <div className="mt-6 p-4 bg-secondary/50 rounded-lg">
-            <p className="text-sm text-muted-foreground text-center">
-              <strong>Credenciais de demonstração:</strong><br />
-              Email: admin@pizzaria.pt<br />
-              Palavra-passe: admin123
-            </p>
-          </div>
         </CardContent>
       </Card>
     </div>

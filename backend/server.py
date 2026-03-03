@@ -255,16 +255,19 @@ def create_token(user_id: str, email: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
+    """Verify JWT token and return user info - no database required"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Token não fornecido")
     
     token = authorization.replace("Bearer ", "")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user = await db.admin_users.find_one({"id": payload["user_id"]}, {"_id": 0, "password": 0})
-        if not user:
-            raise HTTPException(status_code=401, detail="Utilizador não encontrado")
-        return user
+        # Return user info from token payload (no database lookup)
+        return {
+            "id": payload.get("user_id", "admin-env"),
+            "email": payload.get("email", ""),
+            "name": "Administrador"
+        }
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expirado")
     except jwt.InvalidTokenError:
@@ -528,45 +531,55 @@ class ESCPOSFormatter:
 
 # ==================== AUTH ROUTES ====================
 
-@api_router.post("/auth/register", response_model=TokenResponse)
-async def register_admin(user: AdminUserCreate):
-    # Check if user exists
-    existing = await db.admin_users.find_one({"email": user.email})
-    if existing:
-        raise HTTPException(status_code=400, detail="Email já registado")
-    
-    user_id = str(uuid.uuid4())
-    user_doc = {
-        "id": user_id,
-        "email": user.email,
-        "password": hash_password(user.password),
-        "name": user.name,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.admin_users.insert_one(user_doc)
-    
-    token = create_token(user_id, user.email)
-    return TokenResponse(
-        access_token=token,
-        user=AdminUserResponse(id=user_id, email=user.email, name=user.name)
-    )
+# Get admin credentials from environment
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@pizzaria.pt')
+ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH', '')
 
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login_admin(credentials: AdminUserLogin):
-    user = await db.admin_users.find_one({"email": credentials.email}, {"_id": 0})
-    if not user or not verify_password(credentials.password, user["password"]):
-        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+    """Login using environment variables - no database required"""
+    # Check email
+    if credentials.email != ADMIN_EMAIL:
+        raise HTTPException(status_code=401, detail="Email ou senha inválidos")
     
-    token = create_token(user["id"], user["email"])
+    # Verify password against hash from environment
+    if not ADMIN_PASSWORD_HASH:
+        raise HTTPException(status_code=500, detail="Configuração de autenticação incompleta")
+    
+    try:
+        if not bcrypt.checkpw(credentials.password.encode('utf-8'), ADMIN_PASSWORD_HASH.encode('utf-8')):
+            raise HTTPException(status_code=401, detail="Email ou senha inválidos")
+    except Exception as e:
+        logger.error(f"Auth error: {e}")
+        raise HTTPException(status_code=401, detail="Email ou senha inválidos")
+    
+    # Create token
+    user_id = "admin-env"
+    token = create_token(user_id, ADMIN_EMAIL)
+    
     return TokenResponse(
         access_token=token,
-        user=AdminUserResponse(id=user["id"], email=user["email"], name=user["name"])
+        user=AdminUserResponse(id=user_id, email=ADMIN_EMAIL, name="Administrador")
     )
 
 @api_router.get("/auth/me", response_model=AdminUserResponse)
 async def get_me(authorization: Optional[str] = Header(None)):
-    user = await get_current_user(authorization)
-    return AdminUserResponse(id=user["id"], email=user["email"], name=user["name"])
+    """Get current user info"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Token não fornecido")
+    
+    token = authorization.replace("Bearer ", "")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return AdminUserResponse(
+            id=payload.get("user_id", "admin-env"),
+            email=payload.get("email", ADMIN_EMAIL),
+            name="Administrador"
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
 
 # ==================== CATEGORY ROUTES ====================
 

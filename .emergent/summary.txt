@@ -1,0 +1,154 @@
+<analysis>**original_problem_statement:**
+The user wants to implement an automated daily email report feature for their pizzeria ordering system.
+
+**PRODUCT REQUIREMENTS:**
+1.  **Automated Scheduling:** The system must automatically send a report every day at a configurable time (defaulting to 23:59 in the Europe/Lisbon timezone).
+2.  **Report Content:** The email should contain a summary of the day's confirmed or paid orders, including:
+    *   Subject: 
+    *   Total number of orders.
+    *   Total gross revenue for the day.
+    *   Average ticket value.
+    *   A summary of payment methods used.
+    *   A concise list of orders with their number, table, total value, and time.
+3.  **Email Service:** The report must be sent using the **Resend** email service.
+4.  **Configuration:**
+    *   The recipient's email address must be configured via a  environment variable.
+    *   The Resend API key will be provided via a  environment variable.
+    *   The sending time should be prepared for future configuration in the admin panel.
+5.  **Reliability and Logging:**
+    *   The email sending process must be asynchronous and not block the main application.
+    *   A log of sending attempts (success or failure with error messages) must be recorded.
+
+**User's preferred language**: Português
+
+**what currently exists?**
+A complete full-stack web application for a pizzeria. The system includes:
+- **Frontend (React):** A mobile-first customer interface for placing orders via QR codes and a comprehensive admin panel for managing the menu, tables, orders, and printer settings.
+- **Backend (FastAPI):** An API server that handles all business logic, database interactions (MongoDB), and manages a print job queue.
+- **Printing System:** A local print agent architecture that polls the backend for print jobs and sends them to one or more ESC/POS network printers (e.g., for the kitchen and cashier), with support for different receipt formats.
+- **Authentication:** The admin panel is protected by a JWT-based login system that authenticates users against credentials stored in environment variables (, ).
+
+**Last working item**:
+*   **Last item agent was working:** The agent was about to begin the implementation of the automated daily email report feature. The user had just provided the necessary specifications, including the choice of Resend as the email provider, the timezone, and the default sending time.
+*   **Status:** NOT STARTED
+*   **Agent Testing Done:** N
+*   **Which testing method agent to use?** backend testing agent
+*   **User Testing Done:** N
+
+**All Pending/In progress Issue list**:
+There are no pending or in-progress issues. The previous tasks were completed.
+
+**In progress Task List**:
+There are no tasks currently in progress.
+
+**Upcoming and Future Tasks**
+*   **Upcoming Tasks:**
+    *   **(P0) Implement Automated Daily Email Reports:** This is the highest priority task.
+        *   **Phase 1: Backend Setup:**
+            *   Add  and  to .
+            *   Add  and  variables to .
+            *   Create a new module (e.g., ) to handle the cron job logic.
+            *   Implement the function to query the database and generate the report content.
+            *   Implement the email sending logic using the Resend API.
+            *   Integrate the scheduler into the main FastAPI application () to start on application launch.
+            *   Add logging for email sending successes and failures.
+*   **Future Tasks:**
+    *   Add a section to the admin Settings page to allow users to configure the  and the report sending time directly from the UI.
+
+**Completed work in this session**
+- **Admin Authentication via Environment Variables:** Refactored the admin login to use  variables (, ) instead of a database collection, enhancing security and simplifying setup. A script to generate the password hash was also provided ().
+- **Multi-Printer Support with Custom Formats:** Implemented support for multiple printers (e.g., Kitchen, Cashier) with distinct receipt formats based on a  field.
+- **Dynamic Frontend Content:** The customer-facing menu page now dynamically loads the restaurant name and cover image from the backend settings, which are manageable via the admin panel.
+- **Local Print Agent System:** Developed the complete architecture for a local print agent, including secure backend endpoints for polling jobs, an admin UI page for setup instructions and API key retrieval, and the agent script itself.
+
+**Earlier issues found/mentioned but not fixed**
+- None.
+
+**Known issue recurrence from previous fork**
+- None.
+
+**Code Architecture**
+
+
+**Key Technical Concepts**
+- **Backend:** FastAPI, Pydantic, MongoDB ()
+- **Frontend:** React, TailwindCSS, Shadcn UI, Axios
+- **Authentication:** JWT for API sessions, credentials stored in .
+- **Printing:** ESC/POS command generation with raw TCP socket communication, managed by a polling local agent.
+- **Asynchronous Tasks:** A scheduler () will be introduced for the daily report feature.
+
+**key DB schema**
+*   : Single document for global configurations like restaurant name and cover image.
+*   : Menu items.
+*   : Product categories.
+*   : Restaurant table information.
+*   : Customer orders.
+*   : Configuration for network printers, including , , , and  (kitchen/cashier).
+*   : A queue of printing tasks for the local agent to process.
+
+**changes in tech stack**
+- None. The stack remains FastAPI, React, and MongoDB. The  and  libraries will be added.
+
+**All files of reference**
+- **To be modified/created:**
+    - : To add  and .
+    - : To add  and .
+    - : To initialize and run the scheduler.
+    -  (new file): To contain the core logic for the daily report job.
+- **Important existing files:**
+    - : Where UI for this feature could be added in the future.
+    - : The local print agent, which is a separate but related system.
+
+**key api endpoints**
+- : Admin login endpoint.
+- : CRUD operations for orders.
+- : CRUD operations for printers.
+- : Polled by the local print agent to fetch new print jobs.
+- : Provides public-facing settings like the restaurant name to the frontend.
+
+**Critical Info for New Agent**
+- The immediate task is to build the daily email reporting feature.
+- **You must use Resend** as the email service provider, as specified by the user.
+- The system will require a . Plan to add this to the  file and instruct the user on where to obtain it.
+- The scheduler must be configured for the **Europe/Lisbon** timezone and set to run daily at **23:59**.
+- Admin authentication is now managed entirely through environment variables. Do not attempt to query a user collection for login.
+
+**documents and test reports created in this job**
+- 
+- 
+- 
+
+**Last 10 User Messages and any pending HUMAN messages**
+1.  **User:** Requests an automated daily email report feature.
+2.  **Agent:** Asks for clarification on the email service, API key, timezone, and schedule.
+3.  **User:** Confirms using **Resend**, timezone **Europe/Lisbon**, and a **23:59** schedule.
+4.  **Agent:** Acknowledges and prepares to start the implementation.
+5.  **User:** Asks to secure the  panel using environment variables.
+6.  **Agent:** Implements the requested authentication change.
+7.  **Agent:** Confirms the auth feature is complete and provides instructions.
+8.  **User:** Requests support for simultaneous printing to two different printers with unique formats.
+9.  **Agent:** Implements the multi-printer support feature.
+10. **User:** Reports an issue where the restaurant name doesn't update on the customer page.
+
+**Project Health Check:**
+*   **Broken:** None
+*   **Mocked:**
+    *   The print agent functionality cannot be fully tested in the cloud environment, as it requires a local network with physical printers.
+    *   The upcoming email feature will depend on a valid , which the agent will not have. Testing will rely on mocking the Resend API call or checking for a successful API response code.
+
+**3rd Party Integrations**
+- **Resend:** (To be implemented) For sending daily email reports. Requires a User API Key.
+
+**Testing status**
+- **Testing agent used after significant changes:** NO
+- **Troubleshoot agent used after agent stuck in loop:** NO
+- **Test files created:** None
+- **Known regressions:** None
+
+**Credentials to test flow:**
+- **Admin URL:** 
+- **Admin Email:** 
+- **Admin Password:** 
+
+**What agent forgot to execute**
+- Nothing. The agent is on track and has acknowledged the user's latest request to build the daily email report feature. The next step is to begin that implementation.</analysis>

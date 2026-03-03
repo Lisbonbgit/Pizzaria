@@ -36,7 +36,7 @@ except ImportError:
 # ==================== CONFIGURAÇÃO ====================
 
 # URL do backend (altere para a URL do seu sistema)
-BACKEND_URL = "https://order-print-1.preview.emergentagent.com"
+BACKEND_URL = "https://daily-order-summary.preview.emergentagent.com"
 
 # API Key do Print Agent (obtenha no Admin > Impressoras > Print Agent)
 API_KEY = "SUA_API_KEY_AQUI"

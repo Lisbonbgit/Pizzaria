@@ -18,6 +18,8 @@ import qrcode
 import io
 import base64
 import secrets
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -37,6 +39,10 @@ JWT_ALGORITHM = "HS256"
 
 # Print Agent API Key (generate on first run or from env)
 PRINT_AGENT_API_KEY = os.environ.get('PRINT_AGENT_API_KEY', None)
+
+# Daily Report Scheduler
+scheduler = AsyncIOScheduler(timezone='Europe/Lisbon')
+SCHEDULER_ENABLED = False  # Desativado por padrão, ativado após teste manual
 
 # Create the main app
 app = FastAPI(title="Pizzaria API")
@@ -1600,6 +1606,192 @@ async def seed_database():
         }
     }
 
+# ==================== DAILY REPORT ROUTES ====================
+
+from scheduler import send_daily_report, RESEND_API_KEY, REPORT_EMAIL
+
+class TestReportResponse(BaseModel):
+    success: bool
+    message: str
+    email_id: Optional[str] = None
+    report_date: Optional[str] = None
+    stats: Optional[dict] = None
+    orders_count: Optional[int] = None
+    error: Optional[str] = None
+
+class SchedulerStatusResponse(BaseModel):
+    enabled: bool
+    next_run: Optional[str] = None
+    timezone: str = "Europe/Lisbon"
+    schedule: str = "23:59"
+
+@api_router.post("/admin/test-daily-report", response_model=TestReportResponse)
+async def test_daily_report(authorization: Optional[str] = Header(None)):
+    """
+    Endpoint manual para testar o envio do relatório diário.
+    Gera o relatório do dia atual e envia para o REPORT_EMAIL.
+    """
+    await get_current_user(authorization)
+    
+    # Verificar configuração
+    if not RESEND_API_KEY:
+        return TestReportResponse(
+            success=False,
+            message="API Key do Resend não configurada",
+            error="Configure a variável RESEND_API_KEY no ficheiro .env"
+        )
+    
+    if not REPORT_EMAIL:
+        return TestReportResponse(
+            success=False,
+            message="Email de destino não configurado",
+            error="Configure a variável REPORT_EMAIL no ficheiro .env"
+        )
+    
+    logger.info(f"Teste de relatório diário solicitado. Enviando para {REPORT_EMAIL}")
+    
+    # Executar envio do relatório
+    result = await send_daily_report(db)
+    
+    if result.get("success"):
+        return TestReportResponse(
+            success=True,
+            message=f"Relatório enviado com sucesso para {REPORT_EMAIL}",
+            email_id=result.get("email_id"),
+            report_date=result.get("report_date"),
+            stats=result.get("stats"),
+            orders_count=result.get("orders_count")
+        )
+    else:
+        return TestReportResponse(
+            success=False,
+            message="Falha ao enviar relatório",
+            error=result.get("error")
+        )
+
+@api_router.get("/admin/report-config")
+async def get_report_config(authorization: Optional[str] = Header(None)):
+    """Retorna a configuração atual do sistema de relatórios"""
+    await get_current_user(authorization)
+    
+    return {
+        "resend_configured": bool(RESEND_API_KEY),
+        "report_email": REPORT_EMAIL or "Não configurado",
+        "scheduler_enabled": SCHEDULER_ENABLED,
+        "timezone": "Europe/Lisbon",
+        "schedule_time": "23:59"
+    }
+
+@api_router.post("/admin/scheduler/enable")
+async def enable_scheduler(authorization: Optional[str] = Header(None)):
+    """Ativa o scheduler de relatórios diários"""
+    global SCHEDULER_ENABLED
+    await get_current_user(authorization)
+    
+    if not RESEND_API_KEY or not REPORT_EMAIL:
+        raise HTTPException(
+            status_code=400,
+            detail="Configure RESEND_API_KEY e REPORT_EMAIL antes de ativar o scheduler"
+        )
+    
+    SCHEDULER_ENABLED = True
+    
+    # Adicionar job se não existir
+    if not scheduler.get_job('daily_report'):
+        scheduler.add_job(
+            run_scheduled_report,
+            CronTrigger(hour=23, minute=59, timezone='Europe/Lisbon'),
+            id='daily_report',
+            name='Daily Report Email',
+            replace_existing=True
+        )
+        logger.info("Job de relatório diário adicionado ao scheduler")
+    
+    if not scheduler.running:
+        scheduler.start()
+        logger.info("Scheduler iniciado")
+    
+    # Guardar configuração no banco
+    await db.settings.update_one(
+        {"key": "scheduler_config"},
+        {"$set": {
+            "key": "scheduler_config",
+            "value": {"enabled": True, "updated_at": datetime.now(timezone.utc).isoformat()}
+        }},
+        upsert=True
+    )
+    
+    return {"message": "Scheduler ativado com sucesso", "enabled": True}
+
+@api_router.post("/admin/scheduler/disable")
+async def disable_scheduler(authorization: Optional[str] = Header(None)):
+    """Desativa o scheduler de relatórios diários"""
+    global SCHEDULER_ENABLED
+    await get_current_user(authorization)
+    
+    SCHEDULER_ENABLED = False
+    
+    # Remover job
+    if scheduler.get_job('daily_report'):
+        scheduler.remove_job('daily_report')
+        logger.info("Job de relatório diário removido")
+    
+    # Guardar configuração no banco
+    await db.settings.update_one(
+        {"key": "scheduler_config"},
+        {"$set": {
+            "key": "scheduler_config",
+            "value": {"enabled": False, "updated_at": datetime.now(timezone.utc).isoformat()}
+        }},
+        upsert=True
+    )
+    
+    return {"message": "Scheduler desativado", "enabled": False}
+
+@api_router.get("/admin/scheduler/status", response_model=SchedulerStatusResponse)
+async def get_scheduler_status(authorization: Optional[str] = Header(None)):
+    """Retorna o estado atual do scheduler"""
+    await get_current_user(authorization)
+    
+    next_run = None
+    job = scheduler.get_job('daily_report')
+    if job and job.next_run_time:
+        next_run = job.next_run_time.isoformat()
+    
+    return SchedulerStatusResponse(
+        enabled=SCHEDULER_ENABLED,
+        next_run=next_run,
+        timezone="Europe/Lisbon",
+        schedule="23:59"
+    )
+
+@api_router.get("/admin/report-logs")
+async def get_report_logs(
+    limit: int = Query(default=20, le=100),
+    authorization: Optional[str] = Header(None)
+):
+    """Retorna histórico de envios de relatórios"""
+    await get_current_user(authorization)
+    
+    logs = await db.report_logs.find(
+        {},
+        {"_id": 0}
+    ).sort("timestamp", -1).to_list(limit)
+    
+    return logs
+
+async def run_scheduled_report():
+    """Função executada pelo scheduler para enviar o relatório diário"""
+    logger.info("Executando relatório diário agendado...")
+    try:
+        result = await send_daily_report(db)
+        if result.get("success"):
+            logger.info(f"Relatório diário enviado com sucesso: {result}")
+        else:
+            logger.error(f"Falha no relatório diário: {result.get('error')}")
+    except Exception as e:
+        logger.error(f"Erro ao executar relatório agendado: {e}")
+
 # Include router
 app.include_router(api_router)
 
@@ -1612,6 +1804,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Carrega configuração do scheduler na inicialização"""
+    global SCHEDULER_ENABLED
+    
+    # Verificar se scheduler estava ativo
+    config = await db.settings.find_one({"key": "scheduler_config"}, {"_id": 0})
+    if config and config.get("value", {}).get("enabled"):
+        if RESEND_API_KEY and REPORT_EMAIL:
+            SCHEDULER_ENABLED = True
+            scheduler.add_job(
+                run_scheduled_report,
+                CronTrigger(hour=23, minute=59, timezone='Europe/Lisbon'),
+                id='daily_report',
+                name='Daily Report Email',
+                replace_existing=True
+            )
+            scheduler.start()
+            logger.info("Scheduler de relatórios diários iniciado automaticamente")
+        else:
+            logger.warning("Scheduler configurado mas RESEND_API_KEY ou REPORT_EMAIL não definidos")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    if scheduler.running:
+        scheduler.shutdown()
     client.close()

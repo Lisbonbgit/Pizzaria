@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Loader2, Save, Building } from 'lucide-react';
+import { Loader2, Save, Building, ImagePlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,12 +8,16 @@ import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
 import api from '@/lib/api';
 
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+
 const AdminSettings = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   
   const [restaurantConfig, setRestaurantConfig] = useState({
-    name: 'Pizzaria'
+    name: 'Pizzaria',
+    cover_image: ''
   });
 
   useEffect(() => {
@@ -42,6 +46,38 @@ const AdminSettings = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      toast.error('Por favor selecione uma imagem');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await api.post('/products/upload-image', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      setRestaurantConfig(prev => ({ ...prev, cover_image: response.data.url }));
+      toast.success('Imagem carregada');
+    } catch (err) {
+      console.error('Error uploading image:', err);
+      toast.error('Erro ao carregar imagem');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const getImageUrl = (url) => {
+    if (!url) return null;
+    if (url.startsWith('http')) return url;
+    return `${BACKEND_URL}${url}`;
   };
 
   if (loading) {
@@ -76,11 +112,50 @@ const AdminSettings = () => {
                 id="restaurant-name"
                 value={restaurantConfig.name}
                 onChange={(e) => setRestaurantConfig(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="Nome que aparece nos talões"
+                placeholder="Nome que aparece no menu"
                 data-testid="restaurant-name-input"
               />
               <p className="text-xs text-muted-foreground">
-                Este nome aparece no topo de cada talão impresso
+                Este nome aparece no topo do menu e nos talões impressos
+              </p>
+            </div>
+
+            {/* Cover Image */}
+            <div className="space-y-3">
+              <Label>Imagem de Capa</Label>
+              <div className="flex items-start gap-4">
+                {restaurantConfig.cover_image ? (
+                  <img
+                    src={getImageUrl(restaurantConfig.cover_image)}
+                    alt="Capa"
+                    className="w-40 h-24 object-cover rounded-lg border"
+                  />
+                ) : (
+                  <div className="w-40 h-24 bg-secondary rounded-lg flex items-center justify-center border">
+                    <ImagePlus className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                )}
+                <div className="flex-1 space-y-2">
+                  <Input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    disabled={uploading}
+                    className="w-full"
+                  />
+                  {uploading && <p className="text-sm text-muted-foreground">A carregar...</p>}
+                  <p className="text-xs text-muted-foreground">
+                    Ou cole um URL de imagem:
+                  </p>
+                  <Input
+                    placeholder="https://exemplo.com/imagem.jpg"
+                    value={restaurantConfig.cover_image || ''}
+                    onChange={(e) => setRestaurantConfig(prev => ({ ...prev, cover_image: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Imagem recomendada: 1200x400 pixels. Aparece no topo da página do menu.
               </p>
             </div>
 

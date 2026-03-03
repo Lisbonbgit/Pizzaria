@@ -35,6 +35,7 @@ const MenuPage = () => {
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
   const [restaurantName, setRestaurantName] = useState('Pizzaria');
+  const [coverImage, setCoverImage] = useState('https://images.unsplash.com/photo-1709548145082-04d0cde481d4?w=1200&q=80');
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -82,6 +83,17 @@ const MenuPage = () => {
       setCategories(catsRes.data);
       setProducts(prodsRes.data);
       setRestaurantName(settingsRes.data.name || 'Pizzaria');
+      
+      // Set cover image
+      if (settingsRes.data.cover_image) {
+        const img = settingsRes.data.cover_image;
+        // Check if it's a relative URL
+        if (img.startsWith('/')) {
+          setCoverImage(`${process.env.REACT_APP_BACKEND_URL}${img}`);
+        } else {
+          setCoverImage(img);
+        }
+      }
       
       if (catsRes.data.length > 0 && !selectedCategory) {
         setSelectedCategory(catsRes.data[0].id);
@@ -214,7 +226,7 @@ const MenuPage = () => {
       <div 
         className="relative h-48 md:h-64 bg-cover bg-center"
         style={{ 
-          backgroundImage: `url('https://images.unsplash.com/photo-1709548145082-04d0cde481d4?w=1200&q=80')` 
+          backgroundImage: `url('${coverImage}')` 
         }}
       >
         <div className="absolute inset-0 menu-hero-gradient" />

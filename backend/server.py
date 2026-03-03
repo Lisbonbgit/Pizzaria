@@ -195,6 +195,7 @@ class PrinterCreate(BaseModel):
     width: int = 80  # 58 or 80mm
     cut_paper: bool = True
     active: bool = True
+    printer_type: str = "kitchen"  # kitchen or cashier
 
 class PrinterUpdate(BaseModel):
     name: Optional[str] = None
@@ -203,6 +204,7 @@ class PrinterUpdate(BaseModel):
     width: Optional[int] = None
     cut_paper: Optional[bool] = None
     active: Optional[bool] = None
+    printer_type: Optional[str] = None
 
 class PrinterResponse(BaseModel):
     id: str
@@ -212,6 +214,7 @@ class PrinterResponse(BaseModel):
     width: int
     cut_paper: bool
     active: bool
+    printer_type: str
     created_at: str
 
 class PrintJobResponse(BaseModel):
@@ -294,103 +297,188 @@ class ESCPOSFormatter:
     BOLD_OFF = ESC + b'E\x00'
     CENTER = ESC + b'a\x01'
     LEFT = ESC + b'a\x00'
+    RIGHT = ESC + b'a\x02'
     DOUBLE_HEIGHT = GS + b'!\x10'
     DOUBLE_WIDTH = GS + b'!\x20'
     DOUBLE_SIZE = GS + b'!\x30'
     NORMAL_SIZE = GS + b'!\x00'
+    UNDERLINE_ON = ESC + b'-\x01'
+    UNDERLINE_OFF = ESC + b'-\x00'
     
     def __init__(self, width: int = 80):
         self.width = width
         self.chars_per_line = 48 if width == 80 else 32
     
     def _line(self, char: str = '-') -> bytes:
-        return (char * self.chars_per_line + '\n').encode('cp860')
+        return (char * self.chars_per_line + '\n').encode('cp860', errors='replace')
     
     def _text(self, text: str) -> bytes:
+        # Replace special characters for thermal printers
+        replacements = {
+            'ã': 'a', 'õ': 'o', 'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u',
+            'à': 'a', 'è': 'e', 'ì': 'i', 'ò': 'o', 'ù': 'u',
+            'â': 'a', 'ê': 'e', 'î': 'i', 'ô': 'o', 'û': 'u',
+            'ç': 'c', 'Ç': 'C', 'ñ': 'n', 'Ñ': 'N',
+            'Ã': 'A', 'Õ': 'O', 'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
+            '€': 'EUR', '£': 'GBP', '¥': 'JPY'
+        }
+        for old, new in replacements.items():
+            text = text.replace(old, new)
         try:
-            return text.encode('cp860')
+            return text.encode('cp860', errors='replace')
         except:
-            return text.encode('utf-8', errors='replace')
+            return text.encode('ascii', errors='replace')
     
-    def format_order(self, order: dict, printer_name: str = "", restaurant_name: str = "Pizzaria") -> bytes:
+    def _get_datetime(self, order: dict) -> datetime:
+        created_at = order.get('created_at', datetime.now(timezone.utc).isoformat())
+        if isinstance(created_at, str):
+            return datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        return created_at
+    
+    def format_kitchen(self, order: dict, printer_name: str = "COZINHA") -> bytes:
+        """Format for KITCHEN printer - focus on preparation details"""
         data = bytearray()
         data.extend(self.INIT)
         
-        # Restaurant name
+        # Header - NEW ORDER alert
         data.extend(self.CENTER)
         data.extend(self.BOLD_ON)
         data.extend(self.DOUBLE_SIZE)
-        data.extend(self._text(f"{restaurant_name}\n"))
+        data.extend(self._text("*** NOVO PEDIDO ***\n"))
         data.extend(self.NORMAL_SIZE)
         data.extend(self.BOLD_OFF)
         
-        # Printer name (if specified)
-        if printer_name:
-            data.extend(self._text(f"[{printer_name}]\n"))
-        
-        # Order number
-        data.extend(self.DOUBLE_SIZE)
-        data.extend(self._text(f"PEDIDO #{order['order_number']}\n"))
-        data.extend(self.NORMAL_SIZE)
-        
         data.extend(self._line('='))
         
-        # Table - highlighted
+        # Order number - BIG
+        data.extend(self.CENTER)
+        data.extend(self.DOUBLE_SIZE)
+        data.extend(self.BOLD_ON)
+        data.extend(self._text(f"PEDIDO #{order['order_number']}\n"))
+        data.extend(self.NORMAL_SIZE)
+        data.extend(self.BOLD_OFF)
+        
+        # Table number - BIG
         data.extend(self.DOUBLE_SIZE)
         data.extend(self._text(f"MESA: {order['table_number']}\n"))
         data.extend(self.NORMAL_SIZE)
         
         # Date/time
+        dt = self._get_datetime(order)
+        data.extend(self._text(f"{dt.strftime('%d/%m/%Y %H:%M')}\n"))
+        
+        data.extend(self._line('='))
+        
+        # Items - detailed for preparation
         data.extend(self.LEFT)
-        created_at = order.get('created_at', datetime.now(timezone.utc).isoformat())
-        if isinstance(created_at, str):
-            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-        else:
-            dt = created_at
-        data.extend(self._text(f"Data: {dt.strftime('%d/%m/%Y %H:%M')}\n"))
-        
-        data.extend(self._line('-'))
-        
-        # Items
-        data.extend(self.BOLD_ON)
-        data.extend(self._text("ITENS:\n"))
-        data.extend(self.BOLD_OFF)
         
         for item in order.get('items', []):
-            # Item name with quantity
             qty = item.get('quantity', 1)
             name = item.get('product_name', 'Item')
             variation = item.get('variation', {})
             
-            item_line = f"{qty}x {name}"
-            if variation and variation.get('name'):
-                item_line += f" ({variation['name']})"
+            # Item name with quantity - BOLD
             data.extend(self.BOLD_ON)
-            data.extend(self._text(f"{item_line}\n"))
+            data.extend(self.DOUBLE_HEIGHT)
+            data.extend(self._text(f"{qty}x {name}\n"))
+            data.extend(self.NORMAL_SIZE)
             data.extend(self.BOLD_OFF)
+            
+            # Size/Variation
+            if variation and variation.get('name'):
+                data.extend(self._text(f"   Tamanho: {variation['name']}\n"))
             
             # Extras
             for extra in item.get('extras', []):
                 data.extend(self._text(f"   + {extra.get('name', '')}\n"))
             
-            # Item notes
+            # Item notes - HIGHLIGHTED
             if item.get('notes'):
-                data.extend(self._text(f"   OBS: {item['notes']}\n"))
+                data.extend(self.BOLD_ON)
+                data.extend(self._text(f"   >>> {item['notes'].upper()} <<<\n"))
+                data.extend(self.BOLD_OFF)
             
-            # Price
-            data.extend(self._text(f"   EUR {item.get('total_price', 0):.2f}\n"))
+            data.extend(self._text("\n"))
         
         data.extend(self._line('-'))
         
-        # Order notes
+        # Order notes - VERY HIGHLIGHTED
         if order.get('notes'):
+            data.extend(self.CENTER)
             data.extend(self.BOLD_ON)
+            data.extend(self.DOUBLE_SIZE)
             data.extend(self._text("OBSERVACOES:\n"))
+            data.extend(self.NORMAL_SIZE)
+            data.extend(self._text(f"{order['notes'].upper()}\n"))
             data.extend(self.BOLD_OFF)
-            data.extend(self._text(f"{order['notes']}\n"))
             data.extend(self._line('-'))
         
-        # Total
+        data.extend(self.CENTER)
+        data.extend(self._text(f"[{printer_name}]\n"))
+        
+        data.extend(self._line('='))
+        data.extend(self._text("\n\n\n"))
+        
+        return bytes(data)
+    
+    def format_cashier(self, order: dict, printer_name: str = "CAIXA") -> bytes:
+        """Format for CASHIER printer - focus on pricing"""
+        data = bytearray()
+        data.extend(self.INIT)
+        
+        # Header
+        data.extend(self.CENTER)
+        data.extend(self.BOLD_ON)
+        data.extend(self._text(f"[{printer_name}]\n"))
+        data.extend(self.BOLD_OFF)
+        
+        data.extend(self._line('='))
+        
+        # Order number
+        data.extend(self.DOUBLE_SIZE)
+        data.extend(self.BOLD_ON)
+        data.extend(self._text(f"PEDIDO #{order['order_number']}\n"))
+        data.extend(self.NORMAL_SIZE)
+        data.extend(self.BOLD_OFF)
+        
+        # Table
+        data.extend(self.BOLD_ON)
+        data.extend(self._text(f"MESA: {order['table_number']}\n"))
+        data.extend(self.BOLD_OFF)
+        
+        data.extend(self._line('-'))
+        
+        # Items with prices
+        data.extend(self.LEFT)
+        
+        for item in order.get('items', []):
+            qty = item.get('quantity', 1)
+            name = item.get('product_name', 'Item')
+            variation = item.get('variation', {})
+            unit_price = item.get('unit_price', 0)
+            total_price = item.get('total_price', 0)
+            
+            # Item line
+            item_desc = f"{qty}x {name}"
+            if variation and variation.get('name'):
+                item_desc += f" ({variation['name']})"
+            
+            data.extend(self._text(f"{item_desc}\n"))
+            
+            # Extras with price
+            for extra in item.get('extras', []):
+                data.extend(self._text(f"   + {extra.get('name', '')} (+{extra.get('price', 0):.2f})\n"))
+            
+            # Price line
+            data.extend(self.RIGHT)
+            data.extend(self._text(f"EUR {total_price:.2f}\n"))
+            data.extend(self.LEFT)
+            
+            data.extend(self._text("\n"))
+        
+        data.extend(self._line('-'))
+        
+        # Total - BIG
         data.extend(self.CENTER)
         data.extend(self.DOUBLE_SIZE)
         data.extend(self.BOLD_ON)
@@ -398,10 +486,25 @@ class ESCPOSFormatter:
         data.extend(self.NORMAL_SIZE)
         data.extend(self.BOLD_OFF)
         
+        data.extend(self._line('-'))
+        
+        # Footer info
+        data.extend(self.LEFT)
+        dt = self._get_datetime(order)
+        data.extend(self._text(f"Data: {dt.strftime('%d/%m/%Y %H:%M')}\n"))
+        data.extend(self._text(f"ID: {order.get('id', '')[:8]}\n"))
+        
         data.extend(self._line('='))
         data.extend(self._text("\n\n\n"))
         
         return bytes(data)
+    
+    def format_order(self, order: dict, printer_name: str = "", printer_type: str = "kitchen", restaurant_name: str = "Pizzaria") -> bytes:
+        """Format order based on printer type"""
+        if printer_type == "cashier":
+            return self.format_cashier(order, printer_name)
+        else:
+            return self.format_kitchen(order, printer_name)
     
     def format_test(self, printer_name: str = "", restaurant_name: str = "Pizzaria") -> bytes:
         data = bytearray()
@@ -745,6 +848,7 @@ async def create_order(order: OrderCreate):
                 "order_id": order_id,
                 "printer_id": printer["id"],
                 "printer_name": printer["name"],
+                "printer_type": printer.get("printer_type", "kitchen"),
                 "status": "pending",
                 "attempts": 0,
                 "error": None,
@@ -752,6 +856,9 @@ async def create_order(order: OrderCreate):
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
             await db.print_jobs.insert_one(print_job)
+        
+        # Log print jobs created
+        logger.info(f"Order {order_id}: Created {len(active_printers)} print jobs for printers: {[p['name'] for p in active_printers]}")
     else:
         # Create a single pending job without printer (to be processed when agent connects)
         print_job_id = str(uuid.uuid4())
@@ -760,6 +867,7 @@ async def create_order(order: OrderCreate):
             "order_id": order_id,
             "printer_id": None,
             "printer_name": "Default",
+            "printer_type": "kitchen",
             "status": "pending",
             "attempts": 0,
             "error": None,
@@ -767,6 +875,7 @@ async def create_order(order: OrderCreate):
             "updated_at": datetime.now(timezone.utc).isoformat()
         }
         await db.print_jobs.insert_one(print_job)
+        logger.warning(f"Order {order_id}: No active printers configured, created default print job")
     
     return OrderResponse(**order_doc)
 
@@ -905,6 +1014,7 @@ async def create_printer(printer: PrinterCreate, authorization: Optional[str] = 
         "width": printer.width,
         "cut_paper": printer.cut_paper,
         "active": printer.active,
+        "printer_type": printer.printer_type,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.printers.insert_one(printer_doc)
@@ -916,6 +1026,10 @@ async def list_printers(active_only: bool = False, authorization: Optional[str] 
     
     query = {"active": True} if active_only else {}
     printers = await db.printers.find(query, {"_id": 0}).to_list(100)
+    # Add default printer_type for backwards compatibility
+    for p in printers:
+        if "printer_type" not in p:
+            p["printer_type"] = "kitchen"
     return [PrinterResponse(**p) for p in printers]
 
 @api_router.get("/printers/{printer_id}", response_model=PrinterResponse)
@@ -1032,6 +1146,9 @@ async def get_pending_jobs_for_agent(x_api_key: Optional[str] = Header(None)):
         printer = None
         if job.get("printer_id"):
             printer = await db.printers.find_one({"id": job["printer_id"]}, {"_id": 0})
+            # Add default printer_type for backwards compatibility
+            if printer and "printer_type" not in printer:
+                printer["printer_type"] = "kitchen"
         
         # Get order info (if not a test job)
         order = None
@@ -1042,9 +1159,13 @@ async def get_pending_jobs_for_agent(x_api_key: Optional[str] = Header(None)):
         settings = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
         restaurant_name = settings.get("value", {}).get("name", "Pizzaria") if settings else "Pizzaria"
         
+        # Include printer_type in result
+        printer_type = job.get("printer_type") or (printer.get("printer_type") if printer else "kitchen")
+        
         result.append({
             "job": job,
             "printer": printer,
+            "printer_type": printer_type,
             "order": order,
             "restaurant_name": restaurant_name,
             "is_test": job.get("is_test", False)

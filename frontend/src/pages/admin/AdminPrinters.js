@@ -46,7 +46,8 @@ const AdminPrinters = () => {
     port: 9100,
     width: 80,
     cut_paper: true,
-    active: true
+    active: true,
+    printer_type: 'kitchen'
   });
   const [testingPrinter, setTestingPrinter] = useState(null);
   
@@ -86,7 +87,8 @@ const AdminPrinters = () => {
         port: printer.port,
         width: printer.width,
         cut_paper: printer.cut_paper,
-        active: printer.active
+        active: printer.active,
+        printer_type: printer.printer_type || 'kitchen'
       });
     } else {
       setEditingPrinter(null);
@@ -96,7 +98,8 @@ const AdminPrinters = () => {
         port: 9100,
         width: 80,
         cut_paper: true,
-        active: true
+        active: true,
+        printer_type: 'kitchen'
       });
     }
     setPrinterModalOpen(true);
@@ -257,6 +260,7 @@ const AdminPrinters = () => {
                   </div>
                   
                   <div className="text-sm text-muted-foreground mb-4">
+                    <p>Tipo: <span className="font-medium">{printer.printer_type === 'cashier' ? 'Caixa' : 'Cozinha'}</span></p>
                     <p>Largura: {printer.width}mm</p>
                     <p>Cortar papel: {printer.cut_paper ? 'Sim' : 'Não'}</p>
                   </div>
@@ -509,6 +513,26 @@ const AdminPrinters = () => {
                   <SelectItem value="80">80mm</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="printer-type">Tipo de Impressora</Label>
+              <Select 
+                value={printerForm.printer_type}
+                onValueChange={(value) => setPrinterForm(prev => ({ ...prev, printer_type: value }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="kitchen">Cozinha - Formato de preparação</SelectItem>
+                  <SelectItem value="cashier">Caixa - Formato com preços</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                {printerForm.printer_type === 'kitchen' 
+                  ? 'Mostra detalhes de preparação, observações em destaque' 
+                  : 'Mostra preços unitários e total do pedido'}
+              </p>
             </div>
             <div className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg">
               <div>

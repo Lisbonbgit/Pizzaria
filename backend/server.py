@@ -544,19 +544,27 @@ ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH', '')
 @api_router.post("/auth/login", response_model=TokenResponse)
 async def login_admin(credentials: AdminUserLogin):
     """Login using environment variables - no database required"""
+    logger.info(f"Login attempt for email: {credentials.email}")
+    
     # Check email
     if credentials.email != ADMIN_EMAIL:
+        logger.warning(f"Login failed: email mismatch. Got '{credentials.email}', expected '{ADMIN_EMAIL}'")
         raise HTTPException(status_code=401, detail="Email ou senha inválidos")
     
     # Verify password against hash from environment
     if not ADMIN_PASSWORD_HASH:
+        logger.error("ADMIN_PASSWORD_HASH not configured")
         raise HTTPException(status_code=500, detail="Configuração de autenticação incompleta")
     
     try:
         if not bcrypt.checkpw(credentials.password.encode('utf-8'), ADMIN_PASSWORD_HASH.encode('utf-8')):
+            logger.warning(f"Login failed: password mismatch for {credentials.email}")
             raise HTTPException(status_code=401, detail="Email ou senha inválidos")
+    except ValueError as e:
+        logger.error(f"Auth bcrypt error: {e}")
+        raise HTTPException(status_code=401, detail="Email ou senha inválidos")
     except Exception as e:
-        logger.error(f"Auth error: {e}")
+        logger.error(f"Auth unexpected error: {e}")
         raise HTTPException(status_code=401, detail="Email ou senha inválidos")
     
     # Create token

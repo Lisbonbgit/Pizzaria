@@ -14,6 +14,14 @@ import { toast } from 'sonner';
 import { useCart } from '@/context/CartContext';
 import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, seedAPI, settingsAPI } from '@/lib/api';
 
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+
+const getImageUrl = (url) => {
+  if (!url) return null;
+  if (url.startsWith('http')) return url;
+  return `${BACKEND_URL}${url}`;
+};
+
 const MenuPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -276,7 +284,7 @@ const MenuPage = () => {
             >
               <div className="relative h-40 md:h-48 overflow-hidden">
                 <img
-                  src={product.image_url || 'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600'}
+                  src={getImageUrl(product.image_url) || 'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600'}
                   alt={product.name}
                   className="product-card-image w-full h-full object-cover"
                 />
@@ -315,7 +323,7 @@ const MenuPage = () => {
             <>
               <div className="relative h-48 -mx-6 -mt-6 overflow-hidden rounded-t-lg">
                 <img
-                  src={selectedProduct.image_url || 'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600'}
+                  src={getImageUrl(selectedProduct.image_url) || 'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600'}
                   alt={selectedProduct.name}
                   className="w-full h-full object-cover"
                 />

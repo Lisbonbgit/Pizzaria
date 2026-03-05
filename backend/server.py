@@ -50,8 +50,8 @@ app = FastAPI(title="Pizzaria API")
 # Create router with /api prefix
 api_router = APIRouter(prefix="/api")
 
-# Mount static files for uploads
-app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+# Mount static files for uploads under /api prefix for Kubernetes ingress routing
+app.mount("/api/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 
 # Configure logging
 logging.basicConfig(
@@ -733,7 +733,7 @@ async def upload_product_image(file: UploadFile = File(...), authorization: Opti
     with open(filepath, "wb") as f:
         f.write(content)
     
-    return {"url": f"/uploads/{filename}"}
+    return {"url": f"/api/uploads/{filename}"}
 
 # ==================== TABLE ROUTES ====================
 

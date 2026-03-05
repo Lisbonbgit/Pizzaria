@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { ShoppingCart, Plus, Minus, X, ChevronRight, Loader2, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -44,7 +44,7 @@ const MenuPage = () => {
   const [products, setProducts] = useState([]);
   const [restaurantName, setRestaurantName] = useState('Pizzaria');
   const [coverImage, setCoverImage] = useState('https://images.unsplash.com/photo-1709548145082-04d0cde481d4?w=1200&q=80');
-  const [selectedCategory, setSelectedCategory] = useState(null);
+  const [activeCategory, setActiveCategory] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [cartOpen, setCartOpen] = useState(false);
@@ -56,13 +56,18 @@ const MenuPage = () => {
   const [itemNotes, setItemNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Refs for scroll tracking
+  const sectionRefs = useRef({});
+  const categoryBarRef = useRef(null);
+  const activeBtnRef = useRef(null);
+  const isScrollingProgrammatically = useRef(false);
+
   // Initialize table from URL
   useEffect(() => {
     const mesa = searchParams.get('mesa');
     if (mesa) {
       const tableNum = parseInt(mesa);
       if (!isNaN(tableNum)) {
-        // Fetch table info
         tablesAPI.getByNumber(tableNum)
           .then(res => {
             setTable(res.data.number, res.data.id);
@@ -79,7 +84,6 @@ const MenuPage = () => {
     setLoading(true);
     setError(null);
     try {
-      // Try to seed if needed
       await seedAPI.seed().catch(() => {});
       
       const [catsRes, prodsRes, settingsRes] = await Promise.all([
@@ -92,10 +96,8 @@ const MenuPage = () => {
       setProducts(prodsRes.data);
       setRestaurantName(settingsRes.data.name || 'Pizzaria');
       
-      // Set cover image
       if (settingsRes.data.cover_image) {
         const img = settingsRes.data.cover_image;
-        // Check if it's a relative URL
         if (img.startsWith('/')) {
           setCoverImage(`${process.env.REACT_APP_BACKEND_URL}${img}`);
         } else {
@@ -103,8 +105,8 @@ const MenuPage = () => {
         }
       }
       
-      if (catsRes.data.length > 0 && !selectedCategory) {
-        setSelectedCategory(catsRes.data[0].id);
+      if (catsRes.data.length > 0) {
+        setActiveCategory(catsRes.data[0].id);
       }
     } catch (err) {
       console.error('Error loading menu:', err);
@@ -112,15 +114,86 @@ const MenuPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedCategory]);
+  }, []);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  const filteredProducts = products.filter(p => 
-    !selectedCategory || p.category_id === selectedCategory
-  );
+  // IntersectionObserver for scroll tracking
+  useEffect(() => {
+    if (categories.length === 0) return;
+
+    const observerOptions = {
+      root: null,
+      rootMargin: '-120px 0px -60% 0px',
+      threshold: 0
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+      if (isScrollingProgrammatically.current) return;
+
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          const catId = entry.target.getAttribute('data-category-id');
+          if (catId) {
+            setActiveCategory(catId);
+          }
+        }
+      });
+    }, observerOptions);
+
+    // Observe all section elements
+    Object.values(sectionRefs.current).forEach((ref) => {
+      if (ref) observer.observe(ref);
+    });
+
+    return () => observer.disconnect();
+  }, [categories, products]);
+
+  // Auto-scroll the category bar to keep active button visible
+  useEffect(() => {
+    if (activeBtnRef.current && categoryBarRef.current) {
+      const bar = categoryBarRef.current;
+      const btn = activeBtnRef.current;
+      const barRect = bar.getBoundingClientRect();
+      const btnRect = btn.getBoundingClientRect();
+
+      if (btnRect.left < barRect.left || btnRect.right > barRect.right) {
+        btn.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+      }
+    }
+  }, [activeCategory]);
+
+  // Scroll to category section
+  const scrollToCategory = (categoryId) => {
+    const section = sectionRefs.current[categoryId];
+    if (!section) return;
+
+    isScrollingProgrammatically.current = true;
+    setActiveCategory(categoryId);
+
+    const stickyBarHeight = 64;
+    const sectionTop = section.getBoundingClientRect().top + window.scrollY - stickyBarHeight;
+
+    window.scrollTo({
+      top: sectionTop,
+      behavior: 'smooth'
+    });
+
+    // Re-enable observer after scroll animation finishes
+    setTimeout(() => {
+      isScrollingProgrammatically.current = false;
+    }, 800);
+  };
+
+  // Group products by category
+  const productsByCategory = categories
+    .map(cat => ({
+      category: cat,
+      products: products.filter(p => p.category_id === cat.id)
+    }))
+    .filter(group => group.products.length > 0);
 
   const openProductModal = (product) => {
     setSelectedProduct(product);
@@ -250,70 +323,91 @@ const MenuPage = () => {
         </div>
       </div>
 
-      {/* Categories */}
+      {/* Sticky Category Navigation */}
       <div className="sticky top-0 z-40 bg-background/95 backdrop-blur border-b">
-        <ScrollArea className="w-full">
-          <div className="flex gap-2 p-4 scrollbar-hide">
-            {categories.map((cat) => (
+        <div 
+          ref={categoryBarRef}
+          className="flex gap-2 p-4 overflow-x-auto scrollbar-hide"
+          style={{ scrollBehavior: 'smooth' }}
+        >
+          {categories.map((cat) => {
+            const isActive = activeCategory === cat.id;
+            return (
               <button
                 key={cat.id}
-                onClick={() => setSelectedCategory(cat.id)}
+                ref={isActive ? activeBtnRef : null}
+                onClick={() => scrollToCategory(cat.id)}
                 data-testid={`category-${cat.id}`}
                 className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all ${
-                  selectedCategory === cat.id
-                    ? 'bg-primary text-primary-foreground'
+                  isActive
+                    ? 'bg-primary text-primary-foreground shadow-md'
                     : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
                 }`}
               >
                 {cat.name}
               </button>
-            ))}
-          </div>
-        </ScrollArea>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Products Grid */}
-      <div className="p-4 md:p-6">
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filteredProducts.map((product) => (
-            <div
-              key={product.id}
-              data-testid={`product-card-${product.id}`}
-              onClick={() => openProductModal(product)}
-              className="product-card bg-card rounded-xl overflow-hidden border border-border hover:shadow-lg transition-all cursor-pointer group"
-            >
-              <div className="relative h-40 md:h-48 overflow-hidden">
-                <img
-                  src={getImageUrl(product.image_url) || 'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600'}
-                  alt={product.name}
-                  className="product-card-image w-full h-full object-cover"
-                />
-                {product.featured && (
-                  <div className="absolute top-3 left-3">
-                    <Badge className="featured-badge text-xs border-0">
-                      Destaque
-                    </Badge>
+      {/* Continuous Scroll — All Categories */}
+      <div className="p-4 md:p-6 space-y-10">
+        {productsByCategory.map(({ category, products: catProducts }) => (
+          <section
+            key={category.id}
+            ref={(el) => { sectionRefs.current[category.id] = el; }}
+            data-category-id={category.id}
+            className="scroll-mt-20"
+          >
+            {/* Category Title */}
+            <h2 className="font-heading text-2xl md:text-3xl font-bold mb-4 pb-2 border-b border-border">
+              {category.name}
+            </h2>
+
+            {/* Products Grid */}
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {catProducts.map((product) => (
+                <div
+                  key={product.id}
+                  data-testid={`product-card-${product.id}`}
+                  onClick={() => openProductModal(product)}
+                  className="product-card bg-card rounded-xl overflow-hidden border border-border hover:shadow-lg transition-all cursor-pointer group"
+                >
+                  <div className="relative h-40 md:h-48 overflow-hidden">
+                    <img
+                      src={getImageUrl(product.image_url) || 'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600'}
+                      alt={product.name}
+                      className="product-card-image w-full h-full object-cover"
+                    />
+                    {product.featured && (
+                      <div className="absolute top-3 left-3">
+                        <Badge className="featured-badge text-xs border-0">
+                          Destaque
+                        </Badge>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="p-4">
-                <h3 className="font-heading text-lg font-semibold">{product.name}</h3>
-                <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                  {product.description}
-                </p>
-                <div className="flex items-center justify-between mt-3">
-                  <span className="font-bold text-lg">
-                    € {product.base_price.toFixed(2)}
-                  </span>
-                  <Button size="sm" className="rounded-full px-4">
-                    <Plus className="h-4 w-4 mr-1" />
-                    Adicionar
-                  </Button>
+                  <div className="p-4">
+                    <h3 className="font-heading text-lg font-semibold">{product.name}</h3>
+                    <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                      {product.description}
+                    </p>
+                    <div className="flex items-center justify-between mt-3">
+                      <span className="font-bold text-lg">
+                        € {product.base_price.toFixed(2)}
+                      </span>
+                      <Button size="sm" className="rounded-full px-4">
+                        <Plus className="h-4 w-4 mr-1" />
+                        Adicionar
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </section>
+        ))}
       </div>
 
       {/* Product Detail Modal */}

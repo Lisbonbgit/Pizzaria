@@ -56,7 +56,9 @@ export const categoriesAPI = {
   update: (id, data) => 
     api.put(`/categories/${id}`, data),
   delete: (id) => 
-    api.delete(`/categories/${id}`)
+    api.delete(`/categories/${id}`),
+  reorder: (items) =>
+    api.put('/categories/reorder', items)
 };
 
 // Products API

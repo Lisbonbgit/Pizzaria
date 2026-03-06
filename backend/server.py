@@ -622,6 +622,24 @@ async def list_categories(active_only: bool = False):
     categories = await db.categories.find(query, {"_id": 0}).sort("order", 1).to_list(100)
     return [CategoryResponse(**cat) for cat in categories]
 
+class CategoryReorderItem(BaseModel):
+    id: str
+    order: int
+
+@api_router.put("/categories/reorder")
+async def reorder_categories(items: List[CategoryReorderItem], authorization: Optional[str] = Header(None)):
+    """Reorder multiple categories at once"""
+    await get_current_user(authorization)
+    
+    for item in items:
+        await db.categories.update_one(
+            {"id": item.id},
+            {"$set": {"order": item.order}}
+        )
+    
+    categories = await db.categories.find({}, {"_id": 0}).sort("order", 1).to_list(100)
+    return [CategoryResponse(**cat) for cat in categories]
+
 @api_router.put("/categories/{category_id}", response_model=CategoryResponse)
 async def update_category(category_id: str, update: CategoryUpdate, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)

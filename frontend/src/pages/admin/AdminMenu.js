@@ -8,7 +8,9 @@ import {
   GripVertical,
   Eye,
   EyeOff,
-  Star
+  Star,
+  ChevronUp,
+  ChevronDown
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -385,15 +387,59 @@ const AdminMenu = () => {
           </div>
 
           <div className="space-y-3">
-            {categories.sort((a, b) => a.order - b.order).map((category) => (
+            {[...categories].sort((a, b) => a.order - b.order).map((category, idx, sorted) => (
               <Card key={category.id} data-testid={`category-admin-${category.id}`}>
                 <CardContent className="p-4 flex items-center justify-between">
                   <div className="flex items-center gap-4">
-                    <GripVertical className="h-5 w-5 text-muted-foreground cursor-grab" />
+                    {/* Move Up/Down Buttons */}
+                    <div className="flex flex-col gap-0.5">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        disabled={idx === 0}
+                        onClick={async () => {
+                          const prev = sorted[idx - 1];
+                          const newItems = sorted.map((c, i) => {
+                            if (c.id === category.id) return { id: c.id, order: prev.order };
+                            if (c.id === prev.id) return { id: c.id, order: category.order };
+                            return { id: c.id, order: c.order };
+                          });
+                          try {
+                            const res = await categoriesAPI.reorder(newItems);
+                            setCategories(res.data);
+                            toast.success('Ordem atualizada');
+                          } catch { toast.error('Erro ao reordenar'); }
+                        }}
+                      >
+                        <ChevronUp className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        disabled={idx === sorted.length - 1}
+                        onClick={async () => {
+                          const next = sorted[idx + 1];
+                          const newItems = sorted.map((c) => {
+                            if (c.id === category.id) return { id: c.id, order: next.order };
+                            if (c.id === next.id) return { id: c.id, order: category.order };
+                            return { id: c.id, order: c.order };
+                          });
+                          try {
+                            const res = await categoriesAPI.reorder(newItems);
+                            setCategories(res.data);
+                            toast.success('Ordem atualizada');
+                          } catch { toast.error('Erro ao reordenar'); }
+                        }}
+                      >
+                        <ChevronDown className="h-4 w-4" />
+                      </Button>
+                    </div>
                     <div>
                       <h3 className="font-semibold">{category.name}</h3>
                       <p className="text-sm text-muted-foreground">
-                        {products.filter(p => p.category_id === category.id).length} produtos
+                        {products.filter(p => p.category_id === category.id).length} produtos • Posição {idx + 1}
                       </p>
                     </div>
                     {!category.active && (

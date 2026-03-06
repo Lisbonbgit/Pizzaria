@@ -15,6 +15,7 @@ import AdminMenu from "@/pages/admin/AdminMenu";
 import AdminTables from "@/pages/admin/AdminTables";
 import AdminSettings from "@/pages/admin/AdminSettings";
 import AdminPrinters from "@/pages/admin/AdminPrinters";
+import AdminReports from "@/pages/admin/AdminReports";
 
 // Context
 import { CartProvider } from "@/context/CartContext";
@@ -47,6 +48,7 @@ function App() {
             <Route path="/admin/menu" element={<ProtectedRoute><AdminMenu /></ProtectedRoute>} />
             <Route path="/admin/tables" element={<ProtectedRoute><AdminTables /></ProtectedRoute>} />
             <Route path="/admin/printers" element={<ProtectedRoute><AdminPrinters /></ProtectedRoute>} />
+            <Route path="/admin/reports" element={<ProtectedRoute><AdminReports /></ProtectedRoute>} />
             <Route path="/admin/settings" element={<ProtectedRoute><AdminSettings /></ProtectedRoute>} />
             
             {/* Fallback */}

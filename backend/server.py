@@ -179,6 +179,9 @@ class OrderCreate(BaseModel):
 class OrderStatusUpdate(BaseModel):
     status: str
 
+class OrderPaymentUpdate(BaseModel):
+    payment_method: str
+
 class OrderResponse(BaseModel):
     id: str
     order_number: int
@@ -189,6 +192,7 @@ class OrderResponse(BaseModel):
     total: float
     status: str
     paid: bool
+    payment_method: Optional[str] = None
     print_status: str
     created_at: str
 
@@ -959,12 +963,16 @@ async def update_order_status(order_id: str, update: OrderStatusUpdate, authoriz
     return OrderResponse(**order)
 
 @api_router.put("/orders/{order_id}/paid", response_model=OrderResponse)
-async def mark_order_paid(order_id: str, authorization: Optional[str] = Header(None)):
+async def mark_order_paid(order_id: str, payment: Optional[OrderPaymentUpdate] = None, authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
+    
+    update_data = {"paid": True}
+    if payment and payment.payment_method:
+        update_data["payment_method"] = payment.payment_method
     
     result = await db.orders.update_one(
         {"id": order_id},
-        {"$set": {"paid": True}}
+        {"$set": update_data}
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
@@ -1614,9 +1622,158 @@ async def seed_database():
         }
     }
 
-# ==================== DAILY REPORT ROUTES ====================
+# ==================== REPORT DATA & EMAIL ROUTES ====================
 
 from scheduler import send_daily_report, RESEND_API_KEY, REPORT_EMAIL
+
+class SendReportRequest(BaseModel):
+    date: Optional[str] = None  # ISO date string e.g. "2025-07-04"
+
+@api_router.get("/admin/report-data")
+async def get_report_data(date: Optional[str] = None, authorization: Optional[str] = Header(None)):
+    """
+    Get comprehensive report data for a given date.
+    If no date provided, uses today.
+    """
+    await get_current_user(authorization)
+    
+    from zoneinfo import ZoneInfo
+    lisbon_tz = ZoneInfo('Europe/Lisbon')
+    
+    if date:
+        try:
+            target_date = datetime.fromisoformat(date).replace(tzinfo=lisbon_tz)
+        except:
+            target_date = datetime.now(lisbon_tz)
+    else:
+        target_date = datetime.now(lisbon_tz)
+    
+    # Calculate day range in UTC
+    start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+    start_utc = start_of_day.astimezone(timezone.utc).isoformat()
+    end_utc = end_of_day.astimezone(timezone.utc).isoformat()
+    
+    # Fetch orders for the day
+    query = {
+        "created_at": {"$gte": start_utc, "$lte": end_utc}
+    }
+    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    
+    # Basic stats
+    total_orders = len(orders)
+    non_cancelled = [o for o in orders if o.get("status") != "cancelled"]
+    cancelled_orders = total_orders - len(non_cancelled)
+    delivered_orders = len([o for o in orders if o.get("status") == "delivered"])
+    
+    total_revenue = sum(o.get("total", 0) for o in non_cancelled)
+    avg_ticket = total_revenue / len(non_cancelled) if non_cancelled else 0
+    
+    paid_orders = len([o for o in non_cancelled if o.get("paid", False)])
+    unpaid_orders = len(non_cancelled) - paid_orders
+    
+    # Payment methods breakdown
+    payment_methods = {}
+    for o in non_cancelled:
+        if o.get("paid", False):
+            method = o.get("payment_method", "não especificado")
+            if method not in payment_methods:
+                payment_methods[method] = {"count": 0, "total": 0}
+            payment_methods[method]["count"] += 1
+            payment_methods[method]["total"] += o.get("total", 0)
+    
+    # Top products
+    product_counts = {}
+    for o in non_cancelled:
+        for item in o.get("items", []):
+            name = item.get("product_name", "Desconhecido")
+            qty = item.get("quantity", 1)
+            if name not in product_counts:
+                product_counts[name] = 0
+            product_counts[name] += qty
+    
+    top_products = sorted(
+        [{"name": k, "quantity": v} for k, v in product_counts.items()],
+        key=lambda x: x["quantity"],
+        reverse=True
+    )[:15]
+    
+    # Peak hours
+    hours_count = {}
+    for o in non_cancelled:
+        created_at = o.get("created_at", "")
+        try:
+            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            # Convert to Lisbon time
+            dt_local = dt.astimezone(lisbon_tz)
+            hour = dt_local.hour
+            if hour not in hours_count:
+                hours_count[hour] = 0
+            hours_count[hour] += 1
+        except:
+            pass
+    
+    peak_hours = [
+        {"hour": h, "label": f"{h:02d}:00", "orders": hours_count.get(h, 0)}
+        for h in range(8, 24)
+    ]
+    
+    return {
+        "date": target_date.strftime("%Y-%m-%d"),
+        "date_formatted": target_date.strftime("%d/%m/%Y"),
+        "summary": {
+            "total_orders": total_orders,
+            "total_revenue": round(total_revenue, 2),
+            "avg_ticket": round(avg_ticket, 2),
+            "cancelled_orders": cancelled_orders,
+            "delivered_orders": delivered_orders,
+            "paid_orders": paid_orders,
+            "unpaid_orders": unpaid_orders
+        },
+        "payment_methods": payment_methods,
+        "top_products": top_products,
+        "peak_hours": peak_hours
+    }
+
+@api_router.post("/admin/send-daily-report")
+async def send_report_by_email(request: SendReportRequest, authorization: Optional[str] = Header(None)):
+    """Send daily report by email for a specific date"""
+    await get_current_user(authorization)
+    
+    if not RESEND_API_KEY:
+        raise HTTPException(status_code=400, detail="API Key do Resend não configurada. Configure RESEND_API_KEY no .env")
+    
+    if not REPORT_EMAIL:
+        raise HTTPException(status_code=400, detail="Email de destino não configurado. Configure REPORT_EMAIL no .env")
+    
+    from zoneinfo import ZoneInfo
+    lisbon_tz = ZoneInfo('Europe/Lisbon')
+    
+    target_date = None
+    if request.date:
+        try:
+            target_date = datetime.fromisoformat(request.date).replace(tzinfo=lisbon_tz)
+        except:
+            target_date = None
+    
+    logger.info(f"Envio de relatório solicitado para data: {request.date or 'hoje'}")
+    
+    result = await send_daily_report(db, date=target_date)
+    
+    if result.get("success"):
+        return {
+            "success": True,
+            "message": f"Relatório enviado com sucesso para {REPORT_EMAIL}",
+            "email_id": result.get("email_id"),
+            "report_date": result.get("report_date")
+        }
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail=result.get("error", "Erro desconhecido ao enviar relatório")
+        )
+
+# ==================== DAILY REPORT ROUTES (Legacy) ====================
 
 class TestReportResponse(BaseModel):
     success: bool

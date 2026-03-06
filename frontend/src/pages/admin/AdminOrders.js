@@ -7,13 +7,17 @@ import {
   Eye,
   CheckCircle,
   Clock,
-  XCircle
+  XCircle,
+  CreditCard,
+  Banknote,
+  Smartphone,
+  Wallet
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Card, CardContent } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
@@ -27,6 +31,13 @@ const statusOptions = [
   { value: 'cancelled', label: 'Cancelado' }
 ];
 
+const paymentMethods = [
+  { value: 'dinheiro', label: 'Dinheiro', icon: Banknote },
+  { value: 'cartao', label: 'Cartão', icon: CreditCard },
+  { value: 'mbway', label: 'MB WAY', icon: Smartphone },
+  { value: 'multibanco', label: 'Multibanco', icon: Wallet },
+];
+
 const AdminOrders = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -34,6 +45,11 @@ const AdminOrders = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
+  
+  // Payment method modal
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+  const [paymentOrderId, setPaymentOrderId] = useState(null);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -76,15 +92,31 @@ const AdminOrders = () => {
     }
   };
 
-  const handleMarkPaid = async (orderId) => {
+  const openPaymentModal = (orderId) => {
+    setPaymentOrderId(orderId);
+    setSelectedPaymentMethod(null);
+    setPaymentModalOpen(true);
+  };
+
+  const handleConfirmPayment = async () => {
+    if (!selectedPaymentMethod) {
+      toast.error('Selecione um método de pagamento');
+      return;
+    }
     try {
-      await ordersAPI.markPaid(orderId);
+      await ordersAPI.markPaid(paymentOrderId, selectedPaymentMethod);
       toast.success('Marcado como pago');
+      setPaymentModalOpen(false);
       loadOrders();
     } catch (err) {
       console.error('Error marking paid:', err);
       toast.error('Erro ao marcar como pago');
     }
+  };
+
+  const getPaymentMethodLabel = (method) => {
+    const found = paymentMethods.find(m => m.value === method);
+    return found ? found.label : method || '—';
   };
 
   const getStatusBadge = (status) => {
@@ -187,7 +219,7 @@ const AdminOrders = () => {
                       <p className="font-heading text-2xl font-bold">#{order.order_number}</p>
                     </div>
                     <div>
-                      <div className="flex items-center gap-2 mb-1">
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
                         <Badge variant="outline">Mesa {order.table_number}</Badge>
                         {getStatusBadge(order.status)}
                         <div className="flex items-center gap-1" title={`Impressão: ${order.print_status}`}>
@@ -195,7 +227,7 @@ const AdminOrders = () => {
                         </div>
                         {order.paid && (
                           <Badge variant="secondary" className="bg-green-100 text-green-800">
-                            Pago
+                            Pago {order.payment_method ? `(${getPaymentMethodLabel(order.payment_method)})` : ''}
                           </Badge>
                         )}
                       </div>
@@ -243,7 +275,7 @@ const AdminOrders = () => {
                       <Button 
                         variant="outline" 
                         size="sm"
-                        onClick={() => handleMarkPaid(order.id)}
+                        onClick={() => openPaymentModal(order.id)}
                       >
                         <CheckCircle className="h-4 w-4 mr-1" />
                         Pago
@@ -256,6 +288,46 @@ const AdminOrders = () => {
           ))}
         </div>
       )}
+
+      {/* Payment Method Modal */}
+      <Dialog open={paymentModalOpen} onOpenChange={setPaymentModalOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-xl">Método de Pagamento</DialogTitle>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3 py-4">
+            {paymentMethods.map((method) => {
+              const Icon = method.icon;
+              const isSelected = selectedPaymentMethod === method.value;
+              return (
+                <button
+                  key={method.value}
+                  onClick={() => setSelectedPaymentMethod(method.value)}
+                  className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
+                    isSelected
+                      ? 'border-primary bg-primary/5 shadow-sm'
+                      : 'border-border hover:border-primary/40 hover:bg-secondary/50'
+                  }`}
+                >
+                  <Icon className={`h-8 w-8 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                  <span className={`text-sm font-medium ${isSelected ? 'text-primary' : ''}`}>
+                    {method.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPaymentModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleConfirmPayment} disabled={!selectedPaymentMethod}>
+              <CheckCircle className="h-4 w-4 mr-2" />
+              Confirmar Pagamento
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Order Detail Modal */}
       <Dialog open={detailModalOpen} onOpenChange={setDetailModalOpen}>
@@ -322,6 +394,14 @@ const AdminOrders = () => {
                   <span className="text-lg">Total</span>
                   <span className="text-2xl font-bold">€ {selectedOrder.total.toFixed(2)}</span>
                 </div>
+
+                {/* Payment info */}
+                {selectedOrder.paid && (
+                  <div className="flex items-center gap-2 text-sm">
+                    <CheckCircle className="h-4 w-4 text-green-600" />
+                    <span>Pago — {getPaymentMethodLabel(selectedOrder.payment_method)}</span>
+                  </div>
+                )}
 
                 {/* Print Status */}
                 <div className="flex items-center gap-2 text-sm">

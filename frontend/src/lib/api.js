@@ -108,8 +108,8 @@ export const ordersAPI = {
     api.post('/orders', data),
   updateStatus: (id, status) => 
     api.put(`/orders/${id}/status`, { status }),
-  markPaid: (id) => 
-    api.put(`/orders/${id}/paid`),
+  markPaid: (id, paymentMethod = null) => 
+    api.put(`/orders/${id}/paid`, paymentMethod ? { payment_method: paymentMethod } : {}),
   reprint: (id) => 
     api.post(`/orders/${id}/reprint`)
 };
@@ -118,6 +118,16 @@ export const ordersAPI = {
 export const printJobsAPI = {
   list: (status = null) => 
     api.get('/print-jobs', { params: { status } })
+};
+
+// Reports API
+export const reportsAPI = {
+  getData: (date = null) =>
+    api.get('/admin/report-data', { params: date ? { date } : {} }),
+  sendEmail: (date = null) =>
+    api.post('/admin/send-daily-report', { date }),
+  getConfig: () =>
+    api.get('/admin/report-config')
 };
 
 // Settings API

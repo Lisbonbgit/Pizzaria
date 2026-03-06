@@ -487,18 +487,24 @@ const MenuPage = () => {
                 </div>
               )}
 
-              {/* Notes */}
-              <div className="mt-4">
-                <Label className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                  Observações
-                </Label>
-                <Textarea
-                  placeholder="Ex: Sem cebola, bem passada..."
-                  value={itemNotes}
-                  onChange={(e) => setItemNotes(e.target.value)}
-                  className="mt-2"
-                />
-              </div>
+              {/* Notes — hidden for Bebidas */}
+              {(() => {
+                const cat = categories.find(c => c.id === selectedProduct.category_id);
+                const isBebida = cat && cat.name.toLowerCase() === 'bebidas';
+                return !isBebida ? (
+                  <div className="mt-4">
+                    <Label className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                      Observações
+                    </Label>
+                    <Textarea
+                      placeholder="Ex: Sem cebola, bem passada..."
+                      value={itemNotes}
+                      onChange={(e) => setItemNotes(e.target.value)}
+                      className="mt-2"
+                    />
+                  </div>
+                ) : null;
+              })()}
 
               {/* Quantity & Add */}
               <div className="mt-6 flex items-center justify-between">

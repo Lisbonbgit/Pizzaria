@@ -745,17 +745,51 @@ async def upload_product_image(file: UploadFile = File(...), authorization: Opti
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Ficheiro deve ser uma imagem")
     
-    # Generate unique filename
-    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
-    filename = f"{uuid.uuid4()}.{ext}"
-    filepath = UPLOADS_DIR / filename
-    
-    # Save file
+    # Read file content
     content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
     
-    return {"url": f"/api/uploads/{filename}"}
+    # Limit: 5MB
+    if len(content) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Imagem demasiado grande (máx. 5MB)")
+    
+    # Store in MongoDB for persistence
+    image_id = str(uuid.uuid4())
+    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    
+    image_doc = {
+        "id": image_id,
+        "filename": f"{image_id}.{ext}",
+        "content_type": file.content_type,
+        "data": base64.b64encode(content).decode('utf-8'),
+        "size": len(content),
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.images.insert_one(image_doc)
+    
+    logger.info(f"Image uploaded and stored in DB: {image_id} ({len(content)} bytes)")
+    
+    return {"url": f"/api/images/{image_id}"}
+
+from starlette.responses import Response
+
+@api_router.get("/images/{image_id}")
+async def serve_image(image_id: str):
+    """Serve image from MongoDB storage"""
+    image = await db.images.find_one({"id": image_id}, {"_id": 0})
+    if not image:
+        raise HTTPException(status_code=404, detail="Imagem não encontrada")
+    
+    # Decode base64 data
+    image_data = base64.b64decode(image["data"])
+    content_type = image.get("content_type", "image/jpeg")
+    
+    return Response(
+        content=image_data,
+        media_type=content_type,
+        headers={
+            "Cache-Control": "public, max-age=31536000, immutable"
+        }
+    )
 
 # ==================== TABLE ROUTES ====================
 

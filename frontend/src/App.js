@@ -30,6 +30,20 @@ const ProtectedRoute = ({ children }) => {
   return children;
 };
 
+// Redirect component for legacy QR codes
+// Redirects /pedir?mesa=X to https://pedir.lenhaebrasa.com?mesa=X
+const PedirRedirect = () => {
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mesa = params.get('mesa');
+    const targetUrl = mesa
+      ? `https://pedir.lenhaebrasa.com?mesa=${mesa}`
+      : 'https://pedir.lenhaebrasa.com';
+    window.location.replace(targetUrl);
+  }, []);
+  return null;
+};
+
 function App() {
   return (
     <AuthProvider>
@@ -38,7 +52,7 @@ function App() {
           <Routes>
             {/* Customer Routes */}
             <Route path="/" element={<MenuPage />} />
-            <Route path="/pedir" element={<MenuPage />} />
+            <Route path="/pedir" element={<PedirRedirect />} />
             <Route path="/pedido/:orderId" element={<OrderConfirmation />} />
             
             {/* Admin Routes */}

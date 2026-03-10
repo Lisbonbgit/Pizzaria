@@ -182,6 +182,22 @@ class ESCPOSPrinter:
             for extra in item.get('extras', []):
                 data.extend(self._text(f"   + {extra.get('name', '')}\n"))
             
+            # Grupos de Complementos
+            for comp_group in item.get('selected_complements', []):
+                group_name = comp_group.get('group_name', '')
+                if group_name:
+                    data.extend(self.BOLD_ON)
+                    data.extend(self._text(f"   [{group_name}]\n"))
+                    data.extend(self.BOLD_OFF)
+                for comp_item in comp_group.get('items', []):
+                    data.extend(self._text(f"   + {comp_item.get('name', '')}\n"))
+            
+            # Preferência (bebidas)
+            if item.get('selected_preference'):
+                data.extend(self.BOLD_ON)
+                data.extend(self._text(f"   >> {item['selected_preference'].upper()} <<\n"))
+                data.extend(self.BOLD_OFF)
+            
             # Notas do item - EM DESTAQUE
             if item.get('notes'):
                 data.extend(self.BOLD_ON)
@@ -257,6 +273,19 @@ class ESCPOSPrinter:
             # Extras com preço
             for extra in item.get('extras', []):
                 data.extend(self._text(f"   + {extra.get('name', '')} (+{extra.get('price', 0):.2f})\n"))
+            
+            # Grupos de Complementos com preço
+            for comp_group in item.get('selected_complements', []):
+                for comp_item in comp_group.get('items', []):
+                    price = comp_item.get('price', 0)
+                    if price > 0:
+                        data.extend(self._text(f"   + {comp_item.get('name', '')} (+{price:.2f})\n"))
+                    else:
+                        data.extend(self._text(f"   + {comp_item.get('name', '')}\n"))
+            
+            # Preferência
+            if item.get('selected_preference'):
+                data.extend(self._text(f"   {item['selected_preference']}\n"))
             
             # Preço
             data.extend(self.RIGHT)

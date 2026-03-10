@@ -451,6 +451,16 @@ class PrintAgent:
             print_data = printer.format_test(printer_name, restaurant_name)
         elif order:
             logger.info(f"Processando pedido #{order.get('order_number')} para {printer_name} (tipo: {printer_type})")
+            # Log complement and preference data for debugging
+            for item in order.get('items', []):
+                comps = item.get('selected_complements', [])
+                pref = item.get('selected_preference')
+                if comps:
+                    logger.info(f"  Item '{item.get('product_name')}': {len(comps)} grupo(s) de complementos")
+                    for g in comps:
+                        logger.info(f"    [{g.get('group_name')}]: {[i.get('name') for i in g.get('items', [])]}")
+                if pref:
+                    logger.info(f"  Item '{item.get('product_name')}': preferencia = {pref}")
             print_data = printer.format_order(order, printer_name, printer_type)
         else:
             logger.warning(f"Job {job_id}: Sem dados para imprimir")

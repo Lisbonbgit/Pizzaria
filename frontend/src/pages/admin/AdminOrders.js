@@ -373,6 +373,24 @@ const AdminOrders = () => {
                             + {item.extras.map(e => e.name).join(', ')}
                           </p>
                         )}
+                        {item.selected_complements?.length > 0 && (
+                          <div className="mt-1 space-y-1">
+                            {item.selected_complements.map((group, gIdx) => (
+                              <div key={gIdx}>
+                                <span className="text-xs font-semibold text-muted-foreground uppercase">{group.group_name}:</span>
+                                <span className="text-sm text-muted-foreground ml-1">
+                                  {group.items.map(i => {
+                                    const price = i.price > 0 ? ` (+€${i.price.toFixed(2)})` : '';
+                                    return `${i.name}${price}`;
+                                  }).join(', ')}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {item.selected_preference && (
+                          <p className="text-sm text-primary font-medium mt-1">{item.selected_preference}</p>
+                        )}
                         {item.notes && (
                           <p className="text-sm italic text-muted-foreground">"{item.notes}"</p>
                         )}

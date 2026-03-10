@@ -106,6 +106,22 @@ class ExtraCreate(BaseModel):
     name: str
     price: float
 
+class ComplementItem(BaseModel):
+    name: str
+    price: float = 0.0
+
+class ComplementGroup(BaseModel):
+    name: str
+    min_selections: int = 0
+    max_selections: int = 4
+    items: List[ComplementItem] = []
+
+class PreferenceOptions(BaseModel):
+    enabled: bool = False
+    label: str = "Preferências"
+    required: bool = True
+    options: List[str] = []
+
 class ProductCreate(BaseModel):
     name: str
     description: str
@@ -114,6 +130,8 @@ class ProductCreate(BaseModel):
     image_url: Optional[str] = None
     variations: List[VariationCreate] = []
     extras: List[ExtraCreate] = []
+    complement_groups: List[ComplementGroup] = []
+    preference_options: Optional[PreferenceOptions] = None
     available: bool = True
     featured: bool = False
 
@@ -125,6 +143,8 @@ class ProductUpdate(BaseModel):
     image_url: Optional[str] = None
     variations: Optional[List[VariationCreate]] = None
     extras: Optional[List[ExtraCreate]] = None
+    complement_groups: Optional[List[ComplementGroup]] = None
+    preference_options: Optional[PreferenceOptions] = None
     available: Optional[bool] = None
     featured: Optional[bool] = None
 
@@ -137,6 +157,8 @@ class ProductResponse(BaseModel):
     image_url: Optional[str]
     variations: List[dict]
     extras: List[dict]
+    complement_groups: List[dict] = []
+    preference_options: Optional[dict] = None
     available: bool
     featured: bool
     created_at: str
@@ -165,6 +187,8 @@ class OrderItemCreate(BaseModel):
     quantity: int
     variation: Optional[dict] = None
     extras: List[dict] = []
+    selected_complements: List[dict] = []
+    selected_preference: Optional[str] = None
     notes: Optional[str] = None
     unit_price: float
     total_price: float
@@ -404,6 +428,18 @@ class ESCPOSFormatter:
             # Extras
             for extra in item.get('extras', []):
                 data.extend(self._text(f"   + {extra.get('name', '')}\n"))
+            
+            # Complements
+            for comp_group in item.get('selected_complements', []):
+                group_name = comp_group.get('group_name', '')
+                for comp_item in comp_group.get('items', []):
+                    data.extend(self._text(f"   + {comp_item.get('name', '')}\n"))
+            
+            # Preference
+            if item.get('selected_preference'):
+                data.extend(self.BOLD_ON)
+                data.extend(self._text(f"   >> {item['selected_preference'].upper()} <<\n"))
+                data.extend(self.BOLD_OFF)
             
             # Item notes - HIGHLIGHTED
             if item.get('notes'):
@@ -680,6 +716,8 @@ async def create_product(product: ProductCreate, authorization: Optional[str] = 
         "image_url": product.image_url,
         "variations": [v.model_dump() for v in product.variations],
         "extras": [e.model_dump() for e in product.extras],
+        "complement_groups": [g.model_dump() for g in product.complement_groups],
+        "preference_options": product.preference_options.model_dump() if product.preference_options else None,
         "available": product.available,
         "featured": product.featured,
         "created_at": datetime.now(timezone.utc).isoformat()
@@ -716,6 +754,10 @@ async def update_product(product_id: str, update: ProductUpdate, authorization: 
                 update_data[k] = [var for var in v]
             elif k == "extras":
                 update_data[k] = [ext for ext in v]
+            elif k == "complement_groups":
+                update_data[k] = [g for g in v]
+            elif k == "preference_options":
+                update_data[k] = v
             else:
                 update_data[k] = v
     

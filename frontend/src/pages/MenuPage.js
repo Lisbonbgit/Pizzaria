@@ -53,6 +53,8 @@ const MenuPage = () => {
   const [productQuantity, setProductQuantity] = useState(1);
   const [selectedVariation, setSelectedVariation] = useState(null);
   const [selectedExtras, setSelectedExtras] = useState([]);
+  const [selectedComplements, setSelectedComplements] = useState({});
+  const [selectedPreference, setSelectedPreference] = useState(null);
   const [itemNotes, setItemNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -200,6 +202,8 @@ const MenuPage = () => {
     setProductQuantity(1);
     setSelectedVariation(product.variations?.length > 0 ? product.variations[0] : null);
     setSelectedExtras([]);
+    setSelectedComplements({});
+    setSelectedPreference(null);
     setItemNotes('');
     setProductModalOpen(true);
   };
@@ -207,12 +211,39 @@ const MenuPage = () => {
   const handleAddToCart = () => {
     if (!selectedProduct) return;
     
+    // Validate complement groups
+    const groups = selectedProduct.complement_groups || [];
+    for (const group of groups) {
+      const selected = selectedComplements[group.name] || [];
+      if (selected.length < group.min_selections) {
+        toast.error(`Selecione pelo menos ${group.min_selections} opção em "${group.name}"`);
+        return;
+      }
+    }
+    
+    // Validate preference
+    const prefs = selectedProduct.preference_options;
+    if (prefs?.enabled && prefs?.required && !selectedPreference) {
+      toast.error(`Selecione uma opção em "${prefs.label || 'Preferências'}"`);
+      return;
+    }
+    
+    // Build complements array
+    const complementsForCart = groups
+      .filter(g => (selectedComplements[g.name] || []).length > 0)
+      .map(g => ({
+        group_name: g.name,
+        items: selectedComplements[g.name] || []
+      }));
+    
     addItem(
       selectedProduct,
       productQuantity,
       selectedVariation,
       selectedExtras,
-      itemNotes
+      itemNotes,
+      complementsForCart,
+      selectedPreference
     );
     
     toast.success('Adicionado ao carrinho');
@@ -223,6 +254,10 @@ const MenuPage = () => {
     if (!selectedProduct) return 0;
     let price = selectedVariation?.price || selectedProduct.base_price;
     price += selectedExtras.reduce((sum, e) => sum + e.price, 0);
+    // Add complement prices
+    Object.values(selectedComplements).forEach(items => {
+      items.forEach(item => { price += item.price || 0; });
+    });
     return price * productQuantity;
   };
 
@@ -248,6 +283,8 @@ const MenuPage = () => {
           quantity: item.quantity,
           variation: item.variation,
           extras: item.extras,
+          selected_complements: item.selected_complements || [],
+          selected_preference: item.selected_preference || null,
           notes: item.notes,
           unit_price: item.unit_price,
           total_price: item.total_price
@@ -487,6 +524,87 @@ const MenuPage = () => {
                 </div>
               )}
 
+              {/* Complement Groups */}
+              {(selectedProduct.complement_groups || []).map((group) => {
+                const selected = selectedComplements[group.name] || [];
+                const atMax = selected.length >= group.max_selections;
+                return (
+                  <div key={group.name} className="mt-4">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                        {group.name}
+                      </Label>
+                      <span className="text-xs text-muted-foreground">
+                        {group.min_selections > 0 ? `Mín: ${group.min_selections}` : 'Opcional'} • Máx: {group.max_selections}
+                        {selected.length > 0 && ` (${selected.length} selecionado${selected.length > 1 ? 's' : ''})`}
+                      </span>
+                    </div>
+                    <div className="mt-2 grid gap-2">
+                      {group.items.map((compItem) => {
+                        const isSelected = selected.some(s => s.name === compItem.name);
+                        return (
+                          <div
+                            key={compItem.name}
+                            className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-colors ${
+                              isSelected ? 'border-primary bg-primary/5' : 'border-border hover:bg-secondary/50'
+                            } ${!isSelected && atMax ? 'opacity-50 cursor-not-allowed' : ''}`}
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedComplements(prev => ({
+                                  ...prev,
+                                  [group.name]: prev[group.name].filter(s => s.name !== compItem.name)
+                                }));
+                              } else if (!atMax) {
+                                setSelectedComplements(prev => ({
+                                  ...prev,
+                                  [group.name]: [...(prev[group.name] || []), compItem]
+                                }));
+                              }
+                            }}
+                          >
+                            <div className="flex items-center gap-3">
+                              <Checkbox checked={isSelected} />
+                              <span>{compItem.name}</span>
+                            </div>
+                            {compItem.price > 0 && (
+                              <span className="font-semibold">+ € {compItem.price.toFixed(2)}</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Preference Options */}
+              {selectedProduct.preference_options?.enabled && (
+                <div className="mt-4">
+                  <Label className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                    {selectedProduct.preference_options.label || 'Preferências'}
+                    {selectedProduct.preference_options.required && (
+                      <span className="text-destructive ml-1">*</span>
+                    )}
+                  </Label>
+                  <RadioGroup
+                    value={selectedPreference || ''}
+                    onValueChange={(value) => setSelectedPreference(value)}
+                    className="mt-2 grid gap-2"
+                  >
+                    {(selectedProduct.preference_options.options || []).map((opt) => (
+                      <div
+                        key={opt}
+                        className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-secondary/50 cursor-pointer"
+                        onClick={() => setSelectedPreference(opt)}
+                      >
+                        <RadioGroupItem value={opt} id={`pref-${opt}`} />
+                        <Label htmlFor={`pref-${opt}`} className="cursor-pointer flex-1">{opt}</Label>
+                      </div>
+                    ))}
+                  </RadioGroup>
+                </div>
+              )}
+
               {/* Notes — hidden for Bebidas */}
               {(() => {
                 const cat = categories.find(c => c.id === selectedProduct.category_id);
@@ -590,6 +708,16 @@ const MenuPage = () => {
                           <p className="text-xs text-muted-foreground">
                             + {item.extras.map(e => e.name).join(', ')}
                           </p>
+                        )}
+                        {item.selected_complements?.length > 0 && (
+                          <div className="text-xs text-muted-foreground">
+                            {item.selected_complements.map((group, gIdx) => (
+                              <p key={gIdx}>+ {group.items.map(i => i.name).join(', ')}</p>
+                            ))}
+                          </div>
+                        )}
+                        {item.selected_preference && (
+                          <p className="text-xs text-primary font-medium">{item.selected_preference}</p>
                         )}
                         {item.notes && (
                           <p className="text-xs text-muted-foreground italic">"{item.notes}"</p>

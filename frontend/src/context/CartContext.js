@@ -52,13 +52,21 @@ export const CartProvider = ({ children }) => {
     }
   }, [tableNumber, tableId]);
 
-  const addItem = (product, quantity, variation, extras, notes) => {
-    const itemId = `${product.id}-${variation?.name || 'base'}-${extras.map(e => e.name).join('-')}`;
+  const addItem = (product, quantity, variation, extras, notes, selectedComplements = [], selectedPreference = null) => {
+    const compKey = selectedComplements.map(g => g.items.map(i => i.name).join(',')).join('|');
+    const prefKey = selectedPreference || '';
+    const itemId = `${product.id}-${variation?.name || 'base'}-${extras.map(e => e.name).join('-')}-${compKey}-${prefKey}`;
     
     // Calculate prices
     let unitPrice = variation?.price || product.base_price;
     const extrasTotal = extras.reduce((sum, e) => sum + e.price, 0);
     unitPrice += extrasTotal;
+    
+    // Add complement prices
+    const complementsTotal = selectedComplements.reduce((sum, group) => 
+      sum + group.items.reduce((gs, item) => gs + (item.price || 0), 0), 0);
+    unitPrice += complementsTotal;
+    
     const totalPrice = unitPrice * quantity;
 
     const newItem = {
@@ -69,6 +77,8 @@ export const CartProvider = ({ children }) => {
       quantity,
       variation,
       extras,
+      selected_complements: selectedComplements,
+      selected_preference: selectedPreference,
       notes,
       unit_price: unitPrice,
       total_price: totalPrice

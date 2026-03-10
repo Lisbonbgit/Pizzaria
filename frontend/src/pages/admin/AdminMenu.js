@@ -51,6 +51,8 @@ const AdminMenu = () => {
     image_url: '',
     variations: [],
     extras: [],
+    complement_groups: [],
+    preference_options: null,
     available: true,
     featured: false
   });
@@ -147,6 +149,8 @@ const AdminMenu = () => {
         image_url: product.image_url || '',
         variations: product.variations || [],
         extras: product.extras || [],
+        complement_groups: product.complement_groups || [],
+        preference_options: product.preference_options || null,
         available: product.available,
         featured: product.featured
       });
@@ -160,6 +164,8 @@ const AdminMenu = () => {
         image_url: '',
         variations: [],
         extras: [],
+        complement_groups: [],
+        preference_options: null,
         available: true,
         featured: false
       });
@@ -678,6 +684,177 @@ const AdminMenu = () => {
                   <Plus className="h-4 w-4" />
                 </Button>
               </div>
+            </div>
+
+            {/* Complement Groups */}
+            <div className="space-y-3 border-t pt-4">
+              <div className="flex items-center justify-between">
+                <Label className="text-base font-semibold">Grupos de Complementos</Label>
+                <Button variant="outline" size="sm" onClick={() => {
+                  setProductForm(prev => ({
+                    ...prev,
+                    complement_groups: [...prev.complement_groups, { name: '', min_selections: 0, max_selections: 4, items: [] }]
+                  }));
+                }}>
+                  <Plus className="h-4 w-4 mr-1" /> Novo Grupo
+                </Button>
+              </div>
+              {productForm.complement_groups.map((group, gIdx) => (
+                <div key={gIdx} className="border rounded-lg p-4 space-y-3 bg-secondary/30">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      placeholder="Nome do grupo (ex: Molhos)"
+                      value={group.name}
+                      onChange={(e) => {
+                        const updated = [...productForm.complement_groups];
+                        updated[gIdx] = { ...updated[gIdx], name: e.target.value };
+                        setProductForm(prev => ({ ...prev, complement_groups: updated }));
+                      }}
+                      className="flex-1"
+                    />
+                    <Button variant="ghost" size="sm" onClick={() => {
+                      setProductForm(prev => ({
+                        ...prev,
+                        complement_groups: prev.complement_groups.filter((_, i) => i !== gIdx)
+                      }));
+                    }}>
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Mínimo</Label>
+                      <Input type="number" min="0" value={group.min_selections}
+                        onChange={(e) => {
+                          const updated = [...productForm.complement_groups];
+                          updated[gIdx] = { ...updated[gIdx], min_selections: parseInt(e.target.value) || 0 };
+                          setProductForm(prev => ({ ...prev, complement_groups: updated }));
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Máximo</Label>
+                      <Input type="number" min="1" value={group.max_selections}
+                        onChange={(e) => {
+                          const updated = [...productForm.complement_groups];
+                          updated[gIdx] = { ...updated[gIdx], max_selections: parseInt(e.target.value) || 1 };
+                          setProductForm(prev => ({ ...prev, complement_groups: updated }));
+                        }}
+                      />
+                    </div>
+                  </div>
+                  {/* Group Items */}
+                  <div className="space-y-2">
+                    {group.items.map((item, iIdx) => (
+                      <div key={iIdx} className="flex items-center gap-2 p-2 bg-background rounded">
+                        <span className="flex-1 text-sm">{item.name}</span>
+                        {item.price > 0 && <span className="text-sm font-semibold">+ € {item.price.toFixed(2)}</span>}
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => {
+                          const updated = [...productForm.complement_groups];
+                          updated[gIdx] = { ...updated[gIdx], items: updated[gIdx].items.filter((_, i) => i !== iIdx) };
+                          setProductForm(prev => ({ ...prev, complement_groups: updated }));
+                        }}>
+                          <Trash2 className="h-3 w-3 text-destructive" />
+                        </Button>
+                      </div>
+                    ))}
+                    <div className="flex gap-2">
+                      <Input placeholder="Nome do complemento" id={`comp-name-${gIdx}`} className="flex-1" />
+                      <Input type="number" step="0.01" placeholder="Preço" id={`comp-price-${gIdx}`} className="w-24" />
+                      <Button variant="outline" size="sm" onClick={() => {
+                        const nameEl = document.getElementById(`comp-name-${gIdx}`);
+                        const priceEl = document.getElementById(`comp-price-${gIdx}`);
+                        const name = nameEl?.value?.trim();
+                        const price = parseFloat(priceEl?.value) || 0;
+                        if (!name) { toast.error('Nome obrigatório'); return; }
+                        const updated = [...productForm.complement_groups];
+                        updated[gIdx] = { ...updated[gIdx], items: [...updated[gIdx].items, { name, price }] };
+                        setProductForm(prev => ({ ...prev, complement_groups: updated }));
+                        if (nameEl) nameEl.value = '';
+                        if (priceEl) priceEl.value = '';
+                      }}>
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Preference Options (for drinks) */}
+            <div className="space-y-3 border-t pt-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="pref-enabled"
+                  checked={!!productForm.preference_options?.enabled}
+                  onCheckedChange={(checked) => {
+                    setProductForm(prev => ({
+                      ...prev,
+                      preference_options: checked
+                        ? { enabled: true, label: 'Preferências', required: true, options: prev.preference_options?.options || [] }
+                        : null
+                    }));
+                  }}
+                />
+                <Label htmlFor="pref-enabled" className="text-base font-semibold">Opções de Preferência</Label>
+              </div>
+              {productForm.preference_options?.enabled && (
+                <div className="border rounded-lg p-4 space-y-3 bg-secondary/30">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Título</Label>
+                      <Input value={productForm.preference_options.label || ''}
+                        onChange={(e) => setProductForm(prev => ({
+                          ...prev, preference_options: { ...prev.preference_options, label: e.target.value }
+                        }))}
+                      />
+                    </div>
+                    <div className="flex items-end gap-2 pb-1">
+                      <Switch
+                        checked={productForm.preference_options.required}
+                        onCheckedChange={(checked) => setProductForm(prev => ({
+                          ...prev, preference_options: { ...prev.preference_options, required: checked }
+                        }))}
+                      />
+                      <Label className="text-xs">Obrigatório</Label>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {(productForm.preference_options.options || []).map((opt, oIdx) => (
+                      <div key={oIdx} className="flex items-center gap-2 p-2 bg-background rounded">
+                        <span className="flex-1 text-sm">{opt}</span>
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => {
+                          setProductForm(prev => ({
+                            ...prev, preference_options: {
+                              ...prev.preference_options,
+                              options: prev.preference_options.options.filter((_, i) => i !== oIdx)
+                            }
+                          }));
+                        }}>
+                          <Trash2 className="h-3 w-3 text-destructive" />
+                        </Button>
+                      </div>
+                    ))}
+                    <div className="flex gap-2">
+                      <Input placeholder="Ex: Com gelo" id="pref-new-option" className="flex-1" />
+                      <Button variant="outline" size="sm" onClick={() => {
+                        const el = document.getElementById('pref-new-option');
+                        const val = el?.value?.trim();
+                        if (!val) return;
+                        setProductForm(prev => ({
+                          ...prev, preference_options: {
+                            ...prev.preference_options,
+                            options: [...(prev.preference_options.options || []), val]
+                          }
+                        }));
+                        if (el) el.value = '';
+                      }}>
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
           <DialogFooter>

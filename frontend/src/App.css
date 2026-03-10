@@ -97,3 +97,22 @@
     --normal-border: hsl(var(--border));
     --normal-text: hsl(var(--foreground));
 }
+
+
+/* Style the dialog close button to be more visible */
+[role="dialog"] > button[class*="right-4"][class*="top-4"] {
+    width: 2.5rem !important;
+    height: 2.5rem !important;
+    border-radius: 9999px !important;
+    background-color: rgba(0, 0, 0, 0.6) !important;
+    color: white !important;
+    opacity: 1 !important;
+    z-index: 50 !important;
+}
+[role="dialog"] > button[class*="right-4"][class*="top-4"]:hover {
+    background-color: rgba(0, 0, 0, 0.8) !important;
+}
+[role="dialog"] > button[class*="right-4"][class*="top-4"] svg {
+    width: 1.25rem !important;
+    height: 1.25rem !important;
+}

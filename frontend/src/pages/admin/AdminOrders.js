@@ -19,9 +19,10 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
-import { ordersAPI } from '@/lib/api';
+import { ordersAPI, printersAPI } from '@/lib/api';
 
 const statusOptions = [
   { value: 'received', label: 'Recebido' },
@@ -50,6 +51,13 @@ const AdminOrders = () => {
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [paymentOrderId, setPaymentOrderId] = useState(null);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null);
+
+  // Reprint modal
+  const [reprintModalOpen, setReprintModalOpen] = useState(false);
+  const [reprintOrderId, setReprintOrderId] = useState(null);
+  const [printersList, setPrintersList] = useState([]);
+  const [selectedPrinters, setSelectedPrinters] = useState([]);
+  const [reprintLoading, setReprintLoading] = useState(false);
 
   const loadOrders = useCallback(async () => {
     try {
@@ -82,13 +90,42 @@ const AdminOrders = () => {
     }
   };
 
-  const handleReprint = async (orderId) => {
+  const openReprintModal = async (orderId) => {
+    setReprintOrderId(orderId);
+    setSelectedPrinters([]);
+    setReprintModalOpen(true);
     try {
-      await ordersAPI.reprint(orderId);
-      toast.success('Impressão agendada');
+      const res = await printersAPI.list();
+      setPrintersList(res.data);
+    } catch {
+      toast.error('Erro ao carregar impressoras');
+    }
+  };
+
+  const togglePrinterSelection = (printerId) => {
+    setSelectedPrinters(prev => {
+      if (prev.includes(printerId)) {
+        return prev.filter(id => id !== printerId);
+      }
+      return [...prev, printerId];
+    });
+  };
+
+  const handleConfirmReprint = async () => {
+    if (selectedPrinters.length === 0) {
+      toast.error('Selecione pelo menos uma impressora');
+      return;
+    }
+    setReprintLoading(true);
+    try {
+      await ordersAPI.reprint(reprintOrderId, selectedPrinters);
+      toast.success(`Impressão agendada para ${selectedPrinters.length} impressora(s)`);
+      setReprintModalOpen(false);
     } catch (err) {
       console.error('Error reprinting:', err);
       toast.error('Erro ao reimprimir');
+    } finally {
+      setReprintLoading(false);
     }
   };
 
@@ -266,7 +303,7 @@ const AdminOrders = () => {
                     <Button 
                       variant="outline" 
                       size="sm"
-                      onClick={() => handleReprint(order.id)}
+                      onClick={() => openReprintModal(order.id)}
                     >
                       <Printer className="h-4 w-4 mr-1" />
                       Reimprimir
@@ -434,6 +471,64 @@ const AdminOrders = () => {
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Reprint Modal */}
+      <Dialog open={reprintModalOpen} onOpenChange={setReprintModalOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-xl flex items-center gap-2">
+              <Printer className="h-5 w-5" />
+              Reimprimir Pedido
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">Selecione as impressoras para reimpressão:</p>
+          <div className="space-y-3 py-4">
+            {printersList.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">Nenhuma impressora configurada</p>
+            ) : (
+              printersList.map((printer) => {
+                const isSelected = selectedPrinters.includes(printer.id);
+                return (
+                  <div
+                    key={printer.id}
+                    onClick={() => togglePrinterSelection(printer.id)}
+                    className={`flex items-center gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                      isSelected
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:border-primary/40 hover:bg-secondary/50'
+                    }`}
+                  >
+                    <Checkbox checked={isSelected} />
+                    <div className="flex-1">
+                      <p className={`font-medium ${isSelected ? 'text-primary' : ''}`}>{printer.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {printer.ip}:{printer.port} • {printer.printer_type === 'cashier' ? 'Caixa' : 'Cozinha'}
+                      </p>
+                    </div>
+                    <Printer className={`h-5 w-5 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReprintModalOpen(false)}>
+              Cancelar
+            </Button>
+            <Button 
+              onClick={handleConfirmReprint} 
+              disabled={selectedPrinters.length === 0 || reprintLoading}
+            >
+              {reprintLoading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Printer className="h-4 w-4 mr-2" />
+              )}
+              Reimprimir ({selectedPrinters.length})
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </AdminLayout>

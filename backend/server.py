@@ -1091,35 +1091,48 @@ async def mark_order_paid(order_id: str, payment: Optional[OrderPaymentUpdate] =
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     return OrderResponse(**order)
 
+class ReprintRequest(BaseModel):
+    printer_ids: List[str] = []
+
 @api_router.post("/orders/{order_id}/reprint")
-async def reprint_order(order_id: str, printer_id: Optional[str] = None, authorization: Optional[str] = Header(None)):
-    """Reprint order to specific printer or all active printers"""
+async def reprint_order(order_id: str, request: Optional[ReprintRequest] = None, authorization: Optional[str] = Header(None)):
+    """Reprint order to specific printers or all active printers"""
     await get_current_user(authorization)
     
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
     
-    if printer_id:
-        # Reprint to specific printer
-        printer = await db.printers.find_one({"id": printer_id}, {"_id": 0})
-        if not printer:
-            raise HTTPException(status_code=404, detail="Impressora não encontrada")
+    printer_ids = request.printer_ids if request and request.printer_ids else []
+    
+    if printer_ids:
+        # Reprint to selected printers only
+        job_ids = []
+        for pid in printer_ids:
+            printer = await db.printers.find_one({"id": pid}, {"_id": 0})
+            if not printer:
+                continue
+            
+            print_job_id = str(uuid.uuid4())
+            print_job = {
+                "id": print_job_id,
+                "order_id": order_id,
+                "printer_id": pid,
+                "printer_name": printer["name"],
+                "printer_type": printer.get("printer_type", "kitchen"),
+                "status": "pending",
+                "attempts": 0,
+                "error": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.print_jobs.insert_one(print_job)
+            job_ids.append(print_job_id)
         
-        print_job_id = str(uuid.uuid4())
-        print_job = {
-            "id": print_job_id,
-            "order_id": order_id,
-            "printer_id": printer_id,
-            "printer_name": printer["name"],
-            "status": "pending",
-            "attempts": 0,
-            "error": None,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.print_jobs.insert_one(print_job)
-        return {"message": f"Impressão agendada para {printer['name']}", "print_job_id": print_job_id}
+        if not job_ids:
+            raise HTTPException(status_code=400, detail="Nenhuma impressora válida selecionada")
+        
+        return {"message": f"Impressão agendada para {len(job_ids)} impressora(s)", "print_job_ids": job_ids}
     else:
         # Reprint to all active printers
         printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
@@ -1134,6 +1147,7 @@ async def reprint_order(order_id: str, printer_id: Optional[str] = None, authori
                 "order_id": order_id,
                 "printer_id": printer["id"],
                 "printer_name": printer["name"],
+                "printer_type": printer.get("printer_type", "kitchen"),
                 "status": "pending",
                 "attempts": 0,
                 "error": None,

@@ -112,8 +112,8 @@ export const ordersAPI = {
     api.put(`/orders/${id}/status`, { status }),
   markPaid: (id, paymentMethod = null) => 
     api.put(`/orders/${id}/paid`, paymentMethod ? { payment_method: paymentMethod } : {}),
-  reprint: (id) => 
-    api.post(`/orders/${id}/reprint`)
+  reprint: (id, printerIds = []) => 
+    api.post(`/orders/${id}/reprint`, { printer_ids: printerIds })
 };
 
 // Print Jobs API
@@ -146,6 +146,12 @@ export const settingsAPI = {
     api.get('/settings/restaurant/public'),
   updateRestaurant: (data) =>
     api.put('/settings/restaurant', data)
+};
+
+// Printers API
+export const printersAPI = {
+  list: () =>
+    api.get('/printers')
 };
 
 // Dashboard API

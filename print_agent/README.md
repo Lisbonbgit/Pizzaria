@@ -30,23 +30,35 @@
 
 ## Passo 3: Obter a API Key
 
-1. No Admin, vá em "Definições" > "Print Agent"
+1. No Admin, vá em "Impressoras" > "Print Agent"
 2. Copie a API Key apresentada
 3. Guarde num local seguro
 
-## Passo 4: Configurar o Print Agent
+## Passo 4: Instalar a dependência
 
-1. Abra o ficheiro `print_agent.py` num editor de texto
-2. Altere as configurações:
-   
-   ```python
-   BACKEND_URL = "https://seu-dominio.com"
-   API_KEY = "cole_sua_api_key_aqui"
+Abra o Prompt de Comando e execute:
+```
+pip install requests
+```
+
+## Passo 5: Configurar o Print Agent
+
+A configuração é feita no ficheiro **`config.env`** (não é preciso editar o `.py`).
+
+1. Abra `config.env` num editor de texto (Bloco de Notas serve)
+2. Preencha:
+
+   ```ini
+   BACKEND_URL=https://seu-dominio.com
+   API_KEY=cole_sua_api_key_aqui
    ```
 
 3. Guarde o ficheiro
 
-## Passo 5: Iniciar o Print Agent
+> As variáveis `POLL_INTERVAL`, `MAX_RETRIES` e `PRINTER_TIMEOUT` têm valores
+> por defeito e normalmente não precisam de ser alteradas.
+
+## Passo 6: Iniciar o Print Agent
 
 ### Opção A: Execução Manual
 1. Dê duplo clique em `iniciar_agent.bat`

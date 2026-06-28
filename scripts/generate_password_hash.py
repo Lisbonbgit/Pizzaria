@@ -45,8 +45,8 @@ def generate_hash():
     print()
     print("=" * 50)
     print()
-    print("Após alterar o .env, reinicie o backend:")
-    print("  sudo supervisorctl restart backend")
+    print("Após alterar o backend/.env, reinicie o backend:")
+    print("  docker compose restart backend")
     print()
 
 if __name__ == "__main__":

@@ -34,21 +34,44 @@ except ImportError:
     sys.exit(1)
 
 # ==================== CONFIGURAÇÃO ====================
+# A configuração é lida do ficheiro "config.env" (na mesma pasta deste script).
+# As variáveis de ambiente do sistema têm prioridade sobre o config.env.
 
-# URL do backend (altere para a URL do seu sistema)
-BACKEND_URL = "https://repo-migration-5.preview.emergentagent.com"
+
+def _load_config():
+    """Lê config.env (formato CHAVE=valor) e junta às variáveis de ambiente."""
+    cfg = {}
+    config_path = Path(__file__).parent / "config.env"
+    if config_path.exists():
+        for raw in config_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            cfg[key.strip()] = value.strip().strip('"').strip("'")
+    # Variáveis de ambiente do sistema sobrepõem-se ao ficheiro
+    cfg.update({k: v for k, v in os.environ.items() if k in {
+        "BACKEND_URL", "API_KEY", "POLL_INTERVAL", "MAX_RETRIES", "PRINTER_TIMEOUT"
+    }})
+    return cfg
+
+
+_cfg = _load_config()
+
+# URL do backend (definir em config.env)
+BACKEND_URL = _cfg.get("BACKEND_URL", "").rstrip("/")
 
 # API Key do Print Agent (obtenha no Admin > Impressoras > Print Agent)
-API_KEY = "SUA_API_KEY_AQUI"
+API_KEY = _cfg.get("API_KEY", "SUA_API_KEY_AQUI")
 
 # Intervalo de polling em segundos
-POLL_INTERVAL = 3
+POLL_INTERVAL = int(_cfg.get("POLL_INTERVAL", 3))
 
 # Número máximo de tentativas de impressão
-MAX_RETRIES = 3
+MAX_RETRIES = int(_cfg.get("MAX_RETRIES", 3))
 
 # Timeout de conexão com a impressora (segundos)
-PRINTER_TIMEOUT = 5
+PRINTER_TIMEOUT = int(_cfg.get("PRINTER_TIMEOUT", 5))
 
 # Diretório de logs
 LOG_DIR = Path(__file__).parent / "logs"
@@ -554,14 +577,21 @@ def main():
     """)
     
     # Verificar configuração
-    if API_KEY == "SUA_API_KEY_AQUI":
+    config_path = Path(__file__).parent / "config.env"
+    if not BACKEND_URL:
+        print("ERRO: BACKEND_URL não configurado!")
+        print(f"\nDefina BACKEND_URL no ficheiro: {config_path}")
+        print("Exemplo: BACKEND_URL=https://app.lenhaebrasa.com")
+        input("\nPressione Enter para sair...")
+        return
+
+    if not API_KEY or API_KEY == "SUA_API_KEY_AQUI":
         print("ERRO: API_KEY não configurada!")
         print("\nPara configurar:")
         print("1. Abra o Admin do sistema")
         print("2. Vá em Impressoras > Print Agent")
         print("3. Copie a API Key")
-        print("4. Cole no campo API_KEY neste ficheiro")
-        print(f"\nFicheiro: {__file__}")
+        print(f"4. Cole no campo API_KEY do ficheiro: {config_path}")
         input("\nPressione Enter para sair...")
         return
     

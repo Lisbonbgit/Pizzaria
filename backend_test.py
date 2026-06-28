@@ -6,11 +6,15 @@ Tests all CRUD operations, authentication, and business logic
 
 import requests
 import sys
+import os
 import json
 from datetime import datetime
 
+# URL base configurável por variável de ambiente (default: backend local).
+DEFAULT_BASE_URL = os.environ.get("BACKEND_URL", "http://localhost:8001")
+
 class PizzariaAPITester:
-    def __init__(self, base_url="https://repo-migration-5.preview.emergentagent.com"):
+    def __init__(self, base_url=DEFAULT_BASE_URL):
         self.base_url = base_url
         self.token = None
         self.tests_run = 0

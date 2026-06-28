@@ -44,11 +44,66 @@ PRINT_AGENT_API_KEY = os.environ.get('PRINT_AGENT_API_KEY', None)
 scheduler = AsyncIOScheduler(timezone='Europe/Lisbon')
 SCHEDULER_ENABLED = False  # Desativado por padrão, ativado após teste manual
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Ciclo de vida da app (substitui os antigos @app.on_event)."""
+    global SCHEDULER_ENABLED
+
+    # --- Avisos de configuração ---
+    if JWT_SECRET == 'pizzaria-secret-key-2024':
+        logger.warning(
+            "JWT_SECRET está a usar o valor por defeito! "
+            "Defina um JWT_SECRET forte no .env (ex.: openssl rand -hex 32)."
+        )
+    if not ADMIN_PASSWORD_HASH:
+        logger.warning(
+            "ADMIN_PASSWORD_HASH não configurado — o login de admin vai falhar. "
+            "Gere com: python scripts/generate_password_hash.py"
+        )
+
+    # --- Scheduler do relatório diário ---
+    # Protegido: uma falha/lentidão da BD no arranque não deve impedir a API de servir.
+    try:
+        config = await db.settings.find_one({"key": "scheduler_config"}, {"_id": 0})
+        if config and config.get("value", {}).get("enabled"):
+            if RESEND_API_KEY and REPORT_EMAIL:
+                SCHEDULER_ENABLED = True
+                scheduler.add_job(
+                    run_scheduled_report,
+                    CronTrigger(hour=23, minute=59, timezone='Europe/Lisbon'),
+                    id='daily_report',
+                    name='Daily Report Email',
+                    replace_existing=True
+                )
+                scheduler.start()
+                logger.info("Scheduler de relatórios diários iniciado automaticamente")
+            else:
+                logger.warning("Scheduler configurado mas RESEND_API_KEY ou REPORT_EMAIL não definidos")
+    except Exception as e:
+        logger.error(f"Não foi possível carregar a config do scheduler no arranque: {e}")
+
+    yield
+
+    # --- Encerramento ---
+    if scheduler.running:
+        scheduler.shutdown()
+    client.close()
+
+
 # Create the main app
-app = FastAPI(title="Pizzaria API")
+app = FastAPI(title="Pizzaria API", lifespan=lifespan)
 
 # Create router with /api prefix
 api_router = APIRouter(prefix="/api")
+
+
+@api_router.get("/health")
+async def health_check():
+    """Liveness check para o Docker/monitorização (não toca na base de dados)."""
+    return {"status": "ok"}
 
 # Mount static files for uploads under /api prefix for Kubernetes ingress routing
 app.mount("/api/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
@@ -2086,38 +2141,24 @@ async def run_scheduled_report():
 app.include_router(api_router)
 
 # CORS
+# Origens permitidas via CORS_ORIGINS (lista separada por vírgulas).
+# Com wildcard "*" não é possível usar credenciais (regra dos browsers).
+_cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()]
+_allow_credentials = _cors_origins != ['*']
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_credentials=_allow_credentials,
+    allow_origins=_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup_event():
-    """Carrega configuração do scheduler na inicialização"""
-    global SCHEDULER_ENABLED
-    
-    # Verificar se scheduler estava ativo
-    config = await db.settings.find_one({"key": "scheduler_config"}, {"_id": 0})
-    if config and config.get("value", {}).get("enabled"):
-        if RESEND_API_KEY and REPORT_EMAIL:
-            SCHEDULER_ENABLED = True
-            scheduler.add_job(
-                run_scheduled_report,
-                CronTrigger(hour=23, minute=59, timezone='Europe/Lisbon'),
-                id='daily_report',
-                name='Daily Report Email',
-                replace_existing=True
-            )
-            scheduler.start()
-            logger.info("Scheduler de relatórios diários iniciado automaticamente")
-        else:
-            logger.warning("Scheduler configurado mas RESEND_API_KEY ou REPORT_EMAIL não definidos")
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    if scheduler.running:
-        scheduler.shutdown()
-    client.close()
+# O arranque/encerramento é tratado pelo `lifespan` definido no topo do ficheiro.
+
+
+if __name__ == "__main__":
+    # Execução local: python server.py
+    import uvicorn
+    port = int(os.environ.get("PORT", 8001))
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)

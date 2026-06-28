@@ -1,0 +1,21 @@
+# Caddy edge — HTTPS automático (Let's Encrypt) + reverse proxy.
+# O domínio e o email vêm do .env (variáveis DOMAIN e ACME_EMAIL).
+
+{
+	# Email para o Let's Encrypt (avisos de expiração). Default se não definido.
+	email {$ACME_EMAIL:admin@lenhaebrasa.com}
+}
+
+{$DOMAIN} {
+	encode gzip
+
+	# Pedidos /api/* → backend FastAPI (mantém o prefixo /api).
+	handle /api/* {
+		reverse_proxy backend:8001
+	}
+
+	# Tudo o resto → SPA React servido pelo nginx do container "frontend".
+	handle {
+		reverse_proxy frontend:80
+	}
+}

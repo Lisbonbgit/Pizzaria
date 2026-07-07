@@ -8,9 +8,9 @@ WORKDIR /app
 ARG REACT_APP_BACKEND_URL=""
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 
-# Instalar dependências (sem lockfile no repo → yarn resolve no build)
-COPY package.json ./
-RUN yarn install --network-timeout 600000
+# Instalar dependências (lockfile committado → build reprodutível)
+COPY package.json yarn.lock ./
+RUN yarn install --frozen-lockfile --network-timeout 600000
 
 # Código e build de produção
 COPY . .

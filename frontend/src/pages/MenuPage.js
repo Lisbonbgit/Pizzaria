@@ -12,7 +12,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { useCart } from '@/context/CartContext';
-import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, seedAPI, settingsAPI } from '@/lib/api';
+import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, settingsAPI } from '@/lib/api';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -86,8 +86,6 @@ const MenuPage = () => {
     setLoading(true);
     setError(null);
     try {
-      await seedAPI.seed().catch(() => {});
-      
       const [catsRes, prodsRes, settingsRes] = await Promise.all([
         categoriesAPI.list(true),
         productsAPI.list(null, true),

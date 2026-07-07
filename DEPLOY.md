@@ -140,18 +140,28 @@ Se quiser trazer o menu/pedidos existentes do Emergent (em vez de começar do ze
 
 ```bash
 # 1. No ambiente antigo, obtenha a MONGO_URL do Emergent (backend/.env de lá).
-# 2. Exportar a base antiga:
-mongodump --uri="MONGO_URL_ANTIGA" --db=NOME_ANTIGO --archive=pizzaria.archive.gz --gzip
+# 2. Defina UMA vez o nome da base antiga (evita divergência entre dump e restore):
+OLD_DB=NOME_ANTIGO
 
-# 3. Importar para o Atlas:
-mongorestore --uri="MONGO_URL_ATLAS" \
-  --nsFrom="NOME_ANTIGO.*" --nsTo="pizzaria.*" \
+# 3. Exportar a base antiga:
+mongodump --uri="MONGO_URL_ANTIGA" --db="$OLD_DB" --archive=pizzaria.archive.gz --gzip
+
+# 4. Importar para o Atlas (--drop garante import limpo e idempotente):
+mongorestore --uri="MONGO_URL_ATLAS" --drop \
+  --nsFrom="$OLD_DB.*" --nsTo="pizzaria.*" \
   --archive=pizzaria.archive.gz --gzip
 ```
 
-> Não tem acesso à base antiga? Sem problema: faça login no admin e use o botão de
-> **seed**/criação de menu, ou crie tudo manualmente. As imagens são guardadas na
-> própria base de dados (coleção `images`), por isso ficam incluídas no dump.
+> **Confirme o resultado:** o `mongorestore` deve terminar com `X document(s) restored`
+> (X > 0). Se aparecer `0 document(s) restored`, o `OLD_DB` não corresponde ao nome
+> real da base antiga — descubra-o com
+> `mongosh "MONGO_URL_ANTIGA" --eval "db.adminCommand('listDatabases')"` e repita.
+> O `--drop` limpa as coleções de destino antes de importar, para poder correr o
+> comando mais que uma vez sem duplicar dados.
+
+> Não tem acesso à base antiga? Sem problema: um deploy novo começa com a base vazia —
+> faça login no Admin e crie o menu/mesas (o menu real da pizzaria). As imagens são
+> guardadas na própria base de dados (coleção `images`), por isso um dump normal inclui-as.
 
 ---
 

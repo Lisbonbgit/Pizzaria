@@ -34,7 +34,14 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'pizzaria-secret-key-2024')
+# Fail-closed: sem um JWT_SECRET forte a app NÃO arranca (senão qualquer pessoa que
+# conheça o default committado forjaria tokens de admin).
+JWT_SECRET = os.environ.get('JWT_SECRET', '')
+if not JWT_SECRET or JWT_SECRET == 'pizzaria-secret-key-2024':
+    raise RuntimeError(
+        "JWT_SECRET em falta ou a usar o valor por defeito. "
+        "Defina um segredo forte em backend/.env (ex.: openssl rand -hex 32)."
+    )
 JWT_ALGORITHM = "HS256"
 
 # Print Agent API Key (generate on first run or from env)
@@ -53,16 +60,30 @@ async def lifespan(app: FastAPI):
     global SCHEDULER_ENABLED
 
     # --- Avisos de configuração ---
-    if JWT_SECRET == 'pizzaria-secret-key-2024':
-        logger.warning(
-            "JWT_SECRET está a usar o valor por defeito! "
-            "Defina um JWT_SECRET forte no .env (ex.: openssl rand -hex 32)."
-        )
     if not ADMIN_PASSWORD_HASH:
         logger.warning(
             "ADMIN_PASSWORD_HASH não configurado — o login de admin vai falhar. "
             "Gere com: python scripts/generate_password_hash.py"
         )
+
+    # --- Chave do Print Agent ---
+    # Se PRINT_AGENT_API_KEY estiver no .env, provisiona-a (sem sobrepor uma já
+    # existente/gerada no Admin). Senão, a chave é gerida no painel de Admin.
+    if PRINT_AGENT_API_KEY:
+        try:
+            await db.settings.update_one(
+                {"key": "print_agent"},
+                {"$setOnInsert": {
+                    "key": "print_agent",
+                    "value": {
+                        "api_key": PRINT_AGENT_API_KEY,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                }},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.error(f"Não foi possível provisionar PRINT_AGENT_API_KEY: {e}")
 
     # --- Scheduler do relatório diário ---
     # Protegido: uma falha/lentidão da BD no arranque não deve impedir a API de servir.
@@ -1568,9 +1589,10 @@ async def get_dashboard_stats(authorization: Optional[str] = Header(None)):
 # ==================== SEED DATA ====================
 
 @api_router.post("/seed")
-async def seed_database():
-    """Seed database with sample data"""
-    
+async def seed_database(authorization: Optional[str] = Header(None)):
+    """Seed database with sample data (apenas admin autenticado)."""
+    await get_current_user(authorization)
+
     # Check if already seeded
     existing_cats = await db.categories.count_documents({})
     if existing_cats > 0:
@@ -1796,9 +1818,7 @@ async def seed_database():
         "data": {
             "categories": len(categories),
             "products": len(products),
-            "tables": len(tables),
-            "admin": {"email": "admin@pizzaria.pt", "password": "admin123"},
-            "print_agent_api_key": api_key
+            "tables": len(tables)
         }
     }
 
@@ -2142,8 +2162,18 @@ app.include_router(api_router)
 
 # CORS
 # Origens permitidas via CORS_ORIGINS (lista separada por vírgulas).
+# Sem CORS_ORIGINS definido NÃO usamos wildcard: em produção o operador deve
+# configurar a origem; em dev caímos para o frontend local.
+_raw_cors = os.environ.get('CORS_ORIGINS')
+if _raw_cors:
+    _cors_origins = [o.strip() for o in _raw_cors.split(',') if o.strip()]
+else:
+    logger.warning(
+        "CORS_ORIGINS não definido — a usar fallback de desenvolvimento "
+        "(http://localhost:3000). Defina CORS_ORIGINS em produção."
+    )
+    _cors_origins = ["http://localhost:3000"]
 # Com wildcard "*" não é possível usar credenciais (regra dos browsers).
-_cors_origins = [o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()]
 _allow_credentials = _cors_origins != ['*']
 app.add_middleware(
     CORSMiddleware,

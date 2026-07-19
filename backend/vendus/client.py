@@ -41,3 +41,41 @@ class VendusClient:
         if not resp.content:
             return None
         return resp.json()
+
+    # ---- Produtos / catálogo ----
+    def list_products(self, **filters) -> list:
+        return self._request("GET", "products/", params=filters) or []
+
+    def list_categories(self) -> list:
+        return self._request("GET", "products/categories/") or []
+
+    # ---- Salas / mesas ----
+    def list_rooms(self) -> list:
+        return self._request("GET", "rooms/") or []
+
+    def list_tables(self, room_id: int) -> list:
+        return self._request("GET", "tables/", params={"parent": room_id}) or []
+
+    # ---- Documentos (conta de mesa) ----
+    def create_table_order(self, *, room_id: int, table_id: int, occupation: int,
+                           items: list, external_reference: str) -> dict:
+        body = {
+            "type": "DC",
+            "rest_room": room_id,
+            "rest_table": table_id,
+            "occupation": occupation,
+            "items": items,
+            "external_reference": external_reference,
+        }
+        if self._cfg.register_id is not None:
+            body["register_id"] = self._cfg.register_id
+        return self._request("POST", "documents/", json=body)
+
+    def get_document(self, doc_id: int) -> dict:
+        return self._request("GET", f"documents/{doc_id}/", params={"view": "detailed"})
+
+    def list_open_table_docs(self, since: str) -> list:
+        return self._request(
+            "GET", "documents/",
+            params={"type": "DC", "view": "detailed", "since": since},
+        ) or []

@@ -49,3 +49,69 @@ def test_4xx_levanta_http_error():
 
     with pytest.raises(VendusHTTPError):
         _client(handler)._request("GET", "documents/")
+
+
+def test_create_table_order_monta_payload():
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"id": 999, "type": "DC"})
+
+    cfg = VendusConfig.load({"VENDUS_API_KEY": "k", "VENDUS_REGISTER_ID": "7", "VENDUS_MODE": "tests"})
+    client = VendusClient(cfg, transport=httpx.MockTransport(handler))
+    out = client.create_table_order(
+        room_id=1, table_id=2, occupation=3,
+        items=[{"reference": "P1", "title": "Pizza", "qty": 1, "gross_price": 9.5, "tax_id": "NOR"}],
+        external_reference="order-abc",
+    )
+    assert out["id"] == 999
+    b = seen["body"]
+    assert b["type"] == "DC" and b["rest_room"] == 1 and b["rest_table"] == 2
+    assert b["occupation"] == 3 and b["register_id"] == 7
+    assert b["external_reference"] == "order-abc"
+    assert b["items"][0]["reference"] == "P1"
+    assert b["mode"] == "tests"
+
+
+def test_list_tables_usa_parent():
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=[{"id": 2, "title": "Mesa 2"}])
+
+    client = VendusClient(CFG, transport=httpx.MockTransport(handler))
+    rows = client.list_tables(room_id=5)
+    assert rows[0]["id"] == 2
+    assert "parent=5" in seen["url"]
+
+
+def test_get_document_usa_view_detailed():
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"id": 10, "items": []})
+
+    client = VendusClient(CFG, transport=httpx.MockTransport(handler))
+    doc = client.get_document(10)
+    assert doc["id"] == 10
+    assert "documents/10/" in seen["url"]
+    assert "view=detailed" in seen["url"]
+
+
+def test_list_open_table_docs_filtra_dc_e_since():
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=[{"id": 1, "type": "DC"}])
+
+    client = VendusClient(CFG, transport=httpx.MockTransport(handler))
+    rows = client.list_open_table_docs(since="2026-07-19")
+    assert rows[0]["id"] == 1
+    assert "type=DC" in seen["url"]
+    assert "view=detailed" in seen["url"]
+    assert "since=2026-07-19" in seen["url"]

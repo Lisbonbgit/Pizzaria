@@ -6,7 +6,9 @@
 
 **Architecture:** Um pacote novo e isolado `backend/vendus/` com uma classe `VendusClient` sobre `httpx`, testável com `httpx.MockTransport` (sem Vendus vivo). Autenticação HTTP Basic (API key como username, password vazia). Consciente do rate-limit. Config **fail-closed** (sem `VENDUS_API_KEY` os métodos recusam, à imagem do `JWT_SECRET`). O spike é um script à parte que usa esta biblioteca contra a conta real em `mode:"tests"`.
 
-**Tech Stack:** Python 3.11+, FastAPI 0.110, Pydantic 2.x, `httpx` (novo), `pytest` (novo, dev), MongoDB (motor).
+**Tech Stack:** Python **3.9** (env local; o código é compatível via `from __future__ import annotations`), FastAPI 0.110, Pydantic 2.x, `httpx` (novo), `pytest` (novo, dev), MongoDB (motor).
+
+> **Nota de ambiente (verificada na execução):** localmente só existe o Python 3.9.6 do sistema, sem venv e sem as deps do backend (o backend corre em Docker). Os testes do `vendus/` são isolados (só precisam de `httpx`+`pytest`), pelo que se usa um **venv dedicado**. Além disso, como a pasta de testes `tests/vendus/` colidiria com o pacote `vendus/` no `sys.path`, é preciso `backend/tests/__init__.py` + `backend/pytest.ini` (`pythonpath = .`) para o `import vendus` resolver para o módulo real.
 
 ## Global Constraints
 
@@ -38,7 +40,8 @@ Este plano entrega **A**. No fim, o resultado do spike decide/afinar o Plano C.
 - **Criar:** `backend/vendus/config.py` — `VendusConfig` (carrega env, fail-closed).
 - **Criar:** `backend/vendus/errors.py` — exceções tipadas.
 - **Criar:** `backend/vendus/client.py` — `VendusClient` (transporte, auth, rate-limit, métodos de recurso).
-- **Criar:** `backend/tests/vendus/__init__.py` e `backend/tests/vendus/test_config.py`, `test_client.py`.
+- **Criar:** `backend/tests/__init__.py`, `backend/tests/vendus/__init__.py`, `backend/tests/vendus/test_config.py`, `test_client.py`.
+- **Criar:** `backend/pytest.ini` (`pythonpath = .`, `testpaths = tests`) — fixa o `sys.path` dos testes.
 - **Criar:** `backend/scripts/vendus_spike.py` — script do spike (descartável, mas fica versionado como evidência).
 - **Criar:** `docs/superpowers/specs/2026-07-19-vendus-spike-resultados.md` — resultados do spike (preenchido ao correr).
 - **Modificar:** `backend/requirements.txt` — adicionar `httpx` (runtime) e `pytest` (dev).

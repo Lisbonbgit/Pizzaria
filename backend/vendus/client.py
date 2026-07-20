@@ -79,3 +79,20 @@ class VendusClient:
             "GET", "documents/",
             params={"type": "DC", "view": "detailed", "since": since},
         ) or []
+
+    def list_payment_methods(self) -> list:
+        return self._request("GET", "documents/paymentmethods/") or []
+
+    def create_invoice(self, *, items: list, payments: list, doc_type: str = "FR",
+                       client: Optional[dict] = None,
+                       external_reference: Optional[str] = None) -> dict:
+        """Emite um documento fiscal (default FR = fatura-recibo) com os itens e
+        os pagamentos. `client` opcional para NIF/empresa."""
+        body: dict = {"type": doc_type, "items": items, "payments": payments}
+        if self._cfg.register_id is not None:
+            body["register_id"] = self._cfg.register_id
+        if client:
+            body["client"] = client
+        if external_reference:
+            body["external_reference"] = external_reference
+        return self._request("POST", "documents/", json=body)

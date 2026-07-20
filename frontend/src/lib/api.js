@@ -162,8 +162,18 @@ export const dashboardAPI = {
 
 // Seed API
 export const seedAPI = {
-  seed: () => 
+  seed: () =>
     api.post('/seed')
+};
+
+// Checkout / Fecho de mesa (Vendus)
+export const checkoutAPI = {
+  getBill: (tableNumber) =>
+    api.get(`/tables/${tableNumber}/bill`),
+  paymentMethods: () =>
+    api.get('/vendus/payment-methods'),
+  closeTable: (tableNumber, data) =>
+    api.post(`/tables/${tableNumber}/close`, data)
 };
 
 export default api;

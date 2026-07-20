@@ -9,7 +9,9 @@ const isDevServer = process.env.NODE_ENV !== "production";
 // Environment variable overrides
 const config = {
   enableHealthCheck: process.env.ENABLE_HEALTH_CHECK === "true",
-  enableVisualEdits: isDevServer, // Only enable during dev server
+  // Visual-edits é um plugin do Emergent que rebenta o build local; desativado por
+  // defeito. Reativa com ENABLE_VISUAL_EDITS=true se alguma vez for preciso.
+  enableVisualEdits: process.env.ENABLE_VISUAL_EDITS === "true" && isDevServer,
 };
 
 // Conditionally load visual edits modules only in dev mode

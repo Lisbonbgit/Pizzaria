@@ -20,6 +20,7 @@ import base64
 import secrets
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from vendus import VendusConfig, VendusClient, VendusError
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1166,6 +1167,119 @@ async def mark_order_paid(order_id: str, payment: Optional[OrderPaymentUpdate] =
     
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     return OrderResponse(**order)
+
+# ==================== VENDUS: FECHO DE MESA ====================
+
+VENDUS_DEFAULT_TAX_ID = os.environ.get("VENDUS_DEFAULT_TAX_ID", "NOR")
+
+
+def _vendus_client() -> VendusClient:
+    return VendusClient(VendusConfig.load(os.environ))
+
+
+async def _open_orders_for_table(table_number: int) -> list:
+    return await db.orders.find(
+        {"table_number": table_number, "paid": False, "status": {"$ne": "cancelled"}},
+        {"_id": 0},
+    ).sort("created_at", 1).to_list(500)
+
+
+class CloseTableRequest(BaseModel):
+    payment_method_id: int
+    nif: Optional[str] = None
+
+
+@api_router.get("/tables/{table_number}/bill")
+async def get_table_bill(table_number: int, authorization: Optional[str] = Header(None)):
+    """Conta em aberto da mesa (soma dos pedidos não pagos)."""
+    await get_current_user(authorization)
+    orders = await _open_orders_for_table(table_number)
+    lines = []
+    total = 0.0
+    for o in orders:
+        for it in o.get("items", []):
+            lines.append({
+                "product_name": it.get("product_name"),
+                "quantity": it.get("quantity", 1),
+                "unit_price": it.get("unit_price", 0),
+                "total_price": it.get("total_price", 0),
+            })
+        total += o.get("total", 0)
+    return {"table_number": table_number, "orders": len(orders),
+            "lines": lines, "total": round(total, 2)}
+
+
+@api_router.get("/vendus/payment-methods")
+async def vendus_payment_methods(authorization: Optional[str] = Header(None)):
+    """Métodos de pagamento do Vendus (para o ecrã de fecho)."""
+    await get_current_user(authorization)
+
+    def _fetch():
+        c = _vendus_client()
+        try:
+            return c.list_payment_methods()
+        finally:
+            c.close()
+    try:
+        methods = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Vendus indisponível: {e}")
+    return [{"id": m.get("id"), "title": m.get("title")} for m in methods]
+
+
+@api_router.post("/tables/{table_number}/close")
+async def close_table(table_number: int, req: CloseTableRequest,
+                      authorization: Optional[str] = Header(None)):
+    """Fecha a mesa: emite a fatura-recibo (FR) no Vendus com os itens da conta e
+    o pagamento escolhido, e marca os pedidos como pagos."""
+    await get_current_user(authorization)
+    orders = await _open_orders_for_table(table_number)
+    if not orders:
+        raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
+
+    vendus_items = []
+    total = 0.0
+    for o in orders:
+        for it in o.get("items", []):
+            qty = it.get("quantity", 1) or 1
+            unit = round(float(it.get("unit_price", 0) or 0), 2)
+            vendus_items.append({
+                "title": it.get("product_name", "Item"),
+                "qty": qty,
+                "gross_price": unit,
+                "tax_id": VENDUS_DEFAULT_TAX_ID,
+            })
+        total += o.get("total", 0)
+    total = round(total, 2)
+
+    payments = [{"id": req.payment_method_id, "amount": total}]
+    client = {"fiscal_id": req.nif} if req.nif else None
+    ext_ref = f"mesa-{table_number}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+
+    def _invoice():
+        c = _vendus_client()
+        try:
+            return c.create_invoice(items=vendus_items, payments=payments,
+                                    client=client, external_reference=ext_ref)
+        finally:
+            c.close()
+    try:
+        doc = await asyncio.to_thread(_invoice)
+    except VendusError as e:
+        raise HTTPException(status_code=502, detail=f"Erro ao faturar no Vendus: {e}")
+
+    order_ids = [o["id"] for o in orders]
+    await db.orders.update_many(
+        {"id": {"$in": order_ids}},
+        {"$set": {"paid": True, "status": "delivered",
+                  "payment_method": str(req.payment_method_id),
+                  "vendus_document_id": doc.get("id")}},
+    )
+    return {"table_number": table_number, "total": total,
+            "orders_closed": len(order_ids),
+            "vendus": {"id": doc.get("id"), "number": doc.get("number"),
+                       "atcud": doc.get("atcud")}}
+
 
 class ReprintRequest(BaseModel):
     printer_ids: List[str] = []

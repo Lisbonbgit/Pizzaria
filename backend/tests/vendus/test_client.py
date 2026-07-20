@@ -102,6 +102,30 @@ def test_get_document_usa_view_detailed():
     assert "view=detailed" in seen["url"]
 
 
+def test_create_invoice_monta_fr_com_pagamento_e_cliente():
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"id": 1, "number": "FR 1/1", "atcud": "X-1"})
+
+    cfg = VendusConfig.load({"VENDUS_API_KEY": "k", "VENDUS_REGISTER_ID": "9", "VENDUS_MODE": "tests"})
+    client = VendusClient(cfg, transport=httpx.MockTransport(handler))
+    out = client.create_invoice(
+        items=[{"title": "Pizza", "qty": 1, "gross_price": 9.5, "tax_id": "NOR"}],
+        payments=[{"id": 316430468, "amount": 9.5}],
+        client={"fiscal_id": "500000000"},
+        external_reference="mesa-1-close",
+    )
+    assert out["number"] == "FR 1/1"
+    b = seen["body"]
+    assert b["type"] == "FR" and b["register_id"] == 9
+    assert b["payments"][0]["id"] == 316430468
+    assert b["client"]["fiscal_id"] == "500000000"
+    assert b["external_reference"] == "mesa-1-close"
+    assert b["mode"] == "tests"
+
+
 def test_list_open_table_docs_filtra_dc_e_since():
     seen = {}
 

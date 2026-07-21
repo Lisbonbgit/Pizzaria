@@ -81,7 +81,9 @@ export const productsAPI = {
     });
   },
   importVendus: () =>
-    api.post('/menu/import-vendus')
+    api.post('/menu/import-vendus'),
+  reorder: (items) =>
+    api.put('/products/reorder', items)
 };
 
 // Tables API

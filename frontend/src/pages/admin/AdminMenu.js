@@ -39,7 +39,8 @@ const AdminMenu = () => {
   // Category Modal
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState(null);
-  const [categoryForm, setCategoryForm] = useState({ name: '', order: 0, active: true });
+  const [categoryForm, setCategoryForm] = useState({ name: '', order: 0, active: true, available_days: [] });
+  const [categoryFilter, setCategoryFilter] = useState('all');
   
   // Product Modal
   const [productModalOpen, setProductModalOpen] = useState(false);
@@ -104,10 +105,10 @@ const AdminMenu = () => {
   const openCategoryModal = (category = null) => {
     if (category) {
       setEditingCategory(category);
-      setCategoryForm({ name: category.name, order: category.order, active: category.active });
+      setCategoryForm({ name: category.name, order: category.order, active: category.active, available_days: category.available_days || [] });
     } else {
       setEditingCategory(null);
-      setCategoryForm({ name: '', order: categories.length, active: true });
+      setCategoryForm({ name: '', order: categories.length, active: true, available_days: [] });
     }
     setCategoryModalOpen(true);
   };
@@ -305,6 +306,22 @@ const AdminMenu = () => {
     return cat?.name || 'Sem categoria';
   };
 
+  // Reordenar produtos dentro da categoria filtrada (só disponível com filtro ativo)
+  const moveProduct = async (list, idx, dir) => {
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= list.length) return;
+    const reordered = [...list];
+    [reordered[idx], reordered[swapIdx]] = [reordered[swapIdx], reordered[idx]];
+    const items = reordered.map((p, i) => ({ id: p.id, order: i }));
+    try {
+      const res = await productsAPI.reorder(items);
+      setProducts(res.data);
+      toast.success('Ordem atualizada');
+    } catch {
+      toast.error('Erro ao reordenar');
+    }
+  };
+
   const getImageUrl = (url) => {
     if (!url) return null;
     if (url.startsWith('http')) return url;
@@ -321,6 +338,11 @@ const AdminMenu = () => {
     );
   }
 
+  const filteredProducts = categoryFilter === 'all'
+    ? products
+    : products.filter(p => p.category_id === categoryFilter);
+  const reorderEnabled = categoryFilter !== 'all';
+
   return (
     <AdminLayout title="Menu">
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -331,8 +353,21 @@ const AdminMenu = () => {
 
         {/* Products Tab */}
         <TabsContent value="products">
-          <div className="flex justify-between items-center mb-6">
-            <p className="text-muted-foreground">{products.length} produtos</p>
+          <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
+            <div className="flex items-center gap-3">
+              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                <SelectTrigger className="w-48" data-testid="product-category-filter">
+                  <SelectValue placeholder="Todas as categorias" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas as categorias</SelectItem>
+                  {[...categories].sort((a, b) => a.order - b.order).map((cat) => (
+                    <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-muted-foreground">{filteredProducts.length} produtos</p>
+            </div>
             <div className="flex items-center gap-2">
               <Button variant="outline" onClick={handleImportVendus} disabled={importing}>
                 {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
@@ -345,8 +380,14 @@ const AdminMenu = () => {
             </div>
           </div>
 
+          {reorderEnabled && (
+            <p className="text-xs text-muted-foreground mb-3">
+              Use as setas para definir a ordem em que os produtos aparecem no menu do cliente.
+            </p>
+          )}
+
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {products.map((product) => (
+            {filteredProducts.map((product, idx) => (
               <Card key={product.id} className="overflow-hidden" data-testid={`product-admin-${product.id}`}>
                 <div className="relative h-40">
                   <img
@@ -377,25 +418,37 @@ const AdminMenu = () => {
                   <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
                     {product.description}
                   </p>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 items-center">
                     <Button variant="outline" size="sm" onClick={() => openProductModal(product)}>
                       <Pencil className="h-4 w-4 mr-1" />
                       Editar
                     </Button>
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => toggleProductAvailability(product)}
                     >
                       {product.available ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </Button>
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       size="sm"
                       onClick={() => confirmDeleteProduct(product)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />
                     </Button>
+                    {reorderEnabled && (
+                      <div className="ml-auto flex items-center gap-0.5">
+                        <Button variant="ghost" size="icon" className="h-8 w-8" disabled={idx === 0}
+                          onClick={() => moveProduct(filteredProducts, idx, -1)} title="Mover para cima">
+                          <ChevronUp className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-8 w-8" disabled={idx === filteredProducts.length - 1}
+                          onClick={() => moveProduct(filteredProducts, idx, 1)} title="Mover para baixo">
+                          <ChevronDown className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -472,6 +525,15 @@ const AdminMenu = () => {
                     {!category.active && (
                       <Badge variant="secondary">Inativa</Badge>
                     )}
+                    {category.available_days?.length > 0 && (
+                      <Badge variant="outline" className="font-normal">
+                        {category.available_days
+                          .slice()
+                          .sort((a, b) => a - b)
+                          .map(d => ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'][d])
+                          .join(', ')}
+                      </Badge>
+                    )}
                   </div>
                   <div className="flex gap-2">
                     <Button variant="outline" size="sm" onClick={() => openCategoryModal(category)}>
@@ -518,6 +580,25 @@ const AdminMenu = () => {
                 value={categoryForm.order}
                 onChange={(e) => setCategoryForm(prev => ({ ...prev, order: parseInt(e.target.value) || 0 }))}
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Dias disponíveis</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {[['Seg', 0], ['Ter', 1], ['Qua', 2], ['Qui', 3], ['Sex', 4], ['Sáb', 5], ['Dom', 6]].map(([lbl, d]) => {
+                  const on = categoryForm.available_days.includes(d);
+                  return (
+                    <button key={d} type="button"
+                      onClick={() => setCategoryForm(prev => ({
+                        ...prev,
+                        available_days: on ? prev.available_days.filter(x => x !== d) : [...prev.available_days, d].sort((a, b) => a - b),
+                      }))}
+                      className={`h-9 w-12 rounded-lg border text-sm font-medium transition ${on ? 'bg-primary text-primary-foreground border-primary' : 'bg-background hover:bg-muted'}`}>
+                      {lbl}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-muted-foreground">Nenhum selecionado = aparece todos os dias.</p>
             </div>
             <div className="flex items-center gap-2">
               <Switch

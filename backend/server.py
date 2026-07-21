@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import bcrypt
 import jwt
 import socket
@@ -162,17 +163,20 @@ class CategoryCreate(BaseModel):
     name: str
     order: int = 0
     active: bool = True
+    available_days: List[int] = []  # 0=Seg..6=Dom; vazio = todos os dias
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
     order: Optional[int] = None
     active: Optional[bool] = None
+    available_days: Optional[List[int]] = None
 
 class CategoryResponse(BaseModel):
     id: str
     name: str
     order: int
     active: bool
+    available_days: List[int] = []
     created_at: str
 
 class VariationCreate(BaseModel):
@@ -238,6 +242,7 @@ class ProductResponse(BaseModel):
     preference_options: Optional[dict] = None
     available: bool
     featured: bool
+    order: int = 0
     created_at: str
 
 class TableCreate(BaseModel):
@@ -743,6 +748,7 @@ async def create_category(category: CategoryCreate, authorization: Optional[str]
         "name": category.name,
         "order": category.order,
         "active": category.active,
+        "available_days": category.available_days,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.categories.insert_one(cat_doc)
@@ -752,6 +758,11 @@ async def create_category(category: CategoryCreate, authorization: Optional[str]
 async def list_categories(active_only: bool = False):
     query = {"active": True} if active_only else {}
     categories = await db.categories.find(query, {"_id": 0}).sort("order", 1).to_list(100)
+    if active_only:
+        # Só as categorias disponíveis HOJE (dia da semana, Europe/Lisbon).
+        today = datetime.now(ZoneInfo("Europe/Lisbon")).weekday()  # 0=Seg..6=Dom
+        categories = [c for c in categories
+                      if not c.get("available_days") or today in c.get("available_days", [])]
     return [CategoryResponse(**cat) for cat in categories]
 
 class CategoryReorderItem(BaseModel):
@@ -816,6 +827,7 @@ async def create_product(product: ProductCreate, authorization: Optional[str] = 
         "preference_options": product.preference_options.model_dump() if product.preference_options else None,
         "available": product.available,
         "featured": product.featured,
+        "order": await db.products.count_documents({"category_id": product.category_id}),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.products.insert_one(prod_doc)
@@ -829,7 +841,16 @@ async def list_products(category_id: Optional[str] = None, available_only: bool 
     if available_only:
         query["available"] = True
     
-    products = await db.products.find(query, {"_id": 0}).to_list(500)
+    products = await db.products.find(query, {"_id": 0}).sort([("order", 1), ("created_at", 1)]).to_list(500)
+    return [ProductResponse(**prod) for prod in products]
+
+@api_router.put("/products/reorder")
+async def reorder_products(items: List[CategoryReorderItem], authorization: Optional[str] = Header(None)):
+    """Reordena produtos (dentro da categoria) de uma vez."""
+    await get_current_user(authorization)
+    for item in items:
+        await db.products.update_one({"id": item.id}, {"$set": {"order": item.order}})
+    products = await db.products.find({}, {"_id": 0}).sort([("order", 1), ("created_at", 1)]).to_list(500)
     return [ProductResponse(**prod) for prod in products]
 
 @api_router.get("/products/{product_id}", response_model=ProductResponse)

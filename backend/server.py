@@ -1535,6 +1535,28 @@ async def close_table(table_number: int, req: CloseTableRequest,
             "numbers": [d.get("number") for d in docs]}
 
 
+@api_router.post("/tables/{table_number}/free")
+async def free_table(table_number: int, authorization: Optional[str] = Header(None)):
+    """Liberta a mesa SEM faturar: cancela os pedidos em aberto e fecha a sessão.
+    Para quando alguém lê o QR mas não pede, ou o cliente sai sem consumir."""
+    await get_current_user(authorization)
+    orders = await _open_orders_for_table(table_number)
+    order_ids = [o["id"] for o in orders]
+    cancelled = 0
+    if order_ids:
+        r = await db.orders.update_many(
+            {"id": {"$in": order_ids}},
+            {"$set": {"status": "cancelled",
+                      "cancelled_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        cancelled = r.modified_count
+    await db.table_sessions.update_many(
+        {"table_number": table_number, "status": "open"},
+        {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"table_number": table_number, "freed": True, "cancelled_orders": cancelled}
+
+
 @api_router.post("/tables/{table_number}/print-consulta")
 async def print_table_consulta(table_number: int, authorization: Optional[str] = Header(None)):
     """Imprime uma CONTA PROVISÓRIA (consulta de mesa) para mostrar ao cliente.

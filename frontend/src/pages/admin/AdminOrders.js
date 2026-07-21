@@ -51,6 +51,8 @@ const AdminOrders = () => {
   const [printingConsulta, setPrintingConsulta] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [freeOpen, setFreeOpen] = useState(false);
+  const [freeing, setFreeing] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true);
@@ -206,6 +208,23 @@ const AdminOrders = () => {
       toast.error(e.response?.data?.detail || 'Erro ao faturar');
     } finally {
       setClosing(false);
+    }
+  };
+
+  const doFree = async () => {
+    setFreeOpen(false);
+    setFreeing(true);
+    try {
+      const r = await checkoutAPI.freeTable(openTableNum);
+      toast.success(r.data.cancelled_orders > 0
+        ? `Mesa libertada — ${r.data.cancelled_orders} pedido(s) cancelado(s)`
+        : 'Mesa libertada');
+      closeModal();
+      load(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao libertar a mesa');
+    } finally {
+      setFreeing(false);
     }
   };
 
@@ -465,6 +484,11 @@ const AdminOrders = () => {
                     <Printer className="h-4 w-4 mr-1" /> Cozinha
                   </Button>
                 </div>
+                <Button variant="ghost" className="w-full h-8 text-xs text-white/60 hover:bg-white/10 hover:text-white"
+                  onClick={() => setFreeOpen(true)} disabled={freeing}>
+                  {freeing ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <X className="h-3.5 w-3.5 mr-1" />}
+                  Libertar mesa (sem faturar)
+                </Button>
               </div>
             </div>
           </div>
@@ -489,6 +513,26 @@ const AdminOrders = () => {
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction onClick={doClose} className="bg-[#5a1a1a] hover:bg-[#4a1414]">
               Sim, emitir
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirmação — libertar mesa sem faturar */}
+      <AlertDialog open={freeOpen} onOpenChange={setFreeOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Libertar {tableTitle} sem faturar?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {billLines.length > 0
+                ? `Esta mesa tem ${billLines.length} item(ns) por faturar (${eur(fullTotal)}). Libertar vai CANCELAR esses pedidos SEM emitir fatura — usa só se ninguém consumiu (ex.: leram o QR por engano ou o cliente saiu).`
+                : 'A mesa não tem pedidos — vai apenas fechar a sessão e ficar livre.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={doFree} className="bg-destructive hover:bg-destructive/90">
+              Sim, libertar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

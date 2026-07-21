@@ -186,7 +186,9 @@ export const checkoutAPI = {
   closeTable: (tableNumber, data) =>
     api.post(`/tables/${tableNumber}/close`, data),
   printConsulta: (tableNumber) =>
-    api.post(`/tables/${tableNumber}/print-consulta`)
+    api.post(`/tables/${tableNumber}/print-consulta`),
+  freeTable: (tableNumber) =>
+    api.post(`/tables/${tableNumber}/free`)
 };
 
 export default api;

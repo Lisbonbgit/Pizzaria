@@ -492,8 +492,8 @@ class ESCPOSFormatter:
         # Header - NEW ORDER alert
         data.extend(self.CENTER)
         data.extend(self.BOLD_ON)
-        data.extend(self.DOUBLE_SIZE)
-        data.extend(self._text("*** NOVO PEDIDO ***\n"))
+        data.extend(self.DOUBLE_HEIGHT)
+        data.extend(self._text("NOVO PEDIDO\n"))
         data.extend(self.NORMAL_SIZE)
         data.extend(self.BOLD_OFF)
         
@@ -580,12 +580,13 @@ class ESCPOSFormatter:
         
         data.extend(self.CENTER)
         data.extend(self._text(f"[{printer_name}]\n"))
-        
+
         data.extend(self._line('='))
         data.extend(self._text("\n\n\n"))
-        
+        data.extend(self.CUT)
+
         return bytes(data)
-    
+
     def format_cashier(self, order: dict, printer_name: str = "CAIXA") -> bytes:
         """Format for CASHIER printer - focus on pricing"""
         data = bytearray()
@@ -600,7 +601,7 @@ class ESCPOSFormatter:
         data.extend(self._line('='))
         
         # Order number
-        data.extend(self.DOUBLE_SIZE)
+        data.extend(self.DOUBLE_HEIGHT)
         data.extend(self.BOLD_ON)
         data.extend(self._text(f"PEDIDO #{order['order_number']}\n"))
         data.extend(self.NORMAL_SIZE)
@@ -658,7 +659,7 @@ class ESCPOSFormatter:
         
         # Total - BIG
         data.extend(self.CENTER)
-        data.extend(self.DOUBLE_SIZE)
+        data.extend(self.DOUBLE_HEIGHT)
         data.extend(self.BOLD_ON)
         data.extend(self._text(f"TOTAL: EUR {order.get('total', 0):.2f}\n"))
         data.extend(self.NORMAL_SIZE)
@@ -671,10 +672,11 @@ class ESCPOSFormatter:
         dt = self._get_datetime(order)
         data.extend(self._text(f"Data: {dt.strftime('%d/%m/%Y %H:%M')}\n"))
         data.extend(self._text(f"ID: {order.get('id', '')[:8]}\n"))
-        
+
         data.extend(self._line('='))
         data.extend(self._text("\n\n\n"))
-        
+        data.extend(self.CUT)
+
         return bytes(data)
     
     def format_order(self, order: dict, printer_name: str = "", printer_type: str = "kitchen", restaurant_name: str = "Pizzaria") -> bytes:
@@ -702,6 +704,7 @@ class ESCPOSFormatter:
         data.extend(self._line('='))
         data.extend(self._text("\n\n\n"))
         data.extend(self.BOLD_OFF)
+        data.extend(self.CUT)
         return bytes(data)
 
 # ==================== AUTH ROUTES ====================
@@ -1131,22 +1134,24 @@ async def create_order(order: OrderCreate):
         # Log print jobs created
         logger.info(f"Order {order_id}: Created {len(active_printers)} print jobs for printers: {[p['name'] for p in active_printers]}")
     else:
-        # Create a single pending job without printer (to be processed when agent connects)
-        print_job_id = str(uuid.uuid4())
-        print_job = {
-            "id": print_job_id,
-            "order_id": order_id,
-            "printer_id": None,
-            "printer_name": "Default",
-            "printer_type": "kitchen",
-            "status": "pending",
-            "attempts": 0,
-            "error": None,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.print_jobs.insert_one(print_job)
-        logger.warning(f"Order {order_id}: No active printers configured, created default print job")
+        # Sem impressoras registadas: cria um job para a COZINHA e outro para a CAIXA.
+        # O app-ponte encaminha por printer_type para o IP configurado de cada uma,
+        # imprimindo automaticamente nos dois sítios a cada pedido.
+        for ptype in ("kitchen", "cashier"):
+            print_job = {
+                "id": str(uuid.uuid4()),
+                "order_id": order_id,
+                "printer_id": None,
+                "printer_name": "Cozinha" if ptype == "kitchen" else "Caixa",
+                "printer_type": ptype,
+                "status": "pending",
+                "attempts": 0,
+                "error": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.print_jobs.insert_one(print_job)
+        logger.info(f"Order {order_id}: sem impressoras registadas — criados jobs cozinha + caixa")
     
     return OrderResponse(**order_doc)
 

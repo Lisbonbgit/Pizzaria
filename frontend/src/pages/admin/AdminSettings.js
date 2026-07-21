@@ -20,6 +20,7 @@ const AdminSettings = () => {
     cover_image: ''
   });
   const [apkInfo, setApkInfo] = useState({ available: false, size_kb: 0 });
+  const [agentKey, setAgentKey] = useState('');
 
   useEffect(() => {
     loadSettings();
@@ -33,6 +34,10 @@ const AdminSettings = () => {
         const info = await api.get('/app/print-bridge/info');
         setApkInfo(info.data);
       } catch { /* APK opcional */ }
+      try {
+        const pa = await api.get('/settings/print-agent');
+        setAgentKey(pa.data?.api_key || '');
+      } catch { /* chave opcional */ }
     } catch (err) {
       console.error('Error loading settings:', err);
     } finally {
@@ -195,7 +200,7 @@ const AdminSettings = () => {
               impressoras e configura o URL, a chave e os IPs.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             {apkInfo.available ? (
               <a href={`${BACKEND_URL}/api/app/print-bridge.apk`} download>
                 <Button data-testid="download-apk">
@@ -205,6 +210,31 @@ const AdminSettings = () => {
               </a>
             ) : (
               <p className="text-sm text-muted-foreground">APK ainda não publicado.</p>
+            )}
+
+            {agentKey && (
+              <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
+                <p className="text-sm font-medium">Configuração a introduzir na app</p>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="w-16 shrink-0 text-muted-foreground">URL</span>
+                  <code className="flex-1 truncate">{BACKEND_URL}</code>
+                  <Button type="button" size="sm" variant="outline"
+                    onClick={() => { navigator.clipboard?.writeText(BACKEND_URL); toast.success('URL copiado'); }}>
+                    Copiar
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="w-16 shrink-0 text-muted-foreground">API Key</span>
+                  <code className="flex-1 truncate">{agentKey}</code>
+                  <Button type="button" size="sm" variant="outline"
+                    onClick={() => { navigator.clipboard?.writeText(agentKey); toast.success('API Key copiada'); }}>
+                    Copiar
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Falta só indicar, na app, os IPs das impressoras (cozinha e caixa).
+                </p>
+              </div>
             )}
           </CardContent>
         </Card>

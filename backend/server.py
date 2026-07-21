@@ -1241,30 +1241,50 @@ async def _open_orders_for_table(table_number: int) -> list:
     ).sort("created_at", 1).to_list(500)
 
 
-class CloseTableRequest(BaseModel):
-    payment_method_id: int
-    nif: Optional[str] = None
-    split_count: int = 1  # >1 => emite uma fatura por pessoa (parte da conta)
-
-
-@api_router.get("/tables/{table_number}/bill")
-async def get_table_bill(table_number: int, authorization: Optional[str] = Header(None)):
-    """Conta em aberto da mesa (soma dos pedidos não pagos)."""
-    await get_current_user(authorization)
+async def _open_bill_lines(table_number: int) -> list:
+    """Linhas por faturar da mesa (itens ainda NÃO pagos), com referência
+    order_id + idx — permite faturar/pagar item a item ("Separar Conta")."""
     orders = await _open_orders_for_table(table_number)
     lines = []
-    total = 0.0
     for o in orders:
-        for it in o.get("items", []):
+        src = o.get("source", "client")
+        for idx, it in enumerate(o.get("items", [])):
+            if it.get("paid"):
+                continue
             lines.append({
+                "order_id": o["id"], "idx": idx,
+                "product_id": it.get("product_id"),
                 "product_name": it.get("product_name"),
                 "quantity": it.get("quantity", 1),
                 "unit_price": it.get("unit_price", 0),
                 "total_price": it.get("total_price", 0),
+                "variation": it.get("variation"),
+                "source": src,
             })
-        total += o.get("total", 0)
-    return {"table_number": table_number, "orders": len(orders),
-            "lines": lines, "total": round(total, 2)}
+    return lines
+
+
+class CloseTableItemRef(BaseModel):
+    order_id: str
+    idx: int
+
+
+class CloseTableRequest(BaseModel):
+    payment_method_id: int
+    nif: Optional[str] = None
+    split_count: int = 1  # >1 => divide a conta TODA em N faturas iguais
+    items: Optional[List[CloseTableItemRef]] = None  # subconjunto: "Separar Conta"
+
+
+@api_router.get("/tables/{table_number}/bill")
+async def get_table_bill(table_number: int, authorization: Optional[str] = Header(None)):
+    """Conta em aberto da mesa (linhas por faturar, item a item)."""
+    await get_current_user(authorization)
+    lines = await _open_bill_lines(table_number)
+    total = round(sum((l.get("total_price", 0) or 0) for l in lines), 2)
+    n_orders = len({l["order_id"] for l in lines})
+    return {"table_number": table_number, "orders": n_orders,
+            "lines": lines, "total": total}
 
 
 @api_router.get("/tables-overview")
@@ -1280,7 +1300,8 @@ async def tables_overview(authorization: Optional[str] = Header(None)):
     for o in open_orders:
         n = o.get("table_number")
         a = agg.setdefault(n, {"total": 0.0, "count": 0, "last": None})
-        a["total"] += o.get("total", 0) or 0
+        a["total"] += sum((it.get("total_price", 0) or 0)
+                          for it in o.get("items", []) if not it.get("paid"))
         a["count"] += 1
         ca = o.get("created_at")
         if ca and (a["last"] is None or ca > a["last"]):
@@ -1336,24 +1357,14 @@ async def open_table_session(table_number: int, req: OpenTableRequest):
 async def get_table_session(table_number: int):
     """PÚBLICO — estado da mesa para o cliente: aberta?, nº de pessoas, conta atual."""
     s = await _open_session(table_number)
-    orders = await _open_orders_for_table(table_number)
-    lines = []
-    total = 0.0
-    for o in orders:
-        src = o.get("source", "client")
-        for it in o.get("items", []):
-            lines.append({
-                "product_name": it.get("product_name"),
-                "quantity": it.get("quantity", 1),
-                "total_price": it.get("total_price", 0),
-                "source": src,
-            })
-        total += o.get("total", 0)
+    lines = await _open_bill_lines(table_number)
+    total = round(sum((l.get("total_price", 0) or 0) for l in lines), 2)
+    n_orders = len({l["order_id"] for l in lines})
     return {
         "open": s is not None,
         "people": (s or {}).get("people"),
         "opened_at": (s or {}).get("opened_at"),
-        "bill": {"total": round(total, 2), "lines": lines, "orders": len(orders)},
+        "bill": {"total": total, "lines": lines, "orders": n_orders},
     }
 
 
@@ -1382,38 +1393,47 @@ async def close_table(table_number: int, req: CloseTableRequest,
     conta e o pagamento, imprime-a na caixa (ESC/POS do Vendus) e marca os
     pedidos como pagos."""
     await get_current_user(authorization)
-    orders = await _open_orders_for_table(table_number)
-    if not orders:
+    all_lines = await _open_bill_lines(table_number)
+    if not all_lines:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
 
+    # "Separar Conta": se vier um subconjunto de itens, fatura só esses.
+    if req.items:
+        sel = {(i.order_id, i.idx) for i in req.items}
+        lines = [l for l in all_lines if (l["order_id"], l["idx"]) in sel]
+        if not lines:
+            raise HTTPException(status_code=400, detail="Nenhum item selecionado válido")
+    else:
+        lines = all_lines
+    partial = len(lines) < len(all_lines)
+
     # IVA por produto (do que foi importado do Vendus); fallback ao default
-    prod_ids = list({it.get("product_id") for o in orders for it in o.get("items", []) if it.get("product_id")})
+    prod_ids = list({l.get("product_id") for l in lines if l.get("product_id")})
     tax_by_prod = {}
     if prod_ids:
         async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1}):
             if p.get("vendus_tax_id"):
                 tax_by_prod[p["id"]] = p["vendus_tax_id"]
 
-    # Itens itemizados (para fatura única) + subtotais por IVA (para dividir).
+    # Itens (fatura única/subconjunto) + subtotais por IVA (para dividir).
     vendus_items = []
     by_tax = {}
     total = 0.0
-    for o in orders:
-        for it in o.get("items", []):
-            qty = it.get("quantity", 1) or 1
-            unit = round(float(it.get("unit_price", 0) or 0), 2)
-            tax = tax_by_prod.get(it.get("product_id"), VENDUS_DEFAULT_TAX_ID)
-            # Inclui o tamanho/variação no título (ex.: "Costela (Grande 8 Fatias)").
-            title = it.get("product_name", "Item")
-            var = it.get("variation") or {}
-            if isinstance(var, dict) and var.get("name"):
-                title = f"{title} ({var['name']})"
-            vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
-            by_tax[tax] = round(by_tax.get(tax, 0.0) + round(unit * qty, 2), 2)
-        total += o.get("total", 0)
+    for l in lines:
+        qty = l.get("quantity", 1) or 1
+        unit = round(float(l.get("unit_price", 0) or 0), 2)
+        tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
+        title = l.get("product_name", "Item")
+        var = l.get("variation") or {}
+        if isinstance(var, dict) and var.get("name"):
+            title = f"{title} ({var['name']})"
+        vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
+        by_tax[tax] = round(by_tax.get(tax, 0.0) + round(unit * qty, 2), 2)
+        total += round(l.get("total_price", 0) or 0, 2)
     total = round(total, 2)
 
-    n = max(1, min(int(req.split_count or 1), 50))
+    # A divisão igual só se aplica à conta TODA (não a uma separação por itens).
+    n = 1 if partial else max(1, min(int(req.split_count or 1), 50))
     ts = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
 
     # Constrói as faturas a emitir. n==1: uma fatura itemizada. n>1: uma fatura por
@@ -1462,19 +1482,27 @@ async def close_table(table_number: int, req: CloseTableRequest,
     if not docs:
         raise HTTPException(status_code=502, detail="Vendus não devolveu documento")
 
-    order_ids = [o["id"] for o in orders]
-    await db.orders.update_many(
-        {"id": {"$in": order_ids}},
-        {"$set": {"paid": True, "status": "delivered",
-                  "payment_method": str(req.payment_method_id),
-                  "vendus_document_id": docs[0].get("id"),
-                  "vendus_document_ids": [d.get("id") for d in docs]}},
-    )
-    # fecha a sessão da mesa (nº de pessoas) — a mesa fica livre
-    await db.table_sessions.update_many(
-        {"table_number": table_number, "status": "open"},
-        {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
-    )
+    # Marca como pagos SÓ os itens faturados (item a item). Um pedido fica "paid"
+    # quando todos os seus itens ficam pagos.
+    by_order = {}
+    for l in lines:
+        by_order.setdefault(l["order_id"], []).append(l["idx"])
+    for oid, idxs in by_order.items():
+        await db.orders.update_one({"id": oid}, {"$set": {f"items.{i}.paid": True for i in idxs}})
+        od = await db.orders.find_one({"id": oid}, {"_id": 0, "items": 1})
+        if od and all(it.get("paid") for it in od.get("items", [])):
+            await db.orders.update_one({"id": oid}, {"$set": {
+                "paid": True, "status": "delivered",
+                "payment_method": str(req.payment_method_id),
+                "vendus_document_id": docs[0].get("id")}})
+
+    # Fecha a sessão só quando já não há nada por faturar (mesa saldada).
+    remaining = await _open_bill_lines(table_number)
+    if not remaining:
+        await db.table_sessions.update_many(
+            {"table_number": table_number, "status": "open"},
+            {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
+        )
     # imprime cada fatura (ESC/POS certificado do Vendus, com corte) na CAIXA
     for d in docs:
         escpos_b64 = d.get("output")
@@ -1499,7 +1527,9 @@ async def close_table(table_number: int, req: CloseTableRequest,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
     return {"table_number": table_number, "total": total,
-            "orders_closed": len(order_ids), "invoices": len(docs), "split": n,
+            "invoices": len(docs), "split": n, "partial": partial,
+            "table_free": not remaining,
+            "remaining_total": round(sum((l.get("total_price", 0) or 0) for l in remaining), 2),
             "vendus": {"id": docs[0].get("id"), "number": docs[0].get("number"),
                        "atcud": docs[0].get("atcud")},
             "numbers": [d.get("number") for d in docs]}

@@ -19,3 +19,11 @@
 		reverse_proxy frontend:80
 	}
 }
+
+# Domínio antigo dos QR já impressos (pedir.lenhaebrasa.com) → redireciona para o
+# domínio correto (pedido), mantendo o caminho e o ?mesa=N. Assim os QR que já
+# estão colados nas mesas passam a funcionar sem reimprimir.
+# Requer DNS: pedir.lenhaebrasa.com a apontar para o VPS (CNAME p/ pedido ou A record).
+pedir.lenhaebrasa.com {
+	redir https://{$DOMAIN}{uri} permanent
+}

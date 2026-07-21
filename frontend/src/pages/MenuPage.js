@@ -58,6 +58,13 @@ const MenuPage = () => {
   const [itemNotes, setItemNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  // Sessão de mesa (nº de pessoas + conta)
+  const [needsPeople, setNeedsPeople] = useState(false);
+  const [peopleInput, setPeopleInput] = useState(2);
+  const [openingTable, setOpeningTable] = useState(false);
+  const [bill, setBill] = useState(null);
+  const [billOpen, setBillOpen] = useState(false);
+
   // Refs for scroll tracking
   const sectionRefs = useRef({});
   const categoryBarRef = useRef(null);
@@ -77,6 +84,12 @@ const MenuPage = () => {
           .catch(() => {
             toast.error('Mesa não encontrada');
           });
+        tablesAPI.getSession(tableNum)
+          .then(res => {
+            setBill(res.data.bill);
+            setNeedsPeople(!res.data.open);
+          })
+          .catch(() => {});
       }
     }
   }, [searchParams, setTable]);
@@ -313,6 +326,27 @@ const MenuPage = () => {
     });
   };
 
+  const submitPeople = async () => {
+    if (!tableNumber) return;
+    setOpeningTable(true);
+    try {
+      await tablesAPI.openSession(tableNumber, Math.max(1, Number(peopleInput) || 1));
+      setNeedsPeople(false);
+    } catch {
+      toast.error('Não foi possível abrir a mesa');
+    } finally {
+      setOpeningTable(false);
+    }
+  };
+
+  const refreshBill = async () => {
+    if (!tableNumber) return;
+    try {
+      const res = await tablesAPI.getSession(tableNumber);
+      setBill(res.data.bill);
+    } catch { /* ignore */ }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -338,6 +372,56 @@ const MenuPage = () => {
 
   return (
     <div className="min-h-screen bg-background pb-24">
+      {/* Nº de pessoas — 1ª leitura do QR numa mesa livre */}
+      {needsPeople && tableNumber && (
+        <div className="fixed inset-0 z-[60] bg-background flex flex-col items-center justify-center p-6 text-center">
+          <div className="w-full max-w-xs space-y-8">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">Mesa {tableNumber}</p>
+              <h2 className="font-heading text-3xl font-bold mt-2">Bem-vindo! 👋</h2>
+              <p className="text-muted-foreground mt-2">Quantas pessoas estão na mesa?</p>
+            </div>
+            <div className="flex items-center justify-center gap-5">
+              <button type="button" onClick={() => setPeopleInput((p) => Math.max(1, p - 1))}
+                className="h-14 w-14 rounded-full border-2 text-2xl font-bold text-primary active:scale-95 transition">−</button>
+              <span className="font-heading text-5xl font-bold w-20 tabular-nums">{peopleInput}</span>
+              <button type="button" onClick={() => setPeopleInput((p) => p + 1)}
+                className="h-14 w-14 rounded-full border-2 text-2xl font-bold text-primary active:scale-95 transition">+</button>
+            </div>
+            <Button onClick={submitPeople} disabled={openingTable} className="w-full h-12 text-base">
+              {openingTable ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Ver o menu'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Conta da mesa (cliente) */}
+      <Dialog open={billOpen} onOpenChange={setBillOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-xl">Conta da Mesa {tableNumber}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1 py-2 max-h-[60vh] overflow-y-auto">
+            {bill && bill.lines && bill.lines.length > 0 ? (
+              <>
+                {bill.lines.map((l, i) => (
+                  <div key={i} className="flex justify-between text-sm border-b last:border-0 py-1.5">
+                    <span>{l.quantity}× {l.product_name}</span>
+                    <span className="tabular-nums">{`€ ${Number(l.total_price || 0).toFixed(2)}`}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between font-bold text-lg pt-3">
+                  <span>Total</span>
+                  <span className="tabular-nums">{`€ ${Number(bill.total || 0).toFixed(2)}`}</span>
+                </div>
+              </>
+            ) : (
+              <p className="text-center text-muted-foreground py-6">Ainda sem pedidos nesta mesa.</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Hero Header */}
       <div 
         className="relative h-48 md:h-64 bg-cover bg-center"
@@ -351,9 +435,15 @@ const MenuPage = () => {
             {restaurantName}
           </h1>
           {tableNumber && (
-            <Badge variant="secondary" className="mt-2 w-fit text-sm px-3 py-1">
-              Mesa {tableNumber}
-            </Badge>
+            <div className="mt-2 flex items-center gap-3">
+              <Badge variant="secondary" className="w-fit text-sm px-3 py-1">Mesa {tableNumber}</Badge>
+              {bill && bill.orders > 0 && (
+                <button onClick={() => { refreshBill(); setBillOpen(true); }}
+                  className="text-sm font-medium text-white/90 underline underline-offset-2">
+                  Ver conta (€ {Number(bill.total || 0).toFixed(2)})
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

@@ -99,7 +99,12 @@ export const tablesAPI = {
   getQRCode: (id, baseUrl) =>
     api.get(`/tables/${id}/qrcode`, { params: { base_url: baseUrl } }),
   overview: () =>
-    api.get('/tables-overview')
+    api.get('/tables-overview'),
+  // Sessão de mesa (fluxo público do cliente por QR)
+  getSession: (number) =>
+    api.get(`/tables/${number}/session`),
+  openSession: (number, people) =>
+    api.post(`/tables/${number}/open`, { people })
 };
 
 // Orders API

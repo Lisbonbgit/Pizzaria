@@ -1227,15 +1227,74 @@ async def tables_overview(authorization: Optional[str] = Header(None)):
         ca = o.get("created_at")
         if ca and (a["last"] is None or ca > a["last"]):
             a["last"] = ca
+    sessions = await db.table_sessions.find({"status": "open"}, {"_id": 0}).to_list(1000)
+    sess_by = {s["table_number"]: s for s in sessions}
     out = []
     for t in tables:
         a = agg.get(t["number"], {"total": 0.0, "count": 0, "last": None})
+        s = sess_by.get(t["number"])
         out.append({
             "id": t["id"], "number": t["number"], "name": t.get("name"),
             "open_total": round(a["total"], 2), "open_orders": a["count"],
-            "occupied": a["count"] > 0, "last_activity": a["last"],
+            "occupied": a["count"] > 0 or s is not None,
+            "people": (s or {}).get("people"),
+            "last_activity": a["last"] or (s or {}).get("opened_at"),
         })
     return out
+
+
+# ---- Sessões de mesa (fluxo do cliente por QR) ----
+
+async def _open_session(table_number: int):
+    return await db.table_sessions.find_one(
+        {"table_number": table_number, "status": "open"}, {"_id": 0}
+    )
+
+
+class OpenTableRequest(BaseModel):
+    people: int = 1
+
+
+@api_router.post("/tables/{table_number}/open")
+async def open_table_session(table_number: int, req: OpenTableRequest):
+    """PÚBLICO — o cliente abre a mesa (nº de pessoas) na 1ª leitura do QR."""
+    existing = await _open_session(table_number)
+    if existing:
+        return existing
+    session = {
+        "id": str(uuid.uuid4()),
+        "table_number": table_number,
+        "people": max(1, req.people or 1),
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "status": "open",
+        "closed_at": None,
+    }
+    await db.table_sessions.insert_one(session)
+    session.pop("_id", None)
+    return session
+
+
+@api_router.get("/tables/{table_number}/session")
+async def get_table_session(table_number: int):
+    """PÚBLICO — estado da mesa para o cliente: aberta?, nº de pessoas, conta atual."""
+    s = await _open_session(table_number)
+    orders = await _open_orders_for_table(table_number)
+    lines = []
+    total = 0.0
+    for o in orders:
+        for it in o.get("items", []):
+            lines.append({
+                "product_name": it.get("product_name"),
+                "quantity": it.get("quantity", 1),
+                "total_price": it.get("total_price", 0),
+            })
+        total += o.get("total", 0)
+    return {
+        "open": s is not None,
+        "people": (s or {}).get("people"),
+        "opened_at": (s or {}).get("opened_at"),
+        "bill": {"total": round(total, 2), "lines": lines, "orders": len(orders)},
+    }
 
 
 @api_router.get("/vendus/payment-methods")
@@ -1303,6 +1362,11 @@ async def close_table(table_number: int, req: CloseTableRequest,
         {"$set": {"paid": True, "status": "delivered",
                   "payment_method": str(req.payment_method_id),
                   "vendus_document_id": doc.get("id")}},
+    )
+    # fecha a sessão da mesa (nº de pessoas) — a mesa fica livre
+    await db.table_sessions.update_many(
+        {"table_number": table_number, "status": "open"},
+        {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
     )
     return {"table_number": table_number, "total": total,
             "orders_closed": len(order_ids),

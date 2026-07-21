@@ -11,8 +11,7 @@ import {
   Menu,
   X,
   Printer,
-  BarChart3,
-  Receipt
+  BarChart3
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
@@ -21,7 +20,6 @@ import { useAuth } from '@/context/AuthContext';
 const navItems = [
   { path: '/admin', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/admin/orders', label: 'Pedidos', icon: ClipboardList },
-  { path: '/admin/checkout', label: 'Fechar Mesa', icon: Receipt },
   { path: '/admin/menu', label: 'Menu', icon: UtensilsCrossed },
   { path: '/admin/tables', label: 'Mesas', icon: Grid3X3 },
   { path: '/admin/printers', label: 'Impressoras', icon: Printer },

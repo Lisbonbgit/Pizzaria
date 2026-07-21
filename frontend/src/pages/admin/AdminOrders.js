@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Loader2, RefreshCw, Receipt, Printer, Clock,
+  Loader2, RefreshCw, Receipt, Printer, Clock, Plus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/select';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
-import { tablesAPI, ordersAPI, checkoutAPI } from '@/lib/api';
+import { tablesAPI, ordersAPI, checkoutAPI, productsAPI } from '@/lib/api';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 
@@ -39,14 +39,21 @@ const relTime = (iso) => {
 
 const AdminOrders = () => {
   const [tables, setTables] = useState([]);
+  const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   // Modal da mesa
   const [openTableNum, setOpenTableNum] = useState(null);
+  const [openTableId, setOpenTableId] = useState(null);
   const [tableTitle, setTableTitle] = useState('');
   const [tableOrders, setTableOrders] = useState([]);
   const [tableLoading, setTableLoading] = useState(false);
+
+  // Adicionar produto manual
+  const [addProductId, setAddProductId] = useState('');
+  const [addQty, setAddQty] = useState(1);
+  const [adding, setAdding] = useState(false);
 
   // Fecho
   const [methods, setMethods] = useState([]);
@@ -70,6 +77,7 @@ const AdminOrders = () => {
   useEffect(() => {
     load();
     checkoutAPI.paymentMethods().then((r) => setMethods(r.data)).catch(() => {});
+    productsAPI.list().then((r) => setProducts(r.data)).catch(() => {});
     const id = setInterval(() => load(true), 12000);
     return () => clearInterval(id);
   }, [load]);
@@ -89,9 +97,12 @@ const AdminOrders = () => {
   const openTable = (t) => {
     if (!t.occupied) return;
     setOpenTableNum(t.number);
+    setOpenTableId(t.id);
     setTableTitle(t.name || `Mesa ${t.number}`);
     setPaymentId('');
     setNif('');
+    setAddProductId('');
+    setAddQty(1);
     loadTableOrders(t.number);
   };
 
@@ -109,6 +120,34 @@ const AdminOrders = () => {
   const reprint = async (orderId) => {
     try { await ordersAPI.reprint(orderId, []); toast.success('Reimpressão agendada'); }
     catch { toast.error('Erro ao reimprimir'); }
+  };
+
+  const addProduct = async () => {
+    const p = products.find((x) => x.id === addProductId);
+    if (!p) { toast.error('Escolhe um produto'); return; }
+    const qty = Math.max(1, Number(addQty) || 1);
+    setAdding(true);
+    try {
+      const price = Number(p.base_price) || 0;
+      await ordersAPI.create({
+        table_id: openTableId,
+        table_number: openTableNum,
+        items: [{
+          product_id: p.id, product_name: p.name, quantity: qty,
+          unit_price: price, total_price: +(price * qty).toFixed(2),
+        }],
+        total: +(price * qty).toFixed(2),
+      });
+      setAddProductId('');
+      setAddQty(1);
+      toast.success(`${qty}× ${p.name} adicionado à mesa`);
+      loadTableOrders(openTableNum);
+      load(true);
+    } catch {
+      toast.error('Erro ao adicionar o produto');
+    } finally {
+      setAdding(false);
+    }
   };
 
   const tableTotal = tableOrders.reduce((s, o) => s + (o.total || 0), 0);
@@ -227,6 +266,24 @@ const AdminOrders = () => {
             </DialogTitle>
           </DialogHeader>
 
+          {/* Adicionar produto manualmente */}
+          <div className="px-6 py-3 border-b bg-muted/20 flex flex-col sm:flex-row gap-2">
+            <Select value={addProductId} onValueChange={setAddProductId}>
+              <SelectTrigger className="flex-1"><SelectValue placeholder="Adicionar produto à mesa..." /></SelectTrigger>
+              <SelectContent>
+                {products.filter((p) => p.available !== false).map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.name} — {eur(p.base_price)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input type="number" min={1} value={addQty}
+              onChange={(e) => setAddQty(e.target.value)} className="w-20" aria-label="Quantidade" />
+            <Button variant="outline" onClick={addProduct} disabled={adding || !addProductId}>
+              {adding ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
+              Adicionar
+            </Button>
+          </div>
+
           <div className="px-6 py-4 space-y-4">
             {tableLoading ? (
               <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center">
@@ -296,9 +353,6 @@ const AdminOrders = () => {
                   Fechar mesa e faturar no Vendus
                 </Button>
               </div>
-              <p className="text-[11px] text-muted-foreground text-center">
-                Emite a fatura-recibo no Vendus e liberta a mesa.
-              </p>
             </div>
           )}
         </DialogContent>

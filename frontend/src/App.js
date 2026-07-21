@@ -11,7 +11,6 @@ import OrderConfirmation from "@/pages/OrderConfirmation";
 import AdminLogin from "@/pages/admin/AdminLogin";
 import AdminDashboard from "@/pages/admin/AdminDashboard";
 import AdminOrders from "@/pages/admin/AdminOrders";
-import AdminCheckout from "@/pages/admin/AdminCheckout";
 import AdminMenu from "@/pages/admin/AdminMenu";
 import AdminTables from "@/pages/admin/AdminTables";
 import AdminSettings from "@/pages/admin/AdminSettings";
@@ -37,10 +36,8 @@ const PedirRedirect = () => {
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const mesa = params.get('mesa');
-    const targetUrl = mesa
-      ? `https://pedir.lenhaebrasa.com?mesa=${mesa}`
-      : 'https://pedir.lenhaebrasa.com';
-    window.location.replace(targetUrl);
+    // Mesma origem: o menu do cliente vive em "/?mesa=N".
+    window.location.replace(mesa ? `/?mesa=${mesa}` : '/');
   }, []);
   return null;
 };
@@ -60,7 +57,6 @@ function App() {
             <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
             <Route path="/admin/orders" element={<ProtectedRoute><AdminOrders /></ProtectedRoute>} />
-            <Route path="/admin/checkout" element={<ProtectedRoute><AdminCheckout /></ProtectedRoute>} />
             <Route path="/admin/menu" element={<ProtectedRoute><AdminMenu /></ProtectedRoute>} />
             <Route path="/admin/tables" element={<ProtectedRoute><AdminTables /></ProtectedRoute>} />
             <Route path="/admin/printers" element={<ProtectedRoute><AdminPrinters /></ProtectedRoute>} />

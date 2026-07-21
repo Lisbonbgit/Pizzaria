@@ -184,7 +184,9 @@ export const checkoutAPI = {
   paymentMethods: () =>
     api.get('/vendus/payment-methods'),
   closeTable: (tableNumber, data) =>
-    api.post(`/tables/${tableNumber}/close`, data)
+    api.post(`/tables/${tableNumber}/close`, data),
+  printConsulta: (tableNumber) =>
+    api.post(`/tables/${tableNumber}/print-consulta`)
 };
 
 export default api;

@@ -5,7 +5,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -54,7 +53,9 @@ const AdminOrders = () => {
   const [methods, setMethods] = useState([]);
   const [paymentId, setPaymentId] = useState('');
   const [nif, setNif] = useState('');
-  const [split, setSplit] = useState(false);
+  const [splitCount, setSplitCount] = useState(1);
+  const [cashReceived, setCashReceived] = useState('');
+  const [printingConsulta, setPrintingConsulta] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [closing, setClosing] = useState(false);
 
@@ -99,7 +100,8 @@ const AdminOrders = () => {
     setTableTitle(t.name || `Mesa ${t.number}`);
     setPaymentId('');
     setNif('');
-    setSplit(false);
+    setSplitCount(t.people || 1);
+    setCashReceived('');
     setAddProductId('');
     setAddQty(1);
     loadTableOrders(t.number);
@@ -110,6 +112,18 @@ const AdminOrders = () => {
   const reprint = async (orderId) => {
     try { await ordersAPI.reprint(orderId, []); toast.success('Reimpressão enviada'); }
     catch { toast.error('Erro ao reimprimir'); }
+  };
+
+  const printConsulta = async () => {
+    setPrintingConsulta(true);
+    try {
+      await checkoutAPI.printConsulta(openTableNum);
+      toast.success('Consulta enviada para impressão');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao imprimir a consulta');
+    } finally {
+      setPrintingConsulta(false);
+    }
   };
 
   const addProduct = async () => {
@@ -142,7 +156,12 @@ const AdminOrders = () => {
   };
 
   const tableTotal = tableOrders.reduce((s, o) => s + (o.total || 0), 0);
-  const perPerson = openTablePeople > 1 ? tableTotal / openTablePeople : tableTotal;
+  const splitActive = splitCount > 1;
+  const perPerson = splitActive ? tableTotal / splitCount : tableTotal;
+  const selectedMethod = methods.find((m) => String(m.id) === String(paymentId));
+  const isCash = !!selectedMethod && /dinheiro|numer|cash/i.test(selectedMethod.title || '');
+  const received = Number(String(cashReceived).replace(',', '.')) || 0;
+  const change = Math.round((received - tableTotal) * 100) / 100;
 
   const handleClose = async () => {
     setConfirmOpen(false);
@@ -329,20 +348,38 @@ const AdminOrders = () => {
 
           {/* Fecho da mesa */}
           {tableOrders.length > 0 && (
-            <div className="px-6 py-4 border-t bg-muted/20 space-y-3">
-              <div className="flex items-center justify-between">
+            <div className="px-6 py-4 border-t bg-muted/20 space-y-4">
+              <div className="flex items-center justify-between gap-3">
                 <span className="font-heading text-lg font-bold">Total</span>
                 <span className="font-heading text-2xl font-bold text-primary tabular-nums">{eur(tableTotal)}</span>
               </div>
 
-              {openTablePeople > 1 && (
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
-                  <Checkbox checked={split} onCheckedChange={(v) => setSplit(!!v)} />
-                  <span>Dividir por {openTablePeople} pessoas</span>
-                  {split && <span className="ml-auto font-semibold text-primary tabular-nums">{eur(perPerson)} / pessoa</span>}
-                </label>
+              {/* Consulta de mesa — conta provisória para mostrar ao cliente */}
+              <Button variant="outline" className="w-full" onClick={printConsulta} disabled={printingConsulta}>
+                {printingConsulta ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Printer className="h-4 w-4 mr-2" />}
+                Consulta de mesa (imprimir para o cliente)
+              </Button>
+
+              {/* Dividir a conta */}
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm">Dividir por</span>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="icon" className="h-8 w-8"
+                    onClick={() => setSplitCount((n) => Math.max(1, n - 1))} disabled={splitCount <= 1}>−</Button>
+                  <span className="w-8 text-center font-semibold tabular-nums">{splitCount}</span>
+                  <Button variant="outline" size="icon" className="h-8 w-8"
+                    onClick={() => setSplitCount((n) => n + 1)}>+</Button>
+                  <span className="text-sm text-muted-foreground">pessoa{splitCount > 1 ? 's' : ''}</span>
+                </div>
+              </div>
+              {splitActive && (
+                <div className="flex items-center justify-between text-sm bg-primary/[0.06] rounded-lg px-3 py-2">
+                  <span>Cada pessoa paga</span>
+                  <span className="font-semibold text-primary tabular-nums">{eur(perPerson)}</span>
+                </div>
               )}
 
+              {/* Pagamento */}
               <div className="flex flex-col sm:flex-row gap-2">
                 <Select value={paymentId} onValueChange={setPaymentId}>
                   <SelectTrigger className="sm:w-44"><SelectValue placeholder="Pagamento" /></SelectTrigger>
@@ -351,14 +388,35 @@ const AdminOrders = () => {
                   </SelectContent>
                 </Select>
                 <Input className="sm:w-40" placeholder="NIF (opcional)" value={nif} onChange={(e) => setNif(e.target.value)} />
-                <Button
-                  onClick={() => { if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; } setConfirmOpen(true); }}
-                  disabled={closing}
-                  className="flex-1 bg-[#5a1a1a] hover:bg-[#4a1414]">
-                  {closing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Receipt className="h-4 w-4 mr-2" />}
-                  Fechar mesa e faturar no Vendus
-                </Button>
               </div>
+
+              {/* Troco — só quando o pagamento é em dinheiro */}
+              {isCash && (
+                <div className="rounded-lg border bg-background px-3 py-3 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm">Com quanto vai pagar?</span>
+                    <div className="relative w-32">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">€</span>
+                      <Input type="number" inputMode="decimal" min={0} step="0.5" className="pl-7 text-right"
+                        placeholder="0.00" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} />
+                    </div>
+                  </div>
+                  {received > 0 && (
+                    <div className={`flex items-center justify-between text-sm font-semibold ${change >= 0 ? 'text-green-700' : 'text-destructive'}`}>
+                      <span>{change >= 0 ? 'Troco' : 'Em falta'}</span>
+                      <span className="tabular-nums">{eur(Math.abs(change))}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <Button
+                onClick={() => { if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; } setConfirmOpen(true); }}
+                disabled={closing}
+                className="w-full bg-[#5a1a1a] hover:bg-[#4a1414]">
+                {closing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Receipt className="h-4 w-4 mr-2" />}
+                Fechar mesa e faturar no Vendus
+              </Button>
             </div>
           )}
         </DialogContent>
@@ -371,7 +429,8 @@ const AdminOrders = () => {
             <AlertDialogTitle>Fechar e faturar a {tableTitle}?</AlertDialogTitle>
             <AlertDialogDescription>
               Vai emitir a fatura-recibo no Vendus ({eur(tableTotal)}
-              {split && openTablePeople > 1 ? `, ${eur(perPerson)} por pessoa` : ''}) e libertar a mesa. Esta ação não se desfaz.
+              {splitActive ? `, ${eur(perPerson)} × ${splitCount} pessoas` : ''}) e libertar a mesa.
+              {isCash && received > 0 && change >= 0 ? ` Troco a devolver: ${eur(change)}.` : ''} Esta ação não se desfaz.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

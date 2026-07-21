@@ -1408,6 +1408,70 @@ async def close_table(table_number: int, req: CloseTableRequest,
                        "atcud": doc.get("atcud")}}
 
 
+@api_router.post("/tables/{table_number}/print-consulta")
+async def print_table_consulta(table_number: int, authorization: Optional[str] = Header(None)):
+    """Imprime uma CONTA PROVISÓRIA (consulta de mesa) para mostrar ao cliente.
+    NÃO é fatura — a fatura só sai no fecho (Vendus). Enfileira um print job tipo
+    'cashier' com um snapshot da conta atual; o agente imprime quando ligar."""
+    await get_current_user(authorization)
+    orders = await _open_orders_for_table(table_number)
+    if not orders:
+        raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
+
+    items = []
+    total = 0.0
+    for o in orders:
+        for it in o.get("items", []):
+            items.append({
+                "product_name": it.get("product_name"),
+                "quantity": it.get("quantity", 1),
+                "variation": it.get("variation"),
+                "extras": it.get("extras", []),
+                "selected_complements": it.get("selected_complements", []),
+                "selected_preference": it.get("selected_preference"),
+                "unit_price": it.get("unit_price", 0),
+                "total_price": it.get("total_price", 0),
+            })
+        total += o.get("total", 0)
+    total = round(total, 2)
+
+    # snapshot com a forma que o formatador 'cashier' espera (order-like)
+    snapshot = {
+        "id": f"consulta-{table_number}",
+        "order_number": "CONSULTA",
+        "table_number": table_number,
+        "items": items,
+        "total": total,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # impressoras de caixa ativas; fallback: todas as ativas; senão job default
+    printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
+    cashier = [p for p in printers if p.get("printer_type") == "cashier"]
+    targets = cashier or printers or [None]
+
+    job_ids = []
+    for printer in targets:
+        job = {
+            "id": str(uuid.uuid4()),
+            "order_id": None,
+            "order_snapshot": snapshot,
+            "printer_id": printer["id"] if printer else None,
+            "printer_name": printer["name"] if printer else "Caixa",
+            "printer_type": "cashier",
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.print_jobs.insert_one(job)
+        job_ids.append(job["id"])
+
+    logger.info(f"Consulta da mesa {table_number}: {len(job_ids)} print job(s) criados")
+    return {"table_number": table_number, "total": total, "jobs": len(job_ids)}
+
+
 @api_router.post("/menu/import-vendus")
 async def import_menu_from_vendus(authorization: Optional[str] = Header(None)):
     """Importa produtos + categorias (com o IVA) do Vendus para o menu da app.
@@ -1704,9 +1768,12 @@ async def get_pending_jobs_for_agent(x_api_key: Optional[str] = Header(None)):
             if printer and "printer_type" not in printer:
                 printer["printer_type"] = "kitchen"
         
-        # Get order info (if not a test job)
+        # Get order info (if not a test job). Um job de "consulta de mesa" traz um
+        # snapshot embutido (order-like) em vez de um order_id real.
         order = None
-        if job.get("order_id"):
+        if job.get("order_snapshot"):
+            order = job["order_snapshot"]
+        elif job.get("order_id"):
             order = await db.orders.find_one({"id": job["order_id"]}, {"_id": 0})
         
         # Get restaurant name

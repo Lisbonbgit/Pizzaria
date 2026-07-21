@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { ShoppingCart, Plus, Minus, X, ChevronRight, Loader2, AlertCircle } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { ShoppingCart, Plus, Minus, X, ChevronRight, Loader2, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -24,8 +24,7 @@ const getImageUrl = (url) => {
 
 const MenuPage = () => {
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const { 
+  const {
     items: cartItems, 
     tableNumber, 
     tableId,
@@ -64,6 +63,7 @@ const MenuPage = () => {
   const [openingTable, setOpeningTable] = useState(false);
   const [bill, setBill] = useState(null);
   const [billOpen, setBillOpen] = useState(false);
+  const [orderSuccessOpen, setOrderSuccessOpen] = useState(false);
 
   // Refs for scroll tracking
   const sectionRefs = useRef({});
@@ -304,10 +304,11 @@ const MenuPage = () => {
         total: getTotal()
       };
 
-      const response = await ordersAPI.create(orderData);
+      await ordersAPI.create(orderData);
       clearCart();
       setCartOpen(false);
-      navigate(`/pedido/${response.data.id}`);
+      await refreshBill();           // hero passa a mostrar "Ver conta"
+      setOrderSuccessOpen(true);
     } catch (err) {
       console.error('Error submitting order:', err);
       toast.error('Erro ao enviar pedido. Tente novamente.');
@@ -378,7 +379,7 @@ const MenuPage = () => {
           <div className="w-full max-w-xs space-y-8">
             <div>
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Mesa {tableNumber}</p>
-              <h2 className="font-heading text-3xl font-bold mt-2">Bem-vindo! 👋</h2>
+              <h2 className="font-heading text-3xl font-bold mt-2">Bem-vindo à {restaurantName}! 👋</h2>
               <p className="text-muted-foreground mt-2">Quantas pessoas estão na mesa?</p>
             </div>
             <div className="flex items-center justify-center gap-5">
@@ -394,6 +395,32 @@ const MenuPage = () => {
           </div>
         </div>
       )}
+
+      {/* Pedido enviado — voltar ao menu ou ver conta */}
+      <Dialog open={orderSuccessOpen} onOpenChange={setOrderSuccessOpen}>
+        <DialogContent className="max-w-sm text-center">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-2xl flex flex-col items-center gap-3">
+              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-green-100">
+                <CheckCircle2 className="h-8 w-8 text-green-600" />
+              </span>
+              Pedido enviado!
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-muted-foreground">
+            O seu pedido foi para a cozinha. Deseja pedir mais alguma coisa?
+          </p>
+          <div className="grid gap-2 pt-2">
+            <Button onClick={() => setOrderSuccessOpen(false)} className="w-full h-11">
+              Fazer novo pedido
+            </Button>
+            <Button variant="outline" className="w-full h-11"
+              onClick={() => { setOrderSuccessOpen(false); refreshBill(); setBillOpen(true); }}>
+              Ver conta
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Conta da mesa (cliente) */}
       <Dialog open={billOpen} onOpenChange={setBillOpen}>
@@ -884,7 +911,7 @@ const MenuPage = () => {
                     </>
                   ) : (
                     <>
-                      Finalizar Pedido
+                      Finalizar — Enviar para a cozinha
                       <ChevronRight className="h-4 w-4 ml-2" />
                     </>
                   )}

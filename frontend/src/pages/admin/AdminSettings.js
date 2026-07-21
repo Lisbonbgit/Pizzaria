@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Loader2, Save, Building, ImagePlus } from 'lucide-react';
+import { Loader2, Save, Building, ImagePlus, Download, Printer } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -19,6 +19,7 @@ const AdminSettings = () => {
     name: 'Pizzaria',
     cover_image: ''
   });
+  const [apkInfo, setApkInfo] = useState({ available: false, size_kb: 0 });
 
   useEffect(() => {
     loadSettings();
@@ -28,6 +29,10 @@ const AdminSettings = () => {
     try {
       const response = await api.get('/settings/restaurant');
       setRestaurantConfig(prev => ({ ...prev, ...response.data }));
+      try {
+        const info = await api.get('/app/print-bridge/info');
+        setApkInfo(info.data);
+      } catch { /* APK opcional */ }
     } catch (err) {
       console.error('Error loading settings:', err);
     } finally {
@@ -178,14 +183,40 @@ const AdminSettings = () => {
           </CardContent>
         </Card>
 
+        {/* App de Impressão (APK) */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Printer className="h-5 w-5" />
+              App de Impressão (Android)
+            </CardTitle>
+            <CardDescription>
+              Ponte que imprime os pedidos automaticamente. Instala no tablet ligado às
+              impressoras e configura o URL, a chave e os IPs.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {apkInfo.available ? (
+              <a href={`${BACKEND_URL}/api/app/print-bridge.apk`} download>
+                <Button data-testid="download-apk">
+                  <Download className="h-4 w-4 mr-2" />
+                  Descarregar APK{apkInfo.size_kb ? ` (${apkInfo.size_kb} KB)` : ''}
+                </Button>
+              </a>
+            ) : (
+              <p className="text-sm text-muted-foreground">APK ainda não publicado.</p>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Info Box */}
         <Card>
           <CardContent className="p-4">
             <h4 className="font-medium mb-2">Outras Configurações</h4>
             <ul className="text-sm text-muted-foreground space-y-1">
-              <li>• <strong>Impressoras:</strong> Configure em "Impressoras" no menu lateral</li>
-              <li>• <strong>Print Agent:</strong> Configure o agente local em "Impressoras" {">"} "Print Agent"</li>
-              <li>• <strong>Mesas e QR Codes:</strong> Gerencie em "Mesas" no menu lateral</li>
+              <li>• <strong>Impressão:</strong> instala o APK acima no tablet ligado às impressoras</li>
+              <li>• <strong>Menu:</strong> categorias e produtos em "Menu" no menu lateral</li>
+              <li>• <strong>Mesas e QR Codes:</strong> gere em "Mesas" no menu lateral</li>
             </ul>
           </CardContent>
         </Card>

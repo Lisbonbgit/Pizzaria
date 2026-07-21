@@ -1,5 +1,6 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Query, BackgroundTasks, Header
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -29,6 +30,12 @@ load_dotenv(ROOT_DIR / '.env')
 # Create uploads directory
 UPLOADS_DIR = ROOT_DIR / 'uploads'
 UPLOADS_DIR.mkdir(exist_ok=True)
+
+# Ficheiros para download (ex.: APK da ponte de impressão). Montado por volume em
+# produção (./backend/appfiles:/app/appfiles), atualizável sem rebuild da imagem.
+APP_FILES_DIR = ROOT_DIR / 'appfiles'
+APP_FILES_DIR.mkdir(exist_ok=True)
+PRINT_BRIDGE_APK = APP_FILES_DIR / 'print-bridge.apk'
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -127,6 +134,27 @@ api_router = APIRouter(prefix="/api")
 async def health_check():
     """Liveness check para o Docker/monitorização (não toca na base de dados)."""
     return {"status": "ok"}
+
+
+@api_router.get("/app/print-bridge/info")
+async def print_bridge_info():
+    """Metadados do APK da ponte de impressão (para o botão de download no admin)."""
+    if PRINT_BRIDGE_APK.exists():
+        size = PRINT_BRIDGE_APK.stat().st_size
+        return {"available": True, "size_bytes": size, "size_kb": round(size / 1024)}
+    return {"available": False, "size_bytes": 0, "size_kb": 0}
+
+
+@api_router.get("/app/print-bridge.apk")
+async def download_print_bridge_apk():
+    """Descarrega o APK da ponte de impressão (público — não contém segredos)."""
+    if not PRINT_BRIDGE_APK.exists():
+        raise HTTPException(status_code=404, detail="APK ainda não publicado")
+    return FileResponse(
+        path=str(PRINT_BRIDGE_APK),
+        media_type="application/vnd.android.package-archive",
+        filename="lenhaebrasa-print-bridge.apk",
+    )
 
 # Mount static files for uploads under /api prefix for Kubernetes ingress routing
 app.mount("/api/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")

@@ -62,3 +62,6 @@ credentials.json
 
 # Pytest
 .pytest_cache/
+
+# APK da ponte de impressão (servido por volume, não versionado)
+backend/appfiles/

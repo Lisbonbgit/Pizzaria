@@ -28,6 +28,8 @@ services:
       - ./backend/.env
     depends_on:
       - mongo
+    volumes:
+      - ./backend/appfiles:/app/appfiles:ro
     expose:
       - "8001"
     healthcheck:

@@ -1628,8 +1628,23 @@ async def reprint_order(order_id: str, request: Optional[ReprintRequest] = None,
         # Reprint to all active printers
         printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
         if not printers:
-            raise HTTPException(status_code=400, detail="Nenhuma impressora ativa configurada")
-        
+            # Sem impressoras registadas (setup com app-ponte): reimprime o talão de
+            # COZINHA deste pedido — o app-ponte encaminha por printer_type.
+            job_id = str(uuid.uuid4())
+            await db.print_jobs.insert_one({
+                "id": job_id,
+                "order_id": order_id,
+                "printer_id": None,
+                "printer_name": "Cozinha",
+                "printer_type": "kitchen",
+                "status": "pending",
+                "attempts": 0,
+                "error": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            return {"message": "Reimpressão agendada (cozinha)", "print_job_ids": [job_id]}
+
         job_ids = []
         for printer in printers:
             print_job_id = str(uuid.uuid4())

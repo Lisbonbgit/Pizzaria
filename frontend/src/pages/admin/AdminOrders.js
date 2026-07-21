@@ -100,7 +100,7 @@ const AdminOrders = () => {
     setTableTitle(t.name || `Mesa ${t.number}`);
     setPaymentId('');
     setNif('');
-    setSplitCount(t.people || 1);
+    setSplitCount(1); // por defeito paga 1 pessoa (fatura única); dividir é opcional (+)
     setCashReceived('');
     setAddProductId('');
     setAddQty(1);

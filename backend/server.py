@@ -1244,6 +1244,7 @@ async def _open_orders_for_table(table_number: int) -> list:
 class CloseTableRequest(BaseModel):
     payment_method_id: int
     nif: Optional[str] = None
+    split_count: int = 1  # >1 => emite uma fatura por pessoa (parte da conta)
 
 
 @api_router.get("/tables/{table_number}/bill")
@@ -1393,60 +1394,92 @@ async def close_table(table_number: int, req: CloseTableRequest,
             if p.get("vendus_tax_id"):
                 tax_by_prod[p["id"]] = p["vendus_tax_id"]
 
+    # Itens itemizados (para fatura única) + subtotais por IVA (para dividir).
     vendus_items = []
+    by_tax = {}
     total = 0.0
     for o in orders:
         for it in o.get("items", []):
             qty = it.get("quantity", 1) or 1
             unit = round(float(it.get("unit_price", 0) or 0), 2)
-            # Inclui o tamanho/variação no título para a fatura ficar correta
-            # (ex.: "Costela (Grande 8 Fatias)").
+            tax = tax_by_prod.get(it.get("product_id"), VENDUS_DEFAULT_TAX_ID)
+            # Inclui o tamanho/variação no título (ex.: "Costela (Grande 8 Fatias)").
             title = it.get("product_name", "Item")
             var = it.get("variation") or {}
             if isinstance(var, dict) and var.get("name"):
                 title = f"{title} ({var['name']})"
-            vendus_items.append({
-                "title": title,
-                "qty": qty,
-                "gross_price": unit,
-                "tax_id": tax_by_prod.get(it.get("product_id"), VENDUS_DEFAULT_TAX_ID),
-            })
+            vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
+            by_tax[tax] = round(by_tax.get(tax, 0.0) + round(unit * qty, 2), 2)
         total += o.get("total", 0)
     total = round(total, 2)
 
-    payments = [{"id": req.payment_method_id, "amount": total}]
-    client = {"fiscal_id": req.nif} if req.nif else None
-    ext_ref = f"mesa-{table_number}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    n = max(1, min(int(req.split_count or 1), 50))
+    ts = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
 
-    def _invoice():
+    # Constrói as faturas a emitir. n==1: uma fatura itemizada. n>1: uma fatura por
+    # pessoa com a sua parte, agrupada por IVA (o resto do arredondamento vai para a
+    # última, para as n faturas somarem EXATAMENTE o total).
+    invoices = []  # {"items": [...], "amount": float, "ext_ref": str}
+    if n == 1:
+        invoices.append({"items": vendus_items, "amount": total,
+                         "ext_ref": f"mesa-{table_number}-{ts}"})
+    else:
+        shares_by_tax = {}
+        for tax, sub in by_tax.items():
+            base = round(sub / n, 2)
+            shares_by_tax[tax] = [base] * (n - 1) + [round(sub - base * (n - 1), 2)]
+        for i in range(n):
+            items_i, amount_i = [], 0.0
+            for tax, parts in shares_by_tax.items():
+                share = parts[i]
+                if share and share > 0:
+                    items_i.append({"title": f"Conta dividida Mesa {table_number} ({i+1}/{n})",
+                                    "qty": 1, "gross_price": share, "tax_id": tax})
+                    amount_i += share
+            if items_i:
+                invoices.append({"items": items_i, "amount": round(amount_i, 2),
+                                 "ext_ref": f"mesa-{table_number}-{ts}-{i+1}de{n}"})
+
+    client = {"fiscal_id": req.nif} if (req.nif and n == 1) else None
+
+    def _emit_all():
         c = _vendus_client()
+        docs = []
         try:
-            return c.create_invoice(items=vendus_items, payments=payments,
-                                    client=client, external_reference=ext_ref,
-                                    doc_type="FS", output="escpos")
+            for inv in invoices:
+                docs.append(c.create_invoice(
+                    items=inv["items"],
+                    payments=[{"id": req.payment_method_id, "amount": inv["amount"]}],
+                    client=client, external_reference=inv["ext_ref"],
+                    doc_type="FS", output="escpos"))
         finally:
             c.close()
+        return docs
     try:
-        doc = await asyncio.to_thread(_invoice)
+        docs = await asyncio.to_thread(_emit_all)
     except VendusError as e:
         raise HTTPException(status_code=502, detail=f"Erro ao faturar no Vendus: {e}")
+    if not docs:
+        raise HTTPException(status_code=502, detail="Vendus não devolveu documento")
 
     order_ids = [o["id"] for o in orders]
     await db.orders.update_many(
         {"id": {"$in": order_ids}},
         {"$set": {"paid": True, "status": "delivered",
                   "payment_method": str(req.payment_method_id),
-                  "vendus_document_id": doc.get("id")}},
+                  "vendus_document_id": docs[0].get("id"),
+                  "vendus_document_ids": [d.get("id") for d in docs]}},
     )
     # fecha a sessão da mesa (nº de pessoas) — a mesa fica livre
     await db.table_sessions.update_many(
         {"table_number": table_number, "status": "open"},
         {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
     )
-    # imprime a fatura simplificada (ESC/POS certificado do Vendus) na CAIXA
-    escpos_b64 = doc.get("output")
-    if escpos_b64:
-        # o ESC/POS do Vendus não traz corte — acrescenta avanço + corte total
+    # imprime cada fatura (ESC/POS certificado do Vendus, com corte) na CAIXA
+    for d in docs:
+        escpos_b64 = d.get("output")
+        if not escpos_b64:
+            continue
         try:
             raw = base64.b64decode(escpos_b64) + b"\n\n\n\x1d\x56\x00"
             escpos_b64 = base64.b64encode(raw).decode("ascii")
@@ -1466,9 +1499,10 @@ async def close_table(table_number: int, req: CloseTableRequest,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
     return {"table_number": table_number, "total": total,
-            "orders_closed": len(order_ids),
-            "vendus": {"id": doc.get("id"), "number": doc.get("number"),
-                       "atcud": doc.get("atcud")}}
+            "orders_closed": len(order_ids), "invoices": len(docs), "split": n,
+            "vendus": {"id": docs[0].get("id"), "number": docs[0].get("number"),
+                       "atcud": docs[0].get("atcud")},
+            "numbers": [d.get("number") for d in docs]}
 
 
 @api_router.post("/tables/{table_number}/print-consulta")

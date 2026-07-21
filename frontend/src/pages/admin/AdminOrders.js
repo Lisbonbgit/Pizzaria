@@ -169,8 +169,10 @@ const AdminOrders = () => {
     try {
       const r = await checkoutAPI.closeTable(openTableNum, {
         payment_method_id: Number(paymentId), nif: nif.trim() || null,
+        split_count: splitActive ? splitCount : 1,
       });
-      toast.success(`Mesa fechada — ${r.data.vendus.number}`);
+      const nInv = r.data.invoices || 1;
+      toast.success(nInv > 1 ? `Mesa fechada — ${nInv} faturas emitidas` : `Mesa fechada — ${r.data.vendus.number}`);
       closeModal();
       load(true);
     } catch (e) {
@@ -429,8 +431,9 @@ const AdminOrders = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Fechar e faturar a {tableTitle}?</AlertDialogTitle>
             <AlertDialogDescription>
-              Vai emitir a fatura-recibo no Vendus ({eur(tableTotal)}
-              {splitActive ? `, ${eur(perPerson)} × ${splitCount} pessoas` : ''}) e libertar a mesa.
+              {splitActive
+                ? `Vai emitir ${splitCount} faturas simplificadas de ${eur(perPerson)} cada`
+                : `Vai emitir a fatura simplificada (${eur(tableTotal)})`} no Vendus e libertar a mesa.
               {isCash && received > 0 && change >= 0 ? ` Troco a devolver: ${eur(change)}.` : ''} Esta ação não se desfaz.
             </AlertDialogDescription>
           </AlertDialogHeader>

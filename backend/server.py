@@ -1377,8 +1377,9 @@ async def vendus_payment_methods(authorization: Optional[str] = Header(None)):
 @api_router.post("/tables/{table_number}/close")
 async def close_table(table_number: int, req: CloseTableRequest,
                       authorization: Optional[str] = Header(None)):
-    """Fecha a mesa: emite a fatura-recibo (FR) no Vendus com os itens da conta e
-    o pagamento escolhido, e marca os pedidos como pagos."""
+    """Fecha a mesa: emite a Fatura Simplificada (FS) no Vendus com os itens da
+    conta e o pagamento, imprime-a na caixa (ESC/POS do Vendus) e marca os
+    pedidos como pagos."""
     await get_current_user(authorization)
     orders = await _open_orders_for_table(table_number)
     if not orders:
@@ -1398,8 +1399,14 @@ async def close_table(table_number: int, req: CloseTableRequest,
         for it in o.get("items", []):
             qty = it.get("quantity", 1) or 1
             unit = round(float(it.get("unit_price", 0) or 0), 2)
+            # Inclui o tamanho/variação no título para a fatura ficar correta
+            # (ex.: "Costela (Grande 8 Fatias)").
+            title = it.get("product_name", "Item")
+            var = it.get("variation") or {}
+            if isinstance(var, dict) and var.get("name"):
+                title = f"{title} ({var['name']})"
             vendus_items.append({
-                "title": it.get("product_name", "Item"),
+                "title": title,
                 "qty": qty,
                 "gross_price": unit,
                 "tax_id": tax_by_prod.get(it.get("product_id"), VENDUS_DEFAULT_TAX_ID),
@@ -1415,7 +1422,8 @@ async def close_table(table_number: int, req: CloseTableRequest,
         c = _vendus_client()
         try:
             return c.create_invoice(items=vendus_items, payments=payments,
-                                    client=client, external_reference=ext_ref)
+                                    client=client, external_reference=ext_ref,
+                                    doc_type="FS", output="escpos")
         finally:
             c.close()
     try:
@@ -1435,6 +1443,28 @@ async def close_table(table_number: int, req: CloseTableRequest,
         {"table_number": table_number, "status": "open"},
         {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
     )
+    # imprime a fatura simplificada (ESC/POS certificado do Vendus) na CAIXA
+    escpos_b64 = doc.get("output")
+    if escpos_b64:
+        # o ESC/POS do Vendus não traz corte — acrescenta avanço + corte total
+        try:
+            raw = base64.b64decode(escpos_b64) + b"\n\n\n\x1d\x56\x00"
+            escpos_b64 = base64.b64encode(raw).decode("ascii")
+        except Exception:
+            pass
+        await db.print_jobs.insert_one({
+            "id": str(uuid.uuid4()),
+            "order_id": None,
+            "escpos_direct_b64": escpos_b64,
+            "printer_id": None,
+            "printer_name": "Caixa",
+            "printer_type": "cashier",
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
     return {"table_number": table_number, "total": total,
             "orders_closed": len(order_ids),
             "vendus": {"id": doc.get("id"), "number": doc.get("number"),
@@ -1836,19 +1866,22 @@ async def get_pending_jobs_for_agent(x_api_key: Optional[str] = Header(None)):
         # (campo extra, ignorado por ele).
         printer_name = (printer.get("name") if printer else None) or job.get("printer_name") \
             or ("CAIXA" if printer_type == "cashier" else "COZINHA")
-        escpos_b64 = ""
-        try:
-            fmt = ESCPOSFormatter()
-            if job.get("is_test"):
-                raw = fmt.format_test(printer_name, restaurant_name)
-            elif order:
-                raw = fmt.format_order(order, printer_name, printer_type, restaurant_name)
-            else:
-                raw = b""
-            if raw:
-                escpos_b64 = base64.b64encode(raw).decode("ascii")
-        except Exception as e:
-            logger.warning(f"Falha a renderizar ESC/POS do job {job.get('id')}: {e}")
+        # Jobs de fatura trazem o ESC/POS já pronto do Vendus (escpos_direct_b64);
+        # os restantes são renderizados aqui a partir do pedido/snapshot.
+        escpos_b64 = job.get("escpos_direct_b64") or ""
+        if not escpos_b64:
+            try:
+                fmt = ESCPOSFormatter()
+                if job.get("is_test"):
+                    raw = fmt.format_test(printer_name, restaurant_name)
+                elif order:
+                    raw = fmt.format_order(order, printer_name, printer_type, restaurant_name)
+                else:
+                    raw = b""
+                if raw:
+                    escpos_b64 = base64.b64encode(raw).decode("ascii")
+            except Exception as e:
+                logger.warning(f"Falha a renderizar ESC/POS do job {job.get('id')}: {e}")
 
         result.append({
             "job": job,

@@ -85,9 +85,12 @@ class VendusClient:
 
     def create_invoice(self, *, items: list, payments: list, doc_type: str = "FR",
                        client: Optional[dict] = None,
-                       external_reference: Optional[str] = None) -> dict:
-        """Emite um documento fiscal (default FR = fatura-recibo) com os itens e
-        os pagamentos. `client` opcional para NIF/empresa."""
+                       external_reference: Optional[str] = None,
+                       output: Optional[str] = None) -> dict:
+        """Emite um documento fiscal (ex.: FS = fatura simplificada) com os itens e
+        os pagamentos. `client` opcional para NIF/empresa. `output` (ex.: 'escpos'
+        ou 'pdf') pede ao Vendus o documento já imprimível, devolvido no campo
+        'output' (base64)."""
         body: dict = {"type": doc_type, "items": items, "payments": payments}
         if self._cfg.register_id is not None:
             body["register_id"] = self._cfg.register_id
@@ -95,4 +98,6 @@ class VendusClient:
             body["client"] = client
         if external_reference:
             body["external_reference"] = external_reference
+        if output:
+            body["output"] = output
         return self._request("POST", "documents/", json=body)

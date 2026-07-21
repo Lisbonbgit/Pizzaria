@@ -380,9 +380,13 @@ const AdminMenu = () => {
             </div>
           </div>
 
-          {reorderEnabled && (
+          {reorderEnabled ? (
             <p className="text-xs text-muted-foreground mb-3">
-              Use as setas para definir a ordem em que os produtos aparecem no menu do cliente.
+              Usa as setas ↑↓ em cada produto para definir a ordem em que aparece no menu do cliente.
+            </p>
+          ) : (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+              Para <strong>reordenar</strong> os produtos, escolhe primeiro uma <strong>categoria</strong> no filtro acima — aí aparecem setas ↑↓ em cada produto.
             </p>
           )}
 

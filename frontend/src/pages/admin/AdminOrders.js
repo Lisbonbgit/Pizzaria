@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Loader2, RefreshCw, Receipt, Printer, Clock, Plus, Users, Store,
+  Loader2, RefreshCw, Receipt, Printer, Plus, Users, Store, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -20,15 +19,8 @@ import AdminLayout from '@/components/AdminLayout';
 import { tablesAPI, ordersAPI, checkoutAPI, productsAPI } from '@/lib/api';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
-
-const relTime = (iso) => {
-  if (!iso) return '';
-  const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
-  if (mins < 1) return 'agora mesmo';
-  if (mins < 60) return `há ${mins} min`;
-  const h = Math.floor(mins / 60);
-  return `há ${h}h${String(mins % 60).padStart(2, '0')}`;
-};
+const lineKey = (l) => `${l.order_id}:${l.idx}`;
+const lineName = (l) => l.product_name + (l.variation && l.variation.name ? ` (${l.variation.name})` : '');
 
 const AdminOrders = () => {
   const [tables, setTables] = useState([]);
@@ -41,7 +33,8 @@ const AdminOrders = () => {
   const [openTableId, setOpenTableId] = useState(null);
   const [openTablePeople, setOpenTablePeople] = useState(1);
   const [tableTitle, setTableTitle] = useState('');
-  const [tableOrders, setTableOrders] = useState([]);
+  const [billLines, setBillLines] = useState([]);
+  const [selected, setSelected] = useState(new Set());
   const [tableLoading, setTableLoading] = useState(false);
 
   // Adicionar produto manual
@@ -80,11 +73,11 @@ const AdminOrders = () => {
     return () => clearInterval(id);
   }, [load]);
 
-  const loadTableOrders = useCallback(async (num) => {
+  const loadBill = useCallback(async (num) => {
     setTableLoading(true);
     try {
-      const r = await ordersAPI.list({ table_number: num });
-      setTableOrders((r.data || []).filter((o) => !o.paid && o.status !== 'cancelled'));
+      const r = await checkoutAPI.getBill(num);
+      setBillLines(r.data.lines || []);
     } catch {
       toast.error('Erro ao carregar a conta da mesa');
     } finally {
@@ -100,18 +93,24 @@ const AdminOrders = () => {
     setTableTitle(t.name || `Mesa ${t.number}`);
     setPaymentId('');
     setNif('');
-    setSplitCount(1); // por defeito paga 1 pessoa (fatura única); dividir é opcional (+)
+    setSplitCount(1);
     setCashReceived('');
     setAddProductId('');
     setAddQty(1);
-    loadTableOrders(t.number);
+    setSelected(new Set());
+    setBillLines([]);
+    loadBill(t.number);
   };
 
-  const closeModal = () => { setOpenTableNum(null); setTableOrders([]); };
+  const closeModal = () => { setOpenTableNum(null); setBillLines([]); setSelected(new Set()); };
 
-  const reprint = async (orderId) => {
-    try { await ordersAPI.reprint(orderId, []); toast.success('Reimpressão enviada'); }
-    catch { toast.error('Erro ao reimprimir'); }
+  const toggle = (l) => {
+    const k = lineKey(l);
+    setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(k)) n.delete(k); else n.add(k);
+      return n;
+    });
   };
 
   const printConsulta = async () => {
@@ -124,6 +123,14 @@ const AdminOrders = () => {
     } finally {
       setPrintingConsulta(false);
     }
+  };
+
+  const reprintKitchen = async () => {
+    const ids = [...new Set(billLines.map((l) => l.order_id))];
+    try {
+      await Promise.all(ids.map((id) => ordersAPI.reprint(id, [])));
+      toast.success('Reimpressão enviada para a cozinha');
+    } catch { toast.error('Erro ao reimprimir'); }
   };
 
   const addProduct = async () => {
@@ -146,7 +153,7 @@ const AdminOrders = () => {
       setAddProductId('');
       setAddQty(1);
       toast.success(`${qty}× ${p.name} adicionado à mesa`);
-      loadTableOrders(openTableNum);
+      loadBill(openTableNum);
       load(true);
     } catch {
       toast.error('Erro ao adicionar o produto');
@@ -155,28 +162,48 @@ const AdminOrders = () => {
     }
   };
 
-  const tableTotal = tableOrders.reduce((s, o) => s + (o.total || 0), 0);
-  const splitActive = splitCount > 1;
-  const perPerson = splitActive ? tableTotal / splitCount : tableTotal;
+  // ---- valores derivados ----
+  const selectedLines = billLines.filter((l) => selected.has(lineKey(l)));
+  const rightLines = billLines.filter((l) => !selected.has(lineKey(l)));
+  const hasSelection = selectedLines.length > 0;
+  const fullTotal = billLines.reduce((s, l) => s + (l.total_price || 0), 0);
+  const selectedTotal = selectedLines.reduce((s, l) => s + (l.total_price || 0), 0);
+  const invoiceTotal = hasSelection ? selectedTotal : fullTotal;
+  const splitActive = !hasSelection && splitCount > 1;
+  const perPerson = splitActive ? invoiceTotal / splitCount : invoiceTotal;
   const selectedMethod = methods.find((m) => String(m.id) === String(paymentId));
   const isCash = !!selectedMethod && /dinheiro|numer|cash/i.test(selectedMethod.title || '');
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
-  const change = Math.round((received - tableTotal) * 100) / 100;
+  const change = Math.round((received - invoiceTotal) * 100) / 100;
 
-  const handleClose = async () => {
+  const doClose = async () => {
     setConfirmOpen(false);
     setClosing(true);
     try {
-      const r = await checkoutAPI.closeTable(openTableNum, {
-        payment_method_id: Number(paymentId), nif: nif.trim() || null,
-        split_count: splitActive ? splitCount : 1,
-      });
+      const body = { payment_method_id: Number(paymentId) };
+      if (hasSelection) {
+        body.items = selectedLines.map((l) => ({ order_id: l.order_id, idx: l.idx }));
+      } else {
+        body.nif = nif.trim() || null;
+        body.split_count = splitActive ? splitCount : 1;
+      }
+      const r = await checkoutAPI.closeTable(openTableNum, body);
       const nInv = r.data.invoices || 1;
-      toast.success(nInv > 1 ? `Mesa fechada — ${nInv} faturas emitidas` : `Mesa fechada — ${r.data.vendus.number}`);
-      closeModal();
-      load(true);
+      toast.success(nInv > 1 ? `${nInv} faturas emitidas` : `Fatura ${r.data.vendus.number} emitida`);
+      if (r.data.table_free) {
+        closeModal();
+        load(true);
+      } else {
+        // separação parcial: a mesa continua aberta com o resto
+        setSelected(new Set());
+        setCashReceived('');
+        setSplitCount(1);
+        await loadBill(openTableNum);
+        load(true);
+        toast.info(`Falta faturar ${eur(r.data.remaining_total)} nesta mesa`);
+      }
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Erro ao fechar a mesa');
+      toast.error(e.response?.data?.detail || 'Erro ao faturar');
     } finally {
       setClosing(false);
     }
@@ -237,7 +264,6 @@ const AdminOrders = () => {
                 ].join(' ')}
               >
                 <span className={`absolute inset-x-0 top-0 h-1.5 ${busy ? 'bg-primary' : 'bg-border'}`} />
-
                 <div className="flex items-start justify-between">
                   <div className="min-w-0">
                     {isMesaName ? (
@@ -251,7 +277,6 @@ const AdminOrders = () => {
                   </div>
                   {busy && <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-primary animate-pulse" title="Conta aberta" />}
                 </div>
-
                 {busy ? (
                   <div>
                     <p className="font-heading text-2xl font-bold tabular-nums text-foreground">{eur(t.open_total)}</p>
@@ -269,178 +294,201 @@ const AdminOrders = () => {
         </div>
       )}
 
-      {/* Popup grande da mesa */}
+      {/* Checkout tipo POS — 2 painéis */}
       <Dialog open={openTableNum != null} onOpenChange={(v) => !v && closeModal()}>
-        <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto p-0 gap-0">
-          <DialogHeader className="px-6 py-4 border-b bg-primary/[0.04]">
-            <DialogTitle className="font-heading text-2xl flex items-center justify-between pr-10">
-              <span className="flex items-center gap-2">
-                {tableTitle}
-                {openTablePeople > 1 && (
-                  <span className="text-sm font-normal text-muted-foreground flex items-center gap-1">
-                    <Users className="h-4 w-4" />{openTablePeople}
+        <DialogContent className="max-w-5xl w-[96vw] h-[90vh] p-0 gap-0 overflow-hidden">
+          <div className="flex flex-col md:flex-row h-full min-h-0">
+
+            {/* ESQUERDA — a faturar + pagamento */}
+            <div className="flex-1 flex flex-col min-h-0 bg-background">
+              <DialogHeader className="px-6 py-4 border-b text-left">
+                <DialogTitle className="font-heading text-xl flex items-center justify-between pr-8">
+                  <span>{tableTitle}</span>
+                  <span className="text-xs font-normal text-muted-foreground uppercase tracking-wide">
+                    {hasSelection ? 'A separar itens' : 'Conta toda'}
                   </span>
-                )}
-              </span>
-              <span className="text-primary tabular-nums">{eur(tableTotal)}</span>
-            </DialogTitle>
-          </DialogHeader>
+                </DialogTitle>
+              </DialogHeader>
 
-          {/* Adicionar produto manualmente */}
-          <div className="px-6 py-3 border-b bg-muted/20 flex flex-col sm:flex-row gap-2">
-            <Select value={addProductId} onValueChange={setAddProductId}>
-              <SelectTrigger className="flex-1"><SelectValue placeholder="Adicionar produto (balcão)..." /></SelectTrigger>
-              <SelectContent>
-                {products.filter((p) => p.available !== false).map((p) => (
-                  <SelectItem key={p.id} value={p.id}>{p.name} — {eur(p.base_price)}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Input type="number" min={1} value={addQty}
-              onChange={(e) => setAddQty(e.target.value)} className="w-20" aria-label="Quantidade" />
-            <Button variant="outline" onClick={addProduct} disabled={adding || !addProductId}>
-              {adding ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Plus className="h-4 w-4 mr-1" />}
-              Adicionar
-            </Button>
-          </div>
+              <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+                <div className="flex items-end justify-between">
+                  <span className="text-muted-foreground">{hasSelection ? 'A faturar (selecionados)' : 'Total'}</span>
+                  <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(invoiceTotal)}</span>
+                </div>
 
-          <div className="px-6 py-4 space-y-4">
-            {tableLoading ? (
-              <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center">
-                <Loader2 className="h-5 w-5 animate-spin" /> A carregar a conta...
-              </div>
-            ) : tableOrders.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">Sem pedidos em aberto.</p>
-            ) : (
-              tableOrders.map((o) => (
-                <div key={o.id} className="rounded-lg border">
-                  <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b bg-muted/30">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-heading font-bold">#{o.order_number}</span>
-                      {o.source === 'manual' && (
-                        <Badge variant="secondary" className="bg-amber-100 text-amber-800 gap-1">
-                          <Store className="h-3 w-3" /> Balcão
-                        </Badge>
-                      )}
-                      <span className="text-xs text-muted-foreground flex items-center gap-1">
-                        <Clock className="h-3 w-3" />{relTime(o.created_at)}
-                      </span>
-                    </div>
-                    <span className="font-semibold tabular-nums">{eur(o.total)}</span>
-                  </div>
-                  <div className="px-4 py-2 space-y-1">
-                    {o.items.map((it, i) => (
-                      <div key={i} className="flex justify-between text-sm">
-                        <span>{it.quantity}× {it.product_name}
-                          {it.notes && <span className="text-muted-foreground italic"> — {it.notes}</span>}
+                {/* Itens selecionados (separação) */}
+                {hasSelection && (
+                  <div className="rounded-lg border divide-y">
+                    {selectedLines.map((l) => (
+                      <button key={lineKey(l)} onClick={() => toggle(l)}
+                        className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-muted/50 text-left">
+                        <span className="truncate">{l.quantity}× {lineName(l)}</span>
+                        <span className="flex items-center gap-2 shrink-0">
+                          <span className="tabular-nums">{eur(l.total_price)}</span>
+                          <X className="h-4 w-4 text-muted-foreground" />
                         </span>
-                        <span className="tabular-nums text-muted-foreground">{eur(it.total_price)}</span>
-                      </div>
+                      </button>
                     ))}
+                    <p className="px-3 py-1.5 text-xs text-muted-foreground">Toca num item para o devolver à mesa.</p>
                   </div>
-                  <div className="flex items-center justify-end px-4 py-1.5 border-t">
-                    <Button variant="ghost" size="sm" className="h-8" onClick={() => reprint(o.id)}>
-                      <Printer className="h-3.5 w-3.5 mr-1" /> Reimprimir
-                    </Button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+                )}
 
-          {/* Fecho da mesa */}
-          {tableOrders.length > 0 && (
-            <div className="px-6 py-4 border-t bg-muted/20 space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-heading text-lg font-bold">Total</span>
-                <span className="font-heading text-2xl font-bold text-primary tabular-nums">{eur(tableTotal)}</span>
-              </div>
-
-              {/* Consulta de mesa — conta provisória para mostrar ao cliente */}
-              <Button variant="outline" className="w-full" onClick={printConsulta} disabled={printingConsulta}>
-                {printingConsulta ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Printer className="h-4 w-4 mr-2" />}
-                Consulta de mesa (imprimir para o cliente)
-              </Button>
-
-              {/* Dividir a conta */}
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm">Dividir por</span>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="icon" className="h-8 w-8"
-                    onClick={() => setSplitCount((n) => Math.max(1, n - 1))} disabled={splitCount <= 1}>−</Button>
-                  <span className="w-8 text-center font-semibold tabular-nums">{splitCount}</span>
-                  <Button variant="outline" size="icon" className="h-8 w-8"
-                    onClick={() => setSplitCount((n) => n + 1)}>+</Button>
-                  <span className="text-sm text-muted-foreground">pessoa{splitCount > 1 ? 's' : ''}</span>
-                </div>
-              </div>
-              {splitActive && (
-                <div className="flex items-center justify-between text-sm bg-primary/[0.06] rounded-lg px-3 py-2">
-                  <span>Cada pessoa paga</span>
-                  <span className="font-semibold text-primary tabular-nums">{eur(perPerson)}</span>
-                </div>
-              )}
-
-              {/* Pagamento */}
-              <div className="flex flex-col sm:flex-row gap-2">
-                <Select value={paymentId} onValueChange={setPaymentId}>
-                  <SelectTrigger className="sm:w-44"><SelectValue placeholder="Pagamento" /></SelectTrigger>
-                  <SelectContent>
-                    {methods.map((m) => <SelectItem key={m.id} value={String(m.id)}>{m.title}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <Input className="sm:w-40" placeholder="NIF (opcional)" value={nif} onChange={(e) => setNif(e.target.value)} />
-              </div>
-
-              {/* Troco — só quando o pagamento é em dinheiro */}
-              {isCash && (
-                <div className="rounded-lg border bg-background px-3 py-3 space-y-2">
+                {/* Dividir — só quando é a conta toda */}
+                {!hasSelection && (
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm">Com quanto vai pagar?</span>
-                    <div className="relative w-32">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">€</span>
-                      <Input type="number" inputMode="decimal" min={0} step="0.5" className="pl-7 text-right"
-                        placeholder="0.00" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} />
+                    <span className="text-sm">Dividir por</span>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="icon" className="h-8 w-8"
+                        onClick={() => setSplitCount((n) => Math.max(1, n - 1))} disabled={splitCount <= 1}>−</Button>
+                      <span className="w-8 text-center font-semibold tabular-nums">{splitCount}</span>
+                      <Button variant="outline" size="icon" className="h-8 w-8"
+                        onClick={() => setSplitCount((n) => n + 1)}>+</Button>
+                      <span className="text-sm text-muted-foreground">pessoa{splitCount > 1 ? 's' : ''}</span>
                     </div>
                   </div>
-                  {received > 0 && (
-                    <div className={`flex items-center justify-between text-sm font-semibold ${change >= 0 ? 'text-green-700' : 'text-destructive'}`}>
-                      <span>{change >= 0 ? 'Troco' : 'Em falta'}</span>
-                      <span className="tabular-nums">{eur(Math.abs(change))}</span>
-                    </div>
+                )}
+                {splitActive && (
+                  <div className="flex items-center justify-between text-sm bg-primary/[0.06] rounded-lg px-3 py-2">
+                    <span>Cada pessoa paga</span>
+                    <span className="font-semibold text-primary tabular-nums">{eur(perPerson)}</span>
+                  </div>
+                )}
+
+                {/* Pagamento + NIF */}
+                <div className="space-y-2">
+                  <Select value={paymentId} onValueChange={setPaymentId}>
+                    <SelectTrigger><SelectValue placeholder="Método de pagamento" /></SelectTrigger>
+                    <SelectContent>
+                      {methods.map((m) => <SelectItem key={m.id} value={String(m.id)}>{m.title}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {!hasSelection && (
+                    <Input placeholder="NIF (opcional)" value={nif} onChange={(e) => setNif(e.target.value)} />
                   )}
                 </div>
-              )}
 
-              <Button
-                size="lg"
-                onClick={() => { if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; } setConfirmOpen(true); }}
-                disabled={closing}
-                className="w-full h-14 text-base font-semibold bg-[#5a1a1a] hover:bg-[#4a1414]">
-                {closing ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Receipt className="h-5 w-5 mr-2" />}
-                Fechar mesa e faturar no Vendus
-              </Button>
+                {/* Troco (dinheiro) */}
+                {isCash && (
+                  <div className="rounded-lg border bg-muted/20 px-3 py-3 space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm">Com quanto vai pagar?</span>
+                      <div className="relative w-32">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">€</span>
+                        <Input type="number" inputMode="decimal" min={0} step="0.5" className="pl-7 text-right"
+                          placeholder="0.00" value={cashReceived} onChange={(e) => setCashReceived(e.target.value)} />
+                      </div>
+                    </div>
+                    {received > 0 && (
+                      <div className={`flex items-center justify-between text-sm font-semibold ${change >= 0 ? 'text-green-700' : 'text-destructive'}`}>
+                        <span>{change >= 0 ? 'Troco' : 'Em falta'}</span>
+                        <span className="tabular-nums">{eur(Math.abs(change))}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Rodapé — Emitir */}
+              <div className="px-6 py-4 border-t">
+                <Button
+                  onClick={() => {
+                    if (!billLines.length) { toast.error('Conta vazia'); return; }
+                    if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; }
+                    setConfirmOpen(true);
+                  }}
+                  disabled={closing || !billLines.length}
+                  className="w-full h-14 text-base font-semibold bg-[#5a1a1a] hover:bg-[#4a1414]">
+                  {closing ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Receipt className="h-5 w-5 mr-2" />}
+                  Emitir Documento
+                </Button>
+              </div>
             </div>
-          )}
+
+            {/* DIREITA — itens da mesa (toca para separar) */}
+            <div className="w-full md:w-[42%] md:max-w-md flex flex-col min-h-0 bg-[#3a1414] text-white">
+              <div className="px-4 py-3 grid grid-cols-[1fr_2.5rem_5rem] gap-2 text-[11px] uppercase tracking-wide text-white/50 border-b border-white/10">
+                <span>Produto</span><span className="text-center">Qtd</span><span className="text-right">Preço</span>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                {tableLoading ? (
+                  <div className="flex items-center gap-2 text-white/70 py-8 justify-center text-sm">
+                    <Loader2 className="h-5 w-5 animate-spin" /> A carregar…
+                  </div>
+                ) : rightLines.length === 0 ? (
+                  <p className="text-center text-white/50 py-8 text-sm">
+                    {hasSelection ? 'Todos os itens estão a ser faturados.' : 'Conta vazia.'}
+                  </p>
+                ) : (
+                  rightLines.map((l) => (
+                    <button key={lineKey(l)} onClick={() => toggle(l)}
+                      className="w-full grid grid-cols-[1fr_2.5rem_5rem] gap-2 items-center px-4 py-3 border-b border-white/5 hover:bg-white/10 text-left transition-colors">
+                      <span className="truncate flex items-center gap-1.5">
+                        {lineName(l)}
+                        {l.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
+                      </span>
+                      <span className="text-center tabular-nums">{l.quantity}</span>
+                      <span className="text-right tabular-nums">{eur(l.total_price)}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+
+              {/* Rodapé direito — ações */}
+              <div className="border-t border-white/10 p-3 space-y-2">
+                <div className="flex gap-2">
+                  <Select value={addProductId} onValueChange={setAddProductId}>
+                    <SelectTrigger className="flex-1 bg-white/10 border-white/20 text-white h-9"><SelectValue placeholder="Adicionar produto…" /></SelectTrigger>
+                    <SelectContent>
+                      {products.filter((p) => p.available !== false).map((p) => (
+                        <SelectItem key={p.id} value={p.id}>{p.name} — {eur(p.base_price)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input type="number" min={1} value={addQty} onChange={(e) => setAddQty(e.target.value)}
+                    className="w-14 bg-white/10 border-white/20 text-white h-9" aria-label="Quantidade" />
+                  <Button variant="secondary" size="icon" className="h-9 w-9 shrink-0" onClick={addProduct} disabled={adding || !addProductId}>
+                    {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                  </Button>
+                </div>
+                <div className="flex items-center justify-between text-sm text-white/70 px-1">
+                  <span className="flex items-center gap-1"><Users className="h-4 w-4" />{openTablePeople} pessoa{openTablePeople !== 1 ? 's' : ''}</span>
+                  <span className="tabular-nums">Total {eur(fullTotal)}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" className="bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
+                    onClick={printConsulta} disabled={printingConsulta}>
+                    {printingConsulta ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Printer className="h-4 w-4 mr-1" />}
+                    Consulta
+                  </Button>
+                  <Button variant="outline" className="bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
+                    onClick={reprintKitchen} disabled={!billLines.length}>
+                    <Printer className="h-4 w-4 mr-1" /> Cozinha
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 
-      {/* Confirmação de fecho */}
+      {/* Confirmação */}
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Fechar e faturar a {tableTitle}?</AlertDialogTitle>
+            <AlertDialogTitle>Emitir documento — {tableTitle}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {splitActive
-                ? `Vai emitir ${splitCount} faturas simplificadas de ${eur(perPerson)} cada`
-                : `Vai emitir a fatura simplificada (${eur(tableTotal)})`} no Vendus e libertar a mesa.
+              {hasSelection
+                ? `Vai faturar ${selectedLines.length} item(ns) selecionado(s) (${eur(invoiceTotal)}). O resto da conta fica na mesa.`
+                : splitActive
+                  ? `Vai emitir ${splitCount} faturas simplificadas de ${eur(perPerson)} cada e libertar a mesa.`
+                  : `Vai emitir a fatura simplificada (${eur(invoiceTotal)}) e libertar a mesa.`}
               {isCash && received > 0 && change >= 0 ? ` Troco a devolver: ${eur(change)}.` : ''} Esta ação não se desfaz.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={handleClose} className="bg-[#5a1a1a] hover:bg-[#4a1414]">
-              Sim, fechar e faturar
+            <AlertDialogAction onClick={doClose} className="bg-[#5a1a1a] hover:bg-[#4a1414]">
+              Sim, emitir
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

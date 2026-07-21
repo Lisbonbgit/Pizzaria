@@ -34,6 +34,7 @@ const AdminMenu = () => {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('products');
+  const [importing, setImporting] = useState(false);
   
   // Category Modal
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -84,6 +85,20 @@ const AdminMenu = () => {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const handleImportVendus = async () => {
+    setImporting(true);
+    try {
+      const r = await productsAPI.importVendus();
+      const d = r.data;
+      toast.success(`Vendus: ${d.products_created} produtos novos, ${d.products_updated} atualizados, ${d.categories_created} categorias`);
+      loadData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao importar do Vendus');
+    } finally {
+      setImporting(false);
+    }
+  };
 
   // Category handlers
   const openCategoryModal = (category = null) => {
@@ -318,10 +333,16 @@ const AdminMenu = () => {
         <TabsContent value="products">
           <div className="flex justify-between items-center mb-6">
             <p className="text-muted-foreground">{products.length} produtos</p>
-            <Button onClick={() => openProductModal()} data-testid="add-product-btn">
-              <Plus className="h-4 w-4 mr-2" />
-              Novo Produto
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={handleImportVendus} disabled={importing}>
+                {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+                Importar do Vendus
+              </Button>
+              <Button onClick={() => openProductModal()} data-testid="add-product-btn">
+                <Plus className="h-4 w-4 mr-2" />
+                Novo Produto
+              </Button>
+            </div>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">

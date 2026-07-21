@@ -79,7 +79,9 @@ export const productsAPI = {
     return api.post('/products/upload-image', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
-  }
+  },
+  importVendus: () =>
+    api.post('/menu/import-vendus')
 };
 
 // Tables API

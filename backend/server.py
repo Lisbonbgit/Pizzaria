@@ -276,6 +276,7 @@ class OrderCreate(BaseModel):
     items: List[OrderItemCreate]
     notes: Optional[str] = None
     total: float
+    source: Optional[str] = None  # 'client' (QR) | 'manual' (staff no balcão)
 
 class OrderStatusUpdate(BaseModel):
     status: str
@@ -295,6 +296,7 @@ class OrderResponse(BaseModel):
     paid: bool
     payment_method: Optional[str] = None
     print_status: str
+    source: Optional[str] = None
     created_at: str
 
 # ==================== PRINTER MODELS ====================
@@ -1052,6 +1054,7 @@ async def create_order(order: OrderCreate):
         "status": "received",
         "paid": False,
         "print_status": "pending",
+        "source": order.source or "client",
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.orders.insert_one(order_doc)
@@ -1282,11 +1285,13 @@ async def get_table_session(table_number: int):
     lines = []
     total = 0.0
     for o in orders:
+        src = o.get("source", "client")
         for it in o.get("items", []):
             lines.append({
                 "product_name": it.get("product_name"),
                 "quantity": it.get("quantity", 1),
                 "total_price": it.get("total_price", 0),
+                "source": src,
             })
         total += o.get("total", 0)
     return {
@@ -1325,6 +1330,14 @@ async def close_table(table_number: int, req: CloseTableRequest,
     if not orders:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
 
+    # IVA por produto (do que foi importado do Vendus); fallback ao default
+    prod_ids = list({it.get("product_id") for o in orders for it in o.get("items", []) if it.get("product_id")})
+    tax_by_prod = {}
+    if prod_ids:
+        async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1}):
+            if p.get("vendus_tax_id"):
+                tax_by_prod[p["id"]] = p["vendus_tax_id"]
+
     vendus_items = []
     total = 0.0
     for o in orders:
@@ -1335,7 +1348,7 @@ async def close_table(table_number: int, req: CloseTableRequest,
                 "title": it.get("product_name", "Item"),
                 "qty": qty,
                 "gross_price": unit,
-                "tax_id": VENDUS_DEFAULT_TAX_ID,
+                "tax_id": tax_by_prod.get(it.get("product_id"), VENDUS_DEFAULT_TAX_ID),
             })
         total += o.get("total", 0)
     total = round(total, 2)
@@ -1372,6 +1385,83 @@ async def close_table(table_number: int, req: CloseTableRequest,
             "orders_closed": len(order_ids),
             "vendus": {"id": doc.get("id"), "number": doc.get("number"),
                        "atcud": doc.get("atcud")}}
+
+
+@api_router.post("/menu/import-vendus")
+async def import_menu_from_vendus(authorization: Optional[str] = Header(None)):
+    """Importa produtos + categorias (com o IVA) do Vendus para o menu da app.
+    Faz upsert por referência/nome, para poder correr mais que uma vez."""
+    await get_current_user(authorization)
+
+    def _fetch():
+        c = _vendus_client()
+        try:
+            return c.list_categories(), c.list_products()
+        finally:
+            c.close()
+    try:
+        vcats, vprods = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Vendus indisponível: {e}")
+
+    existing_cats = await db.categories.find({}, {"_id": 0}).to_list(500)
+    by_name = {c["name"].strip().lower(): c for c in existing_cats}
+    order = len(existing_cats)
+    cat_map = {}
+    cats_created = 0
+
+    async def _ensure_category(title):
+        nonlocal order, cats_created
+        key = title.strip().lower()
+        if key in by_name:
+            return by_name[key]["id"]
+        cid = str(uuid.uuid4())
+        doc = {"id": cid, "name": title.strip(), "order": order, "active": True,
+               "created_at": datetime.now(timezone.utc).isoformat()}
+        await db.categories.insert_one(doc)
+        by_name[key] = doc
+        order += 1
+        cats_created += 1
+        return cid
+
+    for vc in vcats:
+        title = (vc.get("title") or "").strip()
+        if title:
+            cat_map[str(vc.get("id"))] = await _ensure_category(title)
+
+    prods_created = prods_updated = 0
+    for vp in vprods:
+        name = (vp.get("title") or "").strip()
+        if not name:
+            continue
+        ref = vp.get("reference")
+        price = float(vp.get("gross_price") or 0)
+        tax_id = vp.get("tax_id")
+        app_cat = cat_map.get(str(vp.get("category_id") or ""))
+        if not app_cat:
+            app_cat = await _ensure_category("Importados")
+        query = {"vendus_reference": ref} if ref else {"name": name}
+        existing = await db.products.find_one(query, {"_id": 0})
+        if existing:
+            await db.products.update_one({"id": existing["id"]}, {"$set": {
+                "name": name, "base_price": price, "category_id": app_cat,
+                "vendus_tax_id": tax_id, "vendus_reference": ref,
+            }})
+            prods_updated += 1
+        else:
+            await db.products.insert_one({
+                "id": str(uuid.uuid4()), "name": name,
+                "description": vp.get("description") or "",
+                "category_id": app_cat, "base_price": price, "image_url": None,
+                "variations": [], "extras": [], "complement_groups": [],
+                "preference_options": None, "available": True, "featured": False,
+                "vendus_tax_id": tax_id, "vendus_reference": ref,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            prods_created += 1
+
+    return {"categories_created": cats_created,
+            "products_created": prods_created, "products_updated": prods_updated}
 
 
 class ReprintRequest(BaseModel):

@@ -1,32 +1,26 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Loader2, RefreshCw, Receipt, Printer, Clock, Plus,
+  Loader2, RefreshCw, Receipt, Printer, Clock, Plus, Users, Store,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
 import { tablesAPI, ordersAPI, checkoutAPI, productsAPI } from '@/lib/api';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
-
-const STATUS = {
-  received: { label: 'Recebido', cls: 'bg-blue-100 text-blue-800' },
-  preparing: { label: 'Em preparação', cls: 'bg-amber-100 text-amber-800' },
-  ready: { label: 'Pronto', cls: 'bg-green-100 text-green-800' },
-  delivered: { label: 'Entregue', cls: 'bg-gray-100 text-gray-700' },
-  cancelled: { label: 'Cancelado', cls: 'bg-red-100 text-red-700' },
-};
-const STATUS_OPTS = Object.entries(STATUS)
-  .filter(([k]) => k !== 'cancelled')
-  .map(([value, v]) => ({ value, label: v.label }));
 
 const relTime = (iso) => {
   if (!iso) return '';
@@ -46,6 +40,7 @@ const AdminOrders = () => {
   // Modal da mesa
   const [openTableNum, setOpenTableNum] = useState(null);
   const [openTableId, setOpenTableId] = useState(null);
+  const [openTablePeople, setOpenTablePeople] = useState(1);
   const [tableTitle, setTableTitle] = useState('');
   const [tableOrders, setTableOrders] = useState([]);
   const [tableLoading, setTableLoading] = useState(false);
@@ -59,6 +54,8 @@ const AdminOrders = () => {
   const [methods, setMethods] = useState([]);
   const [paymentId, setPaymentId] = useState('');
   const [nif, setNif] = useState('');
+  const [split, setSplit] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [closing, setClosing] = useState(false);
 
   const load = useCallback(async (silent = false) => {
@@ -98,9 +95,11 @@ const AdminOrders = () => {
     if (!t.occupied) return;
     setOpenTableNum(t.number);
     setOpenTableId(t.id);
+    setOpenTablePeople(t.people || 1);
     setTableTitle(t.name || `Mesa ${t.number}`);
     setPaymentId('');
     setNif('');
+    setSplit(false);
     setAddProductId('');
     setAddQty(1);
     loadTableOrders(t.number);
@@ -108,17 +107,8 @@ const AdminOrders = () => {
 
   const closeModal = () => { setOpenTableNum(null); setTableOrders([]); };
 
-  const changeStatus = async (orderId, status) => {
-    try {
-      await ordersAPI.updateStatus(orderId, status);
-      setTableOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status } : o)));
-    } catch {
-      toast.error('Erro ao atualizar o estado');
-    }
-  };
-
   const reprint = async (orderId) => {
-    try { await ordersAPI.reprint(orderId, []); toast.success('Reimpressão agendada'); }
+    try { await ordersAPI.reprint(orderId, []); toast.success('Reimpressão enviada'); }
     catch { toast.error('Erro ao reimprimir'); }
   };
 
@@ -132,6 +122,7 @@ const AdminOrders = () => {
       await ordersAPI.create({
         table_id: openTableId,
         table_number: openTableNum,
+        source: 'manual',
         items: [{
           product_id: p.id, product_name: p.name, quantity: qty,
           unit_price: price, total_price: +(price * qty).toFixed(2),
@@ -151,9 +142,10 @@ const AdminOrders = () => {
   };
 
   const tableTotal = tableOrders.reduce((s, o) => s + (o.total || 0), 0);
+  const perPerson = openTablePeople > 1 ? tableTotal / openTablePeople : tableTotal;
 
   const handleClose = async () => {
-    if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; }
+    setConfirmOpen(false);
     setClosing(true);
     try {
       const r = await checkoutAPI.closeTable(openTableNum, {
@@ -243,8 +235,8 @@ const AdminOrders = () => {
                   <div>
                     <p className="font-heading text-2xl font-bold tabular-nums text-foreground">{eur(t.open_total)}</p>
                     <p className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap">
-                      <span>{t.open_orders} pedido{t.open_orders > 1 ? 's' : ''}</span>
-                      {t.last_activity && <><span>·</span><Clock className="h-3 w-3" /><span>{relTime(t.last_activity)}</span></>}
+                      {t.people ? <><Users className="h-3 w-3" /><span>{t.people}</span><span>·</span></> : null}
+                      <span>{t.open_orders} pedido{t.open_orders !== 1 ? 's' : ''}</span>
                     </p>
                   </div>
                 ) : (
@@ -260,8 +252,15 @@ const AdminOrders = () => {
       <Dialog open={openTableNum != null} onOpenChange={(v) => !v && closeModal()}>
         <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto p-0 gap-0">
           <DialogHeader className="px-6 py-4 border-b bg-primary/[0.04]">
-            <DialogTitle className="font-heading text-2xl flex items-center justify-between pr-8">
-              <span>{tableTitle}</span>
+            <DialogTitle className="font-heading text-2xl flex items-center justify-between pr-10">
+              <span className="flex items-center gap-2">
+                {tableTitle}
+                {openTablePeople > 1 && (
+                  <span className="text-sm font-normal text-muted-foreground flex items-center gap-1">
+                    <Users className="h-4 w-4" />{openTablePeople}
+                  </span>
+                )}
+              </span>
               <span className="text-primary tabular-nums">{eur(tableTotal)}</span>
             </DialogTitle>
           </DialogHeader>
@@ -269,7 +268,7 @@ const AdminOrders = () => {
           {/* Adicionar produto manualmente */}
           <div className="px-6 py-3 border-b bg-muted/20 flex flex-col sm:flex-row gap-2">
             <Select value={addProductId} onValueChange={setAddProductId}>
-              <SelectTrigger className="flex-1"><SelectValue placeholder="Adicionar produto à mesa..." /></SelectTrigger>
+              <SelectTrigger className="flex-1"><SelectValue placeholder="Adicionar produto (balcão)..." /></SelectTrigger>
               <SelectContent>
                 {products.filter((p) => p.available !== false).map((p) => (
                   <SelectItem key={p.id} value={p.id}>{p.name} — {eur(p.base_price)}</SelectItem>
@@ -297,9 +296,11 @@ const AdminOrders = () => {
                   <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b bg-muted/30">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-heading font-bold">#{o.order_number}</span>
-                      <Badge className={STATUS[o.status]?.cls || ''} variant="secondary">
-                        {STATUS[o.status]?.label || o.status}
-                      </Badge>
+                      {o.source === 'manual' && (
+                        <Badge variant="secondary" className="bg-amber-100 text-amber-800 gap-1">
+                          <Store className="h-3 w-3" /> Balcão
+                        </Badge>
+                      )}
                       <span className="text-xs text-muted-foreground flex items-center gap-1">
                         <Clock className="h-3 w-3" />{relTime(o.created_at)}
                       </span>
@@ -316,13 +317,7 @@ const AdminOrders = () => {
                       </div>
                     ))}
                   </div>
-                  <div className="flex items-center gap-2 px-4 py-2 border-t">
-                    <Select value={o.status} onValueChange={(v) => changeStatus(o.id, v)}>
-                      <SelectTrigger className="h-8 w-40 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {STATUS_OPTS.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                  <div className="flex items-center justify-end px-4 py-1.5 border-t">
                     <Button variant="ghost" size="sm" className="h-8" onClick={() => reprint(o.id)}>
                       <Printer className="h-3.5 w-3.5 mr-1" /> Reimprimir
                     </Button>
@@ -339,6 +334,15 @@ const AdminOrders = () => {
                 <span className="font-heading text-lg font-bold">Total</span>
                 <span className="font-heading text-2xl font-bold text-primary tabular-nums">{eur(tableTotal)}</span>
               </div>
+
+              {openTablePeople > 1 && (
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <Checkbox checked={split} onCheckedChange={(v) => setSplit(!!v)} />
+                  <span>Dividir por {openTablePeople} pessoas</span>
+                  {split && <span className="ml-auto font-semibold text-primary tabular-nums">{eur(perPerson)} / pessoa</span>}
+                </label>
+              )}
+
               <div className="flex flex-col sm:flex-row gap-2">
                 <Select value={paymentId} onValueChange={setPaymentId}>
                   <SelectTrigger className="sm:w-44"><SelectValue placeholder="Pagamento" /></SelectTrigger>
@@ -347,7 +351,9 @@ const AdminOrders = () => {
                   </SelectContent>
                 </Select>
                 <Input className="sm:w-40" placeholder="NIF (opcional)" value={nif} onChange={(e) => setNif(e.target.value)} />
-                <Button onClick={handleClose} disabled={closing || !paymentId}
+                <Button
+                  onClick={() => { if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; } setConfirmOpen(true); }}
+                  disabled={closing}
                   className="flex-1 bg-[#5a1a1a] hover:bg-[#4a1414]">
                   {closing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Receipt className="h-4 w-4 mr-2" />}
                   Fechar mesa e faturar no Vendus
@@ -357,6 +363,25 @@ const AdminOrders = () => {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Confirmação de fecho */}
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Fechar e faturar a {tableTitle}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Vai emitir a fatura-recibo no Vendus ({eur(tableTotal)}
+              {split && openTablePeople > 1 ? `, ${eur(perPerson)} por pessoa` : ''}) e libertar a mesa. Esta ação não se desfaz.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction onClick={handleClose} className="bg-[#5a1a1a] hover:bg-[#4a1414]">
+              Sim, fechar e faturar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AdminLayout>
   );
 };

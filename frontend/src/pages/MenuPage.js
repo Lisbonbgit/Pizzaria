@@ -406,7 +406,12 @@ const MenuPage = () => {
               <>
                 {bill.lines.map((l, i) => (
                   <div key={i} className="flex justify-between text-sm border-b last:border-0 py-1.5">
-                    <span>{l.quantity}× {l.product_name}</span>
+                    <span>
+                      {l.quantity}× {l.product_name}
+                      {l.source === 'manual' && (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide text-amber-700 font-semibold">balcão</span>
+                      )}
+                    </span>
                     <span className="tabular-nums">{`€ ${Number(l.total_price || 0).toFixed(2)}`}</span>
                   </div>
                 ))}

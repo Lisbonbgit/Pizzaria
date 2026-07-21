@@ -10,7 +10,6 @@ import {
   Pizza,
   Menu,
   X,
-  Printer,
   BarChart3
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -22,7 +21,6 @@ const navItems = [
   { path: '/admin/orders', label: 'Pedidos', icon: ClipboardList },
   { path: '/admin/menu', label: 'Menu', icon: UtensilsCrossed },
   { path: '/admin/tables', label: 'Mesas', icon: Grid3X3 },
-  { path: '/admin/printers', label: 'Impressoras', icon: Printer },
   { path: '/admin/reports', label: 'Relatórios', icon: BarChart3 },
   { path: '/admin/settings', label: 'Definições', icon: Settings },
 ];

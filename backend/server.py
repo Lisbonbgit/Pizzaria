@@ -1782,14 +1782,34 @@ async def get_pending_jobs_for_agent(x_api_key: Optional[str] = Header(None)):
         
         # Include printer_type in result
         printer_type = job.get("printer_type") or (printer.get("printer_type") if printer else "kitchen")
-        
+
+        # Render ESC/POS server-side (base64) para o app-ponte (APK) ser "burro":
+        # só recebe bytes, abre socket :9100 e imprime. Não quebra o agente python
+        # (campo extra, ignorado por ele).
+        printer_name = (printer.get("name") if printer else None) or job.get("printer_name") \
+            or ("CAIXA" if printer_type == "cashier" else "COZINHA")
+        escpos_b64 = ""
+        try:
+            fmt = ESCPOSFormatter()
+            if job.get("is_test"):
+                raw = fmt.format_test(printer_name, restaurant_name)
+            elif order:
+                raw = fmt.format_order(order, printer_name, printer_type, restaurant_name)
+            else:
+                raw = b""
+            if raw:
+                escpos_b64 = base64.b64encode(raw).decode("ascii")
+        except Exception as e:
+            logger.warning(f"Falha a renderizar ESC/POS do job {job.get('id')}: {e}")
+
         result.append({
             "job": job,
             "printer": printer,
             "printer_type": printer_type,
             "order": order,
             "restaurant_name": restaurant_name,
-            "is_test": job.get("is_test", False)
+            "is_test": job.get("is_test", False),
+            "escpos_base64": escpos_b64,
         })
     
     return result

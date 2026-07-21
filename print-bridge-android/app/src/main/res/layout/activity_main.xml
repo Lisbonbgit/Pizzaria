@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Ponte de Impressão"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:paddingBottom="4dp" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Parado"
+            android:textSize="14sp"
+            android:paddingBottom="16dp" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="URL do servidor" />
+        <EditText android:id="@+id/backendUrl" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:inputType="textUri" android:hint="https://pedido.lenhaebrasa.com" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="API Key" android:paddingTop="12dp" />
+        <EditText android:id="@+id/apiKey" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:inputType="textNoSuggestions" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="IP da impressora — COZINHA" android:paddingTop="12dp" />
+        <EditText android:id="@+id/kitchenIp" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:inputType="text" android:hint="192.168.1.50" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="IP da impressora — CAIXA" android:paddingTop="12dp" />
+        <EditText android:id="@+id/cashierIp" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:inputType="text" android:hint="192.168.1.51" />
+
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Intervalo (segundos)" android:paddingTop="12dp" />
+        <EditText android:id="@+id/pollSeconds" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:inputType="number" android:text="3" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:paddingTop="20dp">
+            <Button android:id="@+id/startBtn" android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="Iniciar" />
+            <Button android:id="@+id/stopBtn" android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="Parar" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:paddingTop="8dp">
+            <Button android:id="@+id/testKitchen" android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="Testar cozinha" />
+            <Button android:id="@+id/testCashier" android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="Testar caixa" />
+        </LinearLayout>
+
+        <Button android:id="@+id/batteryBtn" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:text="Desativar poupança de bateria" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="20dp"
+            android:textSize="12sp"
+            android:text="Samsung: Definições → Bateria → Limites de utilização em segundo plano → nunca colocar esta app em suspensão. Mantém o tablet ligado à corrente e o ecrã sem adormecer." />
+    </LinearLayout>
+</ScrollView>

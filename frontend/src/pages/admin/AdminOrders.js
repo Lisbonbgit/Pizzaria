@@ -411,10 +411,11 @@ const AdminOrders = () => {
               )}
 
               <Button
+                size="lg"
                 onClick={() => { if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; } setConfirmOpen(true); }}
                 disabled={closing}
-                className="w-full bg-[#5a1a1a] hover:bg-[#4a1414]">
-                {closing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Receipt className="h-4 w-4 mr-2" />}
+                className="w-full h-14 text-base font-semibold bg-[#5a1a1a] hover:bg-[#4a1414]">
+                {closing ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Receipt className="h-5 w-5 mr-2" />}
                 Fechar mesa e faturar no Vendus
               </Button>
             </div>

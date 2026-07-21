@@ -96,8 +96,10 @@ export const tablesAPI = {
     api.put(`/tables/${id}`, data),
   delete: (id) => 
     api.delete(`/tables/${id}`),
-  getQRCode: (id, baseUrl) => 
-    api.get(`/tables/${id}/qrcode`, { params: { base_url: baseUrl } })
+  getQRCode: (id, baseUrl) =>
+    api.get(`/tables/${id}/qrcode`, { params: { base_url: baseUrl } }),
+  overview: () =>
+    api.get('/tables-overview')
 };
 
 // Orders API

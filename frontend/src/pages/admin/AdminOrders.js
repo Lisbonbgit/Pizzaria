@@ -1,199 +1,137 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  Loader2, 
-  Search, 
-  RefreshCw,
-  Printer,
-  Eye,
-  CheckCircle,
-  Clock,
-  XCircle,
-  CreditCard,
-  Banknote,
-  Smartphone,
-  Wallet
+import {
+  Loader2, RefreshCw, Receipt, Printer, Clock,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
-import { ordersAPI, printersAPI } from '@/lib/api';
+import { tablesAPI, ordersAPI, checkoutAPI } from '@/lib/api';
 
-const statusOptions = [
-  { value: 'received', label: 'Recebido' },
-  { value: 'preparing', label: 'Em Preparação' },
-  { value: 'ready', label: 'Pronto' },
-  { value: 'delivered', label: 'Entregue' },
-  { value: 'cancelled', label: 'Cancelado' }
-];
+const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 
-const paymentMethods = [
-  { value: 'dinheiro', label: 'Dinheiro', icon: Banknote },
-  { value: 'cartao', label: 'Cartão', icon: CreditCard },
-  { value: 'mbway', label: 'MB WAY', icon: Smartphone },
-  { value: 'multibanco', label: 'Multibanco', icon: Wallet },
-];
+const STATUS = {
+  received: { label: 'Recebido', cls: 'bg-blue-100 text-blue-800' },
+  preparing: { label: 'Em preparação', cls: 'bg-amber-100 text-amber-800' },
+  ready: { label: 'Pronto', cls: 'bg-green-100 text-green-800' },
+  delivered: { label: 'Entregue', cls: 'bg-gray-100 text-gray-700' },
+  cancelled: { label: 'Cancelado', cls: 'bg-red-100 text-red-700' },
+};
+const STATUS_OPTS = Object.entries(STATUS)
+  .filter(([k]) => k !== 'cancelled')
+  .map(([value, v]) => ({ value, label: v.label }));
+
+const relTime = (iso) => {
+  if (!iso) return '';
+  const mins = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 1) return 'agora mesmo';
+  if (mins < 60) return `há ${mins} min`;
+  const h = Math.floor(mins / 60);
+  return `há ${h}h${String(mins % 60).padStart(2, '0')}`;
+};
 
 const AdminOrders = () => {
-  const [orders, setOrders] = useState([]);
+  const [tables, setTables] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [selectedOrder, setSelectedOrder] = useState(null);
-  const [detailModalOpen, setDetailModalOpen] = useState(false);
-  
-  // Payment method modal
-  const [paymentModalOpen, setPaymentModalOpen] = useState(false);
-  const [paymentOrderId, setPaymentOrderId] = useState(null);
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Reprint modal
-  const [reprintModalOpen, setReprintModalOpen] = useState(false);
-  const [reprintOrderId, setReprintOrderId] = useState(null);
-  const [printersList, setPrintersList] = useState([]);
-  const [selectedPrinters, setSelectedPrinters] = useState([]);
-  const [reprintLoading, setReprintLoading] = useState(false);
+  // Modal da mesa
+  const [openTableNum, setOpenTableNum] = useState(null);
+  const [tableTitle, setTableTitle] = useState('');
+  const [tableOrders, setTableOrders] = useState([]);
+  const [tableLoading, setTableLoading] = useState(false);
 
-  const loadOrders = useCallback(async () => {
+  // Fecho
+  const [methods, setMethods] = useState([]);
+  const [paymentId, setPaymentId] = useState('');
+  const [nif, setNif] = useState('');
+  const [closing, setClosing] = useState(false);
+
+  const load = useCallback(async (silent = false) => {
+    if (silent) setRefreshing(true);
     try {
-      const params = {};
-      if (statusFilter !== 'all') {
-        params.status = statusFilter;
-      }
-      const response = await ordersAPI.list(params);
-      setOrders(response.data);
-    } catch (err) {
-      console.error('Error loading orders:', err);
-      toast.error('Erro ao carregar pedidos');
+      const r = await tablesAPI.overview();
+      setTables(r.data);
+    } catch {
+      if (!silent) toast.error('Erro ao carregar as mesas');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  }, [statusFilter]);
+  }, []);
 
   useEffect(() => {
-    loadOrders();
-  }, [loadOrders]);
+    load();
+    checkoutAPI.paymentMethods().then((r) => setMethods(r.data)).catch(() => {});
+    const id = setInterval(() => load(true), 12000);
+    return () => clearInterval(id);
+  }, [load]);
 
-  const handleStatusChange = async (orderId, newStatus) => {
+  const loadTableOrders = useCallback(async (num) => {
+    setTableLoading(true);
     try {
-      await ordersAPI.updateStatus(orderId, newStatus);
-      toast.success('Estado atualizado');
-      loadOrders();
-    } catch (err) {
-      console.error('Error updating status:', err);
-      toast.error('Erro ao atualizar estado');
-    }
-  };
-
-  const openReprintModal = async (orderId) => {
-    setReprintOrderId(orderId);
-    setSelectedPrinters([]);
-    setReprintModalOpen(true);
-    try {
-      const res = await printersAPI.list();
-      setPrintersList(res.data);
+      const r = await ordersAPI.list({ table_number: num });
+      setTableOrders((r.data || []).filter((o) => !o.paid && o.status !== 'cancelled'));
     } catch {
-      toast.error('Erro ao carregar impressoras');
-    }
-  };
-
-  const togglePrinterSelection = (printerId) => {
-    setSelectedPrinters(prev => {
-      if (prev.includes(printerId)) {
-        return prev.filter(id => id !== printerId);
-      }
-      return [...prev, printerId];
-    });
-  };
-
-  const handleConfirmReprint = async () => {
-    if (selectedPrinters.length === 0) {
-      toast.error('Selecione pelo menos uma impressora');
-      return;
-    }
-    setReprintLoading(true);
-    try {
-      await ordersAPI.reprint(reprintOrderId, selectedPrinters);
-      toast.success(`Impressão agendada para ${selectedPrinters.length} impressora(s)`);
-      setReprintModalOpen(false);
-    } catch (err) {
-      console.error('Error reprinting:', err);
-      toast.error('Erro ao reimprimir');
+      toast.error('Erro ao carregar a conta da mesa');
     } finally {
-      setReprintLoading(false);
+      setTableLoading(false);
     }
+  }, []);
+
+  const openTable = (t) => {
+    if (!t.occupied) return;
+    setOpenTableNum(t.number);
+    setTableTitle(t.name || `Mesa ${t.number}`);
+    setPaymentId('');
+    setNif('');
+    loadTableOrders(t.number);
   };
 
-  const openPaymentModal = (orderId) => {
-    setPaymentOrderId(orderId);
-    setSelectedPaymentMethod(null);
-    setPaymentModalOpen(true);
-  };
+  const closeModal = () => { setOpenTableNum(null); setTableOrders([]); };
 
-  const handleConfirmPayment = async () => {
-    if (!selectedPaymentMethod) {
-      toast.error('Selecione um método de pagamento');
-      return;
-    }
+  const changeStatus = async (orderId, status) => {
     try {
-      await ordersAPI.markPaid(paymentOrderId, selectedPaymentMethod);
-      toast.success('Marcado como pago');
-      setPaymentModalOpen(false);
-      loadOrders();
-    } catch (err) {
-      console.error('Error marking paid:', err);
-      toast.error('Erro ao marcar como pago');
+      await ordersAPI.updateStatus(orderId, status);
+      setTableOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, status } : o)));
+    } catch {
+      toast.error('Erro ao atualizar o estado');
     }
   };
 
-  const getPaymentMethodLabel = (method) => {
-    const found = paymentMethods.find(m => m.value === method);
-    return found ? found.label : method || '—';
+  const reprint = async (orderId) => {
+    try { await ordersAPI.reprint(orderId, []); toast.success('Reimpressão agendada'); }
+    catch { toast.error('Erro ao reimprimir'); }
   };
 
-  const getStatusBadge = (status) => {
-    const statusMap = {
-      received: { label: 'Recebido', className: 'status-received' },
-      preparing: { label: 'Em Preparação', className: 'status-preparing' },
-      ready: { label: 'Pronto', className: 'status-ready' },
-      delivered: { label: 'Entregue', className: 'status-delivered' },
-      cancelled: { label: 'Cancelado', className: 'status-cancelled' }
-    };
-    const info = statusMap[status] || statusMap.received;
-    return <Badge className={info.className}>{info.label}</Badge>;
-  };
+  const tableTotal = tableOrders.reduce((s, o) => s + (o.total || 0), 0);
 
-  const getPrintStatusIcon = (status) => {
-    switch (status) {
-      case 'printed':
-        return <CheckCircle className="h-4 w-4 text-green-600" />;
-      case 'failed':
-        return <XCircle className="h-4 w-4 text-red-600" />;
-      default:
-        return <Clock className="h-4 w-4 text-yellow-600" />;
+  const handleClose = async () => {
+    if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; }
+    setClosing(true);
+    try {
+      const r = await checkoutAPI.closeTable(openTableNum, {
+        payment_method_id: Number(paymentId), nif: nif.trim() || null,
+      });
+      toast.success(`Mesa fechada — ${r.data.vendus.number}`);
+      closeModal();
+      load(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao fechar a mesa');
+    } finally {
+      setClosing(false);
     }
   };
 
-  const filteredOrders = orders.filter(order => {
-    if (searchTerm) {
-      const search = searchTerm.toLowerCase();
-      return (
-        order.order_number.toString().includes(search) ||
-        order.table_number.toString().includes(search)
-      );
-    }
-    return true;
-  });
-
-  const viewOrderDetails = (order) => {
-    setSelectedOrder(order);
-    setDetailModalOpen(true);
-  };
+  const occupied = tables.filter((t) => t.occupied);
+  const totalOpen = occupied.reduce((s, t) => s + (t.open_total || 0), 0);
 
   if (loading) {
     return (
@@ -207,328 +145,162 @@ const AdminOrders = () => {
 
   return (
     <AdminLayout title="Pedidos">
-      {/* Filters */}
-      <div className="flex flex-col sm:flex-row gap-4 mb-6">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Pesquisar por nº pedido ou mesa..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10"
-            data-testid="orders-search-input"
-          />
+      {/* Cabeçalho / resumo */}
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <div className="flex items-baseline gap-4">
+          <h2 className="font-heading text-xl font-bold">Mesas</h2>
+          <p className="text-sm text-muted-foreground">
+            {occupied.length > 0
+              ? <><span className="font-semibold text-primary">{occupied.length}</span> ocupada{occupied.length > 1 ? 's' : ''} · <span className="font-semibold text-primary">{eur(totalOpen)}</span> em aberto</>
+              : 'Todas as mesas livres'}
+          </p>
         </div>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-full sm:w-48" data-testid="orders-status-filter">
-            <SelectValue placeholder="Filtrar por estado" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Todos os estados</SelectItem>
-            {statusOptions.map(opt => (
-              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button variant="outline" onClick={loadOrders}>
-          <RefreshCw className="h-4 w-4 mr-2" />
+        <Button variant="outline" size="sm" onClick={() => load(true)} disabled={refreshing}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
           Atualizar
         </Button>
       </div>
 
-      {/* Orders List */}
-      {filteredOrders.length === 0 ? (
-        <Card>
-          <CardContent className="py-12 text-center">
-            <p className="text-muted-foreground">Nenhum pedido encontrado</p>
-          </CardContent>
-        </Card>
+      {/* Grelha de mesas */}
+      {tables.length === 0 ? (
+        <div className="rounded-xl border border-dashed py-16 text-center text-muted-foreground">
+          Ainda não há mesas. Cria-as em <span className="font-medium">Mesas</span>.
+        </div>
       ) : (
-        <div className="space-y-4">
-          {filteredOrders.map((order) => (
-            <Card key={order.id} data-testid={`order-card-${order.id}`}>
-              <CardContent className="p-4">
-                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                  {/* Order Info */}
-                  <div className="flex items-start gap-4">
-                    <div className="text-center">
-                      <p className="text-xs text-muted-foreground uppercase">Pedido</p>
-                      <p className="font-heading text-2xl font-bold">#{order.order_number}</p>
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <Badge variant="outline">Mesa {order.table_number}</Badge>
-                        {getStatusBadge(order.status)}
-                        <div className="flex items-center gap-1" title={`Impressão: ${order.print_status}`}>
-                          {getPrintStatusIcon(order.print_status)}
-                        </div>
-                        {order.paid && (
-                          <Badge variant="secondary" className="bg-green-100 text-green-800">
-                            Pago {order.payment_method ? `(${getPaymentMethodLabel(order.payment_method)})` : ''}
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        {order.items.length} itens • € {order.total.toFixed(2)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {new Date(order.created_at).toLocaleString('pt-PT')}
-                      </p>
-                    </div>
-                  </div>
+        <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(150px,1fr))]">
+          {tables.map((t) => {
+            const busy = t.occupied;
+            const isMesaName = !t.name || /^mesa\s*\d+$/i.test(String(t.name).trim());
+            return (
+              <button
+                key={t.id}
+                onClick={() => openTable(t)}
+                disabled={!busy}
+                aria-label={`${t.name || `Mesa ${t.number}`}${busy ? `, ${eur(t.open_total)} em aberto` : ', livre'}`}
+                className={[
+                  'group relative aspect-square rounded-xl border text-left p-4 flex flex-col justify-between transition-all overflow-hidden',
+                  busy
+                    ? 'border-primary/30 bg-primary/[0.04] hover:bg-primary/[0.08] hover:border-primary/60 hover:shadow-md cursor-pointer'
+                    : 'border-border bg-card text-muted-foreground cursor-default',
+                ].join(' ')}
+              >
+                <span className={`absolute inset-x-0 top-0 h-1.5 ${busy ? 'bg-primary' : 'bg-border'}`} />
 
-                  {/* Actions */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Select 
-                      value={order.status} 
-                      onValueChange={(value) => handleStatusChange(order.id, value)}
-                    >
-                      <SelectTrigger className="w-40">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {statusOptions.map(opt => (
-                          <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={() => viewOrderDetails(order)}
-                    >
-                      <Eye className="h-4 w-4 mr-1" />
-                      Ver
-                    </Button>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={() => openReprintModal(order.id)}
-                    >
-                      <Printer className="h-4 w-4 mr-1" />
-                      Reimprimir
-                    </Button>
-                    {!order.paid && (
-                      <Button 
-                        variant="outline" 
-                        size="sm"
-                        onClick={() => openPaymentModal(order.id)}
-                      >
-                        <CheckCircle className="h-4 w-4 mr-1" />
-                        Pago
-                      </Button>
+                <div className="flex items-start justify-between">
+                  <div className="min-w-0">
+                    {isMesaName ? (
+                      <>
+                        <p className={`text-[11px] uppercase tracking-wide ${busy ? 'text-primary/70' : 'text-muted-foreground'}`}>Mesa</p>
+                        <p className={`font-heading font-bold leading-none text-3xl ${busy ? 'text-primary' : 'text-foreground/40'}`}>{t.number}</p>
+                      </>
+                    ) : (
+                      <p className={`font-heading font-bold leading-tight text-xl break-words ${busy ? 'text-primary' : 'text-foreground/40'}`}>{t.name}</p>
                     )}
                   </div>
+                  {busy && <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-primary animate-pulse" title="Conta aberta" />}
                 </div>
-              </CardContent>
-            </Card>
-          ))}
+
+                {busy ? (
+                  <div>
+                    <p className="font-heading text-2xl font-bold tabular-nums text-foreground">{eur(t.open_total)}</p>
+                    <p className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap">
+                      <span>{t.open_orders} pedido{t.open_orders > 1 ? 's' : ''}</span>
+                      {t.last_activity && <><span>·</span><Clock className="h-3 w-3" /><span>{relTime(t.last_activity)}</span></>}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs">Livre</p>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
 
-      {/* Payment Method Modal */}
-      <Dialog open={paymentModalOpen} onOpenChange={setPaymentModalOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="font-heading text-xl">Método de Pagamento</DialogTitle>
+      {/* Popup grande da mesa */}
+      <Dialog open={openTableNum != null} onOpenChange={(v) => !v && closeModal()}>
+        <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto p-0 gap-0">
+          <DialogHeader className="px-6 py-4 border-b bg-primary/[0.04]">
+            <DialogTitle className="font-heading text-2xl flex items-center justify-between pr-8">
+              <span>{tableTitle}</span>
+              <span className="text-primary tabular-nums">{eur(tableTotal)}</span>
+            </DialogTitle>
           </DialogHeader>
-          <div className="grid grid-cols-2 gap-3 py-4">
-            {paymentMethods.map((method) => {
-              const Icon = method.icon;
-              const isSelected = selectedPaymentMethod === method.value;
-              return (
-                <button
-                  key={method.value}
-                  onClick={() => setSelectedPaymentMethod(method.value)}
-                  className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
-                    isSelected
-                      ? 'border-primary bg-primary/5 shadow-sm'
-                      : 'border-border hover:border-primary/40 hover:bg-secondary/50'
-                  }`}
-                >
-                  <Icon className={`h-8 w-8 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
-                  <span className={`text-sm font-medium ${isSelected ? 'text-primary' : ''}`}>
-                    {method.label}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPaymentModalOpen(false)}>
-              Cancelar
-            </Button>
-            <Button onClick={handleConfirmPayment} disabled={!selectedPaymentMethod}>
-              <CheckCircle className="h-4 w-4 mr-2" />
-              Confirmar Pagamento
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
-      {/* Order Detail Modal */}
-      <Dialog open={detailModalOpen} onOpenChange={setDetailModalOpen}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          {selectedOrder && (
-            <>
-              <DialogHeader>
-                <DialogTitle className="font-heading text-2xl">
-                  Pedido #{selectedOrder.order_number}
-                </DialogTitle>
-              </DialogHeader>
-
-              <div className="space-y-4">
-                {/* Header Info */}
-                <div className="flex justify-between items-center p-4 bg-secondary/50 rounded-lg">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Mesa</p>
-                    <p className="text-2xl font-bold">{selectedOrder.table_number}</p>
+          <div className="px-6 py-4 space-y-4">
+            {tableLoading ? (
+              <div className="flex items-center gap-2 text-muted-foreground py-8 justify-center">
+                <Loader2 className="h-5 w-5 animate-spin" /> A carregar a conta...
+              </div>
+            ) : tableOrders.length === 0 ? (
+              <p className="text-center text-muted-foreground py-8">Sem pedidos em aberto.</p>
+            ) : (
+              tableOrders.map((o) => (
+                <div key={o.id} className="rounded-lg border">
+                  <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b bg-muted/30">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-heading font-bold">#{o.order_number}</span>
+                      <Badge className={STATUS[o.status]?.cls || ''} variant="secondary">
+                        {STATUS[o.status]?.label || o.status}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground flex items-center gap-1">
+                        <Clock className="h-3 w-3" />{relTime(o.created_at)}
+                      </span>
+                    </div>
+                    <span className="font-semibold tabular-nums">{eur(o.total)}</span>
                   </div>
-                  <div className="text-right">
-                    {getStatusBadge(selectedOrder.status)}
-                    <p className="text-sm text-muted-foreground mt-1">
-                      {new Date(selectedOrder.created_at).toLocaleString('pt-PT')}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Items */}
-                <div>
-                  <h4 className="font-semibold mb-3">Itens</h4>
-                  <div className="space-y-3">
-                    {selectedOrder.items.map((item, idx) => (
-                      <div key={idx} className="p-3 border rounded-lg">
-                        <div className="flex justify-between">
-                          <span className="font-medium">{item.quantity}x {item.product_name}</span>
-                          <span className="font-semibold">€ {item.total_price.toFixed(2)}</span>
-                        </div>
-                        {item.variation && (
-                          <p className="text-sm text-muted-foreground">{item.variation.name}</p>
-                        )}
-                        {item.extras?.length > 0 && (
-                          <p className="text-sm text-muted-foreground">
-                            + {item.extras.map(e => e.name).join(', ')}
-                          </p>
-                        )}
-                        {item.selected_complements?.length > 0 && (
-                          <div className="mt-1 space-y-1">
-                            {item.selected_complements.map((group, gIdx) => (
-                              <div key={gIdx}>
-                                <span className="text-xs font-semibold text-muted-foreground uppercase">{group.group_name}:</span>
-                                <span className="text-sm text-muted-foreground ml-1">
-                                  {group.items.map(i => {
-                                    const price = i.price > 0 ? ` (+€${i.price.toFixed(2)})` : '';
-                                    return `${i.name}${price}`;
-                                  }).join(', ')}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {item.selected_preference && (
-                          <p className="text-sm text-primary font-medium mt-1">{item.selected_preference}</p>
-                        )}
-                        {item.notes && (
-                          <p className="text-sm italic text-muted-foreground">"{item.notes}"</p>
-                        )}
+                  <div className="px-4 py-2 space-y-1">
+                    {o.items.map((it, i) => (
+                      <div key={i} className="flex justify-between text-sm">
+                        <span>{it.quantity}× {it.product_name}
+                          {it.notes && <span className="text-muted-foreground italic"> — {it.notes}</span>}
+                        </span>
+                        <span className="tabular-nums text-muted-foreground">{eur(it.total_price)}</span>
                       </div>
                     ))}
                   </div>
-                </div>
-
-                {/* Order Notes */}
-                {selectedOrder.notes && (
-                  <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
-                    <p className="text-sm font-semibold">Observações:</p>
-                    <p>{selectedOrder.notes}</p>
+                  <div className="flex items-center gap-2 px-4 py-2 border-t">
+                    <Select value={o.status} onValueChange={(v) => changeStatus(o.id, v)}>
+                      <SelectTrigger className="h-8 w-40 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {STATUS_OPTS.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <Button variant="ghost" size="sm" className="h-8" onClick={() => reprint(o.id)}>
+                      <Printer className="h-3.5 w-3.5 mr-1" /> Reimprimir
+                    </Button>
                   </div>
-                )}
-
-                {/* Total */}
-                <div className="flex justify-between items-center pt-4 border-t">
-                  <span className="text-lg">Total</span>
-                  <span className="text-2xl font-bold">€ {selectedOrder.total.toFixed(2)}</span>
                 </div>
-
-                {/* Payment info */}
-                {selectedOrder.paid && (
-                  <div className="flex items-center gap-2 text-sm">
-                    <CheckCircle className="h-4 w-4 text-green-600" />
-                    <span>Pago — {getPaymentMethodLabel(selectedOrder.payment_method)}</span>
-                  </div>
-                )}
-
-                {/* Print Status */}
-                <div className="flex items-center gap-2 text-sm">
-                  {getPrintStatusIcon(selectedOrder.print_status)}
-                  <span>
-                    Impressão: {
-                      selectedOrder.print_status === 'printed' ? 'Impresso' :
-                      selectedOrder.print_status === 'failed' ? 'Falhou' : 'Pendente'
-                    }
-                  </span>
-                </div>
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Reprint Modal */}
-      <Dialog open={reprintModalOpen} onOpenChange={setReprintModalOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="font-heading text-xl flex items-center gap-2">
-              <Printer className="h-5 w-5" />
-              Reimprimir Pedido
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">Selecione as impressoras para reimpressão:</p>
-          <div className="space-y-3 py-4">
-            {printersList.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">Nenhuma impressora configurada</p>
-            ) : (
-              printersList.map((printer) => {
-                const isSelected = selectedPrinters.includes(printer.id);
-                return (
-                  <div
-                    key={printer.id}
-                    onClick={() => togglePrinterSelection(printer.id)}
-                    className={`flex items-center gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${
-                      isSelected
-                        ? 'border-primary bg-primary/5'
-                        : 'border-border hover:border-primary/40 hover:bg-secondary/50'
-                    }`}
-                  >
-                    <Checkbox checked={isSelected} />
-                    <div className="flex-1">
-                      <p className={`font-medium ${isSelected ? 'text-primary' : ''}`}>{printer.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {printer.ip}:{printer.port} • {printer.printer_type === 'cashier' ? 'Caixa' : 'Cozinha'}
-                      </p>
-                    </div>
-                    <Printer className={`h-5 w-5 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
-                  </div>
-                );
-              })
+              ))
             )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setReprintModalOpen(false)}>
-              Cancelar
-            </Button>
-            <Button 
-              onClick={handleConfirmReprint} 
-              disabled={selectedPrinters.length === 0 || reprintLoading}
-            >
-              {reprintLoading ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Printer className="h-4 w-4 mr-2" />
-              )}
-              Reimprimir ({selectedPrinters.length})
-            </Button>
-          </DialogFooter>
+
+          {/* Fecho da mesa */}
+          {tableOrders.length > 0 && (
+            <div className="px-6 py-4 border-t bg-muted/20 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-heading text-lg font-bold">Total</span>
+                <span className="font-heading text-2xl font-bold text-primary tabular-nums">{eur(tableTotal)}</span>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Select value={paymentId} onValueChange={setPaymentId}>
+                  <SelectTrigger className="sm:w-44"><SelectValue placeholder="Pagamento" /></SelectTrigger>
+                  <SelectContent>
+                    {methods.map((m) => <SelectItem key={m.id} value={String(m.id)}>{m.title}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Input className="sm:w-40" placeholder="NIF (opcional)" value={nif} onChange={(e) => setNif(e.target.value)} />
+                <Button onClick={handleClose} disabled={closing || !paymentId}
+                  className="flex-1 bg-[#5a1a1a] hover:bg-[#4a1414]">
+                  {closing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Receipt className="h-4 w-4 mr-2" />}
+                  Fechar mesa e faturar no Vendus
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground text-center">
+                Emite a fatura-recibo no Vendus e liberta a mesa.
+              </p>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </AdminLayout>

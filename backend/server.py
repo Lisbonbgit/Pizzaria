@@ -1209,6 +1209,35 @@ async def get_table_bill(table_number: int, authorization: Optional[str] = Heade
             "lines": lines, "total": round(total, 2)}
 
 
+@api_router.get("/tables-overview")
+async def tables_overview(authorization: Optional[str] = Header(None)):
+    """Resumo de TODAS as mesas com a respetiva conta em aberto — para a grelha
+    de mesas (uma só chamada)."""
+    await get_current_user(authorization)
+    tables = await db.tables.find({"active": True}, {"_id": 0}).sort("number", 1).to_list(300)
+    open_orders = await db.orders.find(
+        {"paid": False, "status": {"$ne": "cancelled"}}, {"_id": 0}
+    ).to_list(2000)
+    agg: dict = {}
+    for o in open_orders:
+        n = o.get("table_number")
+        a = agg.setdefault(n, {"total": 0.0, "count": 0, "last": None})
+        a["total"] += o.get("total", 0) or 0
+        a["count"] += 1
+        ca = o.get("created_at")
+        if ca and (a["last"] is None or ca > a["last"]):
+            a["last"] = ca
+    out = []
+    for t in tables:
+        a = agg.get(t["number"], {"total": 0.0, "count": 0, "last": None})
+        out.append({
+            "id": t["id"], "number": t["number"], "name": t.get("name"),
+            "open_total": round(a["total"], 2), "open_orders": a["count"],
+            "occupied": a["count"] > 0, "last_activity": a["last"],
+        })
+    return out
+
+
 @api_router.get("/vendus/payment-methods")
 async def vendus_payment_methods(authorization: Optional[str] = Header(None)):
     """Métodos de pagamento do Vendus (para o ecrã de fecho)."""

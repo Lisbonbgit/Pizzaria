@@ -252,6 +252,13 @@ const AdminSettings = () => {
                     <Input type="number" step="0.01" className="pl-7" value={rodizio.tiers[k].price}
                       onChange={(e) => setTier(k, 'price', parseFloat(e.target.value) || 0)} placeholder="Preço/adulto" />
                   </div>
+                  <textarea
+                    value={rodizio.tiers[k].description || ''}
+                    onChange={(e) => setTier(k, 'description', e.target.value)}
+                    placeholder="O que inclui (mostrado ao cliente na escolha)"
+                    rows={2}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                  />
                 </div>
               ))}
             </div>

@@ -2283,8 +2283,10 @@ RODIZIO_DEFAULT = {
     "waste_fee": 5.0,
     "waste_fee_tax_id": "INT",
     "tiers": {
-        "simples": {"name": "Rodízio Simples", "price": 18.90},
-        "completo": {"name": "Rodízio Completo", "price": 22.90},
+        "simples": {"name": "Rodízio Simples", "price": 18.90,
+                    "description": "Pizzas médias e bebidas (limonadas, frutos vermelhos e hortelã) à vontade."},
+        "completo": {"name": "Rodízio Completo", "price": 22.90,
+                     "description": "Entradas, pizzas médias, bebidas e sobremesas — tudo à vontade."},
     },
 }
 
@@ -2292,6 +2294,7 @@ RODIZIO_DEFAULT = {
 class RodizioTier(BaseModel):
     name: str
     price: float
+    description: str = ""
 
 
 class RodizioConfig(BaseModel):
@@ -2310,6 +2313,15 @@ async def _rodizio_config() -> dict:
     cfg = dict(RODIZIO_DEFAULT)
     if doc and isinstance(doc.get("value"), dict):
         cfg.update(doc["value"])
+    # Backfill de campos novos nos níveis (ex.: description) p/ configs já gravadas.
+    tiers = dict(cfg.get("tiers") or {})
+    for key, dflt in RODIZIO_DEFAULT["tiers"].items():
+        t = dict(tiers.get(key) or {})
+        for f, v in dflt.items():
+            if not t.get(f):
+                t[f] = v
+        tiers[key] = t
+    cfg["tiers"] = tiers
     return cfg
 
 

@@ -441,14 +441,24 @@ const MenuPage = () => {
                 <button type="button"
                   onClick={() => { setChosenTier('simples'); setGateStep('rodizio'); }}
                   className="w-full rounded-xl border-2 border-primary bg-primary/5 p-4 text-left active:scale-[0.98] transition">
-                  <p className="font-heading text-lg font-bold text-primary">{rodizioCfg.tiers?.simples?.name || 'Rodízio Simples'}</p>
-                  <p className="text-sm text-muted-foreground">{eur(rodizioCfg.tiers?.simples?.price)} por pessoa</p>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="font-heading text-lg font-bold text-primary">{rodizioCfg.tiers?.simples?.name || 'Rodízio Simples'}</p>
+                    <p className="text-sm font-semibold text-primary shrink-0">{eur(rodizioCfg.tiers?.simples?.price)}/pessoa</p>
+                  </div>
+                  {rodizioCfg.tiers?.simples?.description && (
+                    <p className="text-xs text-muted-foreground mt-1">{rodizioCfg.tiers.simples.description}</p>
+                  )}
                 </button>
                 <button type="button"
                   onClick={() => { setChosenTier('completo'); setGateStep('rodizio'); }}
                   className="w-full rounded-xl border-2 border-primary bg-primary/5 p-4 text-left active:scale-[0.98] transition">
-                  <p className="font-heading text-lg font-bold text-primary">{rodizioCfg.tiers?.completo?.name || 'Rodízio Completo'}</p>
-                  <p className="text-sm text-muted-foreground">{eur(rodizioCfg.tiers?.completo?.price)} por pessoa</p>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="font-heading text-lg font-bold text-primary">{rodizioCfg.tiers?.completo?.name || 'Rodízio Completo'}</p>
+                    <p className="text-sm font-semibold text-primary shrink-0">{eur(rodizioCfg.tiers?.completo?.price)}/pessoa</p>
+                  </div>
+                  {rodizioCfg.tiers?.completo?.description && (
+                    <p className="text-xs text-muted-foreground mt-1">{rodizioCfg.tiers.completo.description}</p>
+                  )}
                 </button>
                 {rodizioCfg.waste_note && (
                   <p className="text-xs text-muted-foreground pt-1">{rodizioCfg.waste_note}</p>

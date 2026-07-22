@@ -57,7 +57,8 @@ const AdminMenu = () => {
     preference_options: null,
     available: true,
     featured: false,
-    rodizio_incluido: 'nao'
+    rodizio_incluido: 'nao',
+    rodizio_only: false
   });
   const [newVariation, setNewVariation] = useState({ name: '', price: 0 });
   const [newExtra, setNewExtra] = useState({ name: '', price: 0 });
@@ -170,7 +171,8 @@ const AdminMenu = () => {
         preference_options: product.preference_options || null,
         available: product.available,
         featured: product.featured,
-        rodizio_incluido: product.rodizio_incluido || 'nao'
+        rodizio_incluido: product.rodizio_incluido || 'nao',
+        rodizio_only: product.rodizio_only || false
       });
     } else {
       setEditingProduct(null);
@@ -186,7 +188,8 @@ const AdminMenu = () => {
         preference_options: null,
         available: true,
         featured: false,
-        rodizio_incluido: 'nao'
+        rodizio_incluido: 'nao',
+        rodizio_only: false
       });
     }
     setNewVariation({ name: '', price: 0 });
@@ -411,6 +414,11 @@ const AdminMenu = () => {
                     <Badge className="absolute top-2 left-2 featured-badge border-0">
                       <Star className="h-3 w-3 mr-1" />
                       Destaque
+                    </Badge>
+                  )}
+                  {product.rodizio_only && (
+                    <Badge className="absolute top-2 right-2 bg-primary text-primary-foreground border-0">
+                      🍕 Só rodízio
                     </Badge>
                   )}
                 </div>
@@ -739,6 +747,17 @@ const AdminMenu = () => {
                       <SelectItem value="completo">Só Completo</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Switch
+                    id="prod-rodizio-only"
+                    checked={productForm.rodizio_only}
+                    onCheckedChange={(checked) => setProductForm(prev => ({ ...prev, rodizio_only: checked }))}
+                  />
+                  <div>
+                    <Label htmlFor="prod-rodizio-only">Só disponível no rodízio</Label>
+                    <p className="text-xs text-muted-foreground">Esconde do menu normal; só aparece a quem está em rodízio.</p>
+                  </div>
                 </div>
               </div>
             </div>

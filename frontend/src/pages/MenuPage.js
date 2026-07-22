@@ -220,11 +220,12 @@ const MenuPage = () => {
     }, 800);
   };
 
-  // Group products by category
+  // Group products by category.
+  // Produtos "só rodízio" ficam escondidos do menu normal (à la carte).
   const productsByCategory = categories
     .map(cat => ({
       category: cat,
-      products: products.filter(p => p.category_id === cat.id)
+      products: products.filter(p => p.category_id === cat.id && (isRodizio || !p.rodizio_only))
     }))
     .filter(group => group.products.length > 0);
 
@@ -615,7 +616,7 @@ const MenuPage = () => {
           className="flex gap-2 p-4 overflow-x-auto scrollbar-hide"
           style={{ scrollBehavior: 'smooth' }}
         >
-          {categories.map((cat) => {
+          {productsByCategory.map(({ category: cat }) => {
             const isActive = activeCategory === cat.id;
             return (
               <button

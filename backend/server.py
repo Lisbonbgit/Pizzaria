@@ -244,6 +244,7 @@ class ProductCreate(BaseModel):
     available: bool = True
     featured: bool = False
     rodizio_incluido: str = "nao"  # nao | ambos | completo
+    rodizio_only: bool = False     # só aparece no menu quando a mesa está em rodízio
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -258,6 +259,7 @@ class ProductUpdate(BaseModel):
     available: Optional[bool] = None
     featured: Optional[bool] = None
     rodizio_incluido: Optional[str] = None
+    rodizio_only: Optional[bool] = None
 
 class ProductResponse(BaseModel):
     id: str
@@ -273,6 +275,7 @@ class ProductResponse(BaseModel):
     available: bool
     featured: bool
     rodizio_incluido: str = "nao"
+    rodizio_only: bool = False
     order: int = 0
     created_at: str
 
@@ -862,6 +865,7 @@ async def create_product(product: ProductCreate, authorization: Optional[str] = 
         "available": product.available,
         "featured": product.featured,
         "rodizio_incluido": product.rodizio_incluido,
+        "rodizio_only": product.rodizio_only,
         "order": await db.products.count_documents({"category_id": product.category_id}),
         "created_at": datetime.now(timezone.utc).isoformat()
     }

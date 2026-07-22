@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Loader2, RefreshCw, Receipt, Printer, Plus, Users, Store, X,
+  Loader2, RefreshCw, Receipt, Printer, Plus, Users, Store, X, ChevronsUpDown,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,12 +11,18 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
+  Popover, PopoverContent, PopoverTrigger,
+} from '@/components/ui/popover';
+import {
+  Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
+} from '@/components/ui/command';
+import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
-import { tablesAPI, ordersAPI, checkoutAPI, productsAPI, rodizioAPI } from '@/lib/api';
+import { tablesAPI, ordersAPI, checkoutAPI, productsAPI, categoriesAPI, rodizioAPI } from '@/lib/api';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const lineKey = (l) => `${l.order_id}:${l.idx}`;
@@ -38,8 +44,10 @@ const AdminOrders = () => {
   const [tableLoading, setTableLoading] = useState(false);
 
   // Adicionar produto manual
+  const [categories, setCategories] = useState([]);
   const [addProductId, setAddProductId] = useState('');
   const [addQty, setAddQty] = useState(1);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [adding, setAdding] = useState(false);
 
   // Fecho
@@ -79,6 +87,7 @@ const AdminOrders = () => {
     load();
     checkoutAPI.paymentMethods().then((r) => setMethods(r.data)).catch(() => {});
     productsAPI.list().then((r) => setProducts(r.data)).catch(() => {});
+    categoriesAPI.list().then((r) => setCategories(r.data)).catch(() => {});
     rodizioAPI.get().then((r) => setRodizioCfg(r.data)).catch(() => {});
     const id = setInterval(() => load(true), 12000);
     return () => clearInterval(id);
@@ -269,6 +278,24 @@ const AdminOrders = () => {
 
   const occupied = tables.filter((t) => t.occupied);
   const totalOpen = occupied.reduce((s, t) => s + (t.open_total || 0), 0);
+
+  // Produtos para "Adicionar produto" agrupados por categoria (para o seletor com pesquisa)
+  const availableProducts = products.filter((p) => p.available !== false);
+  const catName = (id) => categories.find((c) => c.id === id)?.name || 'Outros';
+  const productGroups = (() => {
+    const byCat = new Map();
+    for (const p of availableProducts) {
+      const cid = p.category_id || '__none';
+      if (!byCat.has(cid)) byCat.set(cid, []);
+      byCat.get(cid).push(p);
+    }
+    // ordena os grupos pela ordem das categorias; "Outros" no fim
+    const order = new Map(categories.map((c, i) => [c.id, i]));
+    return [...byCat.entries()]
+      .map(([cid, items]) => ({ cid, name: cid === '__none' ? 'Outros' : catName(cid), items }))
+      .sort((a, b) => (order.has(a.cid) ? order.get(a.cid) : 999) - (order.has(b.cid) ? order.get(b.cid) : 999));
+  })();
+  const selectedProductName = availableProducts.find((p) => p.id === addProductId)?.name || '';
 
   if (loading) {
     return (
@@ -561,14 +588,34 @@ const AdminOrders = () => {
               {/* Rodapé direito — ações */}
               <div className="border-t border-white/10 p-3 space-y-2">
                 <div className="flex gap-2">
-                  <Select value={addProductId} onValueChange={setAddProductId}>
-                    <SelectTrigger className="flex-1 bg-white/10 border-white/20 text-white h-9"><SelectValue placeholder="Adicionar produto…" /></SelectTrigger>
-                    <SelectContent>
-                      {products.filter((p) => p.available !== false).map((p) => (
-                        <SelectItem key={p.id} value={p.id}>{p.name} — {eur(p.base_price)}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" role="combobox"
+                        className="flex-1 justify-between bg-white/10 border-white/20 text-white hover:bg-white/15 hover:text-white h-9 font-normal">
+                        <span className="truncate">{selectedProductName || 'Procurar produto…'}</span>
+                        <ChevronsUpDown className="h-4 w-4 opacity-60 shrink-0" />
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="p-0 w-[min(92vw,26rem)]" align="end" sideOffset={6}>
+                      <Command>
+                        <CommandInput placeholder="Escreve o nome do produto…" />
+                        <CommandList className="max-h-[min(60vh,26rem)]">
+                          <CommandEmpty>Nenhum produto encontrado.</CommandEmpty>
+                          {productGroups.map((g) => (
+                            <CommandGroup key={g.cid} heading={g.name}>
+                              {g.items.map((p) => (
+                                <CommandItem key={p.id} value={`${p.name} ${g.name} ${p.id}`}
+                                  onSelect={() => { setAddProductId(p.id); setPickerOpen(false); }}>
+                                  <span className="flex-1 truncate">{p.name}</span>
+                                  <span className="text-muted-foreground tabular-nums">{eur(p.base_price)}</span>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          ))}
+                        </CommandList>
+                      </Command>
+                    </PopoverContent>
+                  </Popover>
                   <Input type="number" min={1} value={addQty} onChange={(e) => setAddQty(e.target.value)}
                     className="w-14 bg-white/10 border-white/20 text-white h-9" aria-label="Quantidade" />
                   <Button variant="secondary" size="icon" className="h-9 w-9 shrink-0" onClick={addProduct} disabled={adding || !addProductId}>

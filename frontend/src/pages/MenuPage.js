@@ -357,7 +357,26 @@ const MenuPage = () => {
     if (!tableNumber) return;
     setOpeningTable(true);
     try {
-      await tablesAPI.openSession(tableNumber, Math.max(1, Number(peopleInput) || 1));
+      await tablesAPI.openSession(tableNumber, { people: Math.max(1, Number(peopleInput) || 1) });
+      setMode('alacarte');
+      setNeedsPeople(false);
+    } catch {
+      toast.error('Não foi possível abrir a mesa');
+    } finally {
+      setOpeningTable(false);
+    }
+  };
+
+  const submitRodizio = async () => {
+    if (!tableNumber) return;
+    setOpeningTable(true);
+    try {
+      await tablesAPI.openSession(tableNumber, {
+        rodizio: chosenTier,
+        adults: adultsInput,
+        children: childrenInput,
+      });
+      setMode(chosenTier);
       setNeedsPeople(false);
     } catch {
       toast.error('Não foi possível abrir a mesa');

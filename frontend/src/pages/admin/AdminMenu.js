@@ -10,7 +10,8 @@ import {
   EyeOff,
   Star,
   ChevronUp,
-  ChevronDown
+  ChevronDown,
+  Receipt
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -100,6 +101,22 @@ const AdminMenu = () => {
       toast.error(e.response?.data?.detail || 'Erro ao importar do Vendus');
     } finally {
       setImporting(false);
+    }
+  };
+
+  const [seedingIva, setSeedingIva] = useState(false);
+  const handleSeedIva = async () => {
+    if (!window.confirm('Acertar o IVA em falta? Bebidas → 23% (NOR), restante comida → 13% (INT). Só mexe nos produtos SEM IVA definido.')) return;
+    setSeedingIva(true);
+    try {
+      const r = await productsAPI.seedIvaDefaults();
+      const d = r.data;
+      toast.success(`IVA acertado: ${d.int_13} a 13% + ${d.nor_23} a 23% (${d.updated} produtos)`);
+      loadData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao acertar o IVA');
+    } finally {
+      setSeedingIva(false);
     }
   };
 
@@ -375,6 +392,10 @@ const AdminMenu = () => {
               <p className="text-sm text-muted-foreground">{filteredProducts.length} produtos</p>
             </div>
             <div className="flex items-center gap-2">
+              <Button variant="outline" onClick={handleSeedIva} disabled={seedingIva}>
+                {seedingIva ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Receipt className="h-4 w-4 mr-2" />}
+                Acertar IVA em falta
+              </Button>
               <Button variant="outline" onClick={handleImportVendus} disabled={importing}>
                 {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
                 Importar do Vendus

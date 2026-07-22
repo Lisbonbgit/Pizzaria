@@ -891,6 +891,28 @@ async def seed_rodizio_defaults(authorization: Optional[str] = Header(None)):
             n += 1
     return {"updated": n}
 
+
+@api_router.post("/products/iva-defaults")
+async def seed_iva_defaults(authorization: Optional[str] = Header(None)):
+    """Acerta o IVA (vendus_tax_id) dos produtos que ainda NÃO o têm, para não
+    caírem no fallback ao faturar: bebidas → NOR (23%), restante comida → INT (13%).
+    Nunca sobrescreve produtos que já têm IVA definido."""
+    await get_current_user(authorization)
+    cats = {c["id"]: (c.get("name") or "").strip().lower()
+            for c in await db.categories.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
+    n_int = n_nor = 0
+    async for p in db.products.find(
+        {"$or": [{"vendus_tax_id": {"$exists": False}}, {"vendus_tax_id": None},
+                 {"vendus_tax_id": ""}]}, {"_id": 0, "id": 1, "category_id": 1}):
+        cat = cats.get(p.get("category_id"), "")
+        tax = "NOR" if "bebida" in cat else "INT"
+        await db.products.update_one({"id": p["id"]}, {"$set": {"vendus_tax_id": tax}})
+        if tax == "INT":
+            n_int += 1
+        else:
+            n_nor += 1
+    return {"int_13": n_int, "nor_23": n_nor, "updated": n_int + n_nor}
+
 @api_router.get("/products", response_model=List[ProductResponse])
 async def list_products(category_id: Optional[str] = None, available_only: bool = False):
     query = {}

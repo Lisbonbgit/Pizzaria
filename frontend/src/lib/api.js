@@ -82,6 +82,8 @@ export const productsAPI = {
   },
   importVendus: () =>
     api.post('/menu/import-vendus'),
+  seedIvaDefaults: () =>
+    api.post('/products/iva-defaults'),
   reorder: (items) =>
     api.put('/products/reorder', items)
 };

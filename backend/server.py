@@ -245,6 +245,7 @@ class ProductCreate(BaseModel):
     featured: bool = False
     rodizio_incluido: str = "nao"  # nao | ambos | completo
     rodizio_only: bool = False     # só aparece no menu quando a mesa está em rodízio
+    vendus_tax_id: Optional[str] = None  # IVA p/ fatura: INT=13% | NOR=23%
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -260,6 +261,7 @@ class ProductUpdate(BaseModel):
     featured: Optional[bool] = None
     rodizio_incluido: Optional[str] = None
     rodizio_only: Optional[bool] = None
+    vendus_tax_id: Optional[str] = None
 
 class ProductResponse(BaseModel):
     id: str
@@ -276,6 +278,7 @@ class ProductResponse(BaseModel):
     featured: bool
     rodizio_incluido: str = "nao"
     rodizio_only: bool = False
+    vendus_tax_id: Optional[str] = None
     order: int = 0
     created_at: str
 
@@ -866,6 +869,7 @@ async def create_product(product: ProductCreate, authorization: Optional[str] = 
         "featured": product.featured,
         "rodizio_incluido": product.rodizio_incluido,
         "rodizio_only": product.rodizio_only,
+        "vendus_tax_id": product.vendus_tax_id,
         "order": await db.products.count_documents({"category_id": product.category_id}),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
@@ -901,13 +905,21 @@ async def seed_iva_defaults(authorization: Optional[str] = Header(None)):
     cats = {c["id"]: (c.get("name") or "").strip().lower()
             for c in await db.categories.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
     n_int = n_nor = 0
-    async for p in db.products.find(
-        {"$or": [{"vendus_tax_id": {"$exists": False}}, {"vendus_tax_id": None},
-                 {"vendus_tax_id": ""}]}, {"_id": 0, "id": 1, "category_id": 1}):
+    async for p in db.products.find({}, {"_id": 0, "id": 1, "category_id": 1, "name": 1, "vendus_tax_id": 1}):
         cat = cats.get(p.get("category_id"), "")
-        tax = "NOR" if "bebida" in cat else "INT"
-        await db.products.update_one({"id": p["id"]}, {"$set": {"vendus_tax_id": tax}})
-        if tax == "INT":
+        name = (p.get("name") or "").lower()
+        current = p.get("vendus_tax_id")
+        is_agua = "agua" in name or "água" in name
+        if is_agua:
+            target = "INT"          # águas = 13% (corrige mesmo as que estão a NOR)
+        elif not current:
+            target = "NOR" if "bebida" in cat else "INT"  # bebidas 23%, comida 13%
+        else:
+            continue                # já tem IVA e não é água → não mexer
+        if current == target:
+            continue
+        await db.products.update_one({"id": p["id"]}, {"$set": {"vendus_tax_id": target}})
+        if target == "INT":
             n_int += 1
         else:
             n_nor += 1

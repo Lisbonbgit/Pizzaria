@@ -59,7 +59,8 @@ const AdminMenu = () => {
     available: true,
     featured: false,
     rodizio_incluido: 'nao',
-    rodizio_only: false
+    rodizio_only: false,
+    vendus_tax_id: 'INT'
   });
   const [newVariation, setNewVariation] = useState({ name: '', price: 0 });
   const [newExtra, setNewExtra] = useState({ name: '', price: 0 });
@@ -189,7 +190,8 @@ const AdminMenu = () => {
         available: product.available,
         featured: product.featured,
         rodizio_incluido: product.rodizio_incluido || 'nao',
-        rodizio_only: product.rodizio_only || false
+        rodizio_only: product.rodizio_only || false,
+        vendus_tax_id: product.vendus_tax_id || 'INT'
       });
     } else {
       setEditingProduct(null);
@@ -206,7 +208,8 @@ const AdminMenu = () => {
         available: true,
         featured: false,
         rodizio_incluido: 'nao',
-        rodizio_only: false
+        rodizio_only: false,
+        vendus_tax_id: 'INT'
       });
     }
     setNewVariation({ name: '', price: 0 });
@@ -766,6 +769,17 @@ const AdminMenu = () => {
                       <SelectItem value="nao">Não</SelectItem>
                       <SelectItem value="ambos">Simples e Completo</SelectItem>
                       <SelectItem value="completo">Só Completo</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="prod-iva">IVA (fatura Vendus)</Label>
+                  <Select value={productForm.vendus_tax_id || 'INT'}
+                    onValueChange={(v) => setProductForm(prev => ({ ...prev, vendus_tax_id: v }))}>
+                    <SelectTrigger id="prod-iva"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="INT">13% — Intermédia (comida, águas)</SelectItem>
+                      <SelectItem value="NOR">23% — Normal (refrigerantes, sumos)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

@@ -378,6 +378,7 @@ const MenuPage = () => {
       });
       setMode(chosenTier);
       setNeedsPeople(false);
+      refreshBill();  // a conta já arranca no valor fixo por pessoa
     } catch {
       toast.error('Não foi possível abrir a mesa');
     } finally {
@@ -637,6 +638,11 @@ const MenuPage = () => {
             Os itens marcados <span className="font-semibold text-green-700">Incluído</span> já entram no preço por pessoa. Pizzas servidas em tamanho médio.
             {rodizioCfg?.waste_note ? ` ${rodizioCfg.waste_note}` : ''}
           </p>
+          {bill && (bill.total || 0) > 0 && (
+            <p className="mt-2 font-heading text-lg font-bold text-primary">
+              Conta da mesa: {eur(bill.total)}
+            </p>
+          )}
         </div>
       )}
 

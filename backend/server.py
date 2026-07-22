@@ -1337,17 +1337,24 @@ async def tables_overview(authorization: Optional[str] = Header(None)):
             a["last"] = ca
     sessions = await db.table_sessions.find({"status": "open"}, {"_id": 0}).to_list(1000)
     sess_by = {s["table_number"]: s for s in sessions}
+    rcfg = await _rodizio_config()
     out = []
     for t in tables:
         a = agg.get(t["number"], {"total": 0.0, "count": 0, "last": None})
         s = sess_by.get(t["number"])
+        rodizio = (s or {}).get("rodizio", "none")
+        rp = (s or {}).get("rodizio_people")
+        # No rodízio a conta já inclui o valor fixo por pessoa (adultos + crianças
+        # a meia), somado aos extras à la carte (itens com preço > 0).
+        r_charge = _rodizio_charge(rodizio, rp, rcfg)
         out.append({
             "id": t["id"], "number": t["number"], "name": t.get("name"),
-            "open_total": round(a["total"], 2), "open_orders": a["count"],
+            "open_total": round(a["total"] + r_charge, 2), "open_orders": a["count"],
             "occupied": a["count"] > 0 or s is not None,
-            "people": (s or {}).get("people"),
-            "rodizio": (s or {}).get("rodizio", "none"),
-            "rodizio_people": (s or {}).get("rodizio_people"),
+            "people": _rodizio_headcount(rodizio, rp, (s or {}).get("people")),
+            "rodizio": rodizio,
+            "rodizio_people": rp,
+            "rodizio_charge": r_charge,
             "last_activity": a["last"] or (s or {}).get("opened_at"),
         })
     return out
@@ -1361,6 +1368,31 @@ async def _open_session(table_number: int):
     )
 
 
+def _rodizio_charge(rodizio: Optional[str], rodizio_people: Optional[dict], cfg: dict) -> float:
+    """Conta estimada do rodízio: adultos a preço cheio + crianças a meia. Fica
+    logo como valor da mesa mal o cliente confirma a lotação (o preço é fixo por
+    pessoa). O staff afina crianças grátis/meia e a taxa de desperdício no fecho."""
+    if not rodizio or rodizio == "none":
+        return 0.0
+    tier = (cfg.get("tiers") or {}).get(rodizio)
+    if not tier:
+        return 0.0
+    price = round(float(tier.get("price", 0) or 0), 2)
+    rp = rodizio_people or {}
+    adults = int(rp.get("adults", 0) or 0)
+    children = int(rp.get("children", 0) or 0)
+    return round(adults * price + children * (price / 2), 2)
+
+
+def _rodizio_headcount(rodizio: Optional[str], rodizio_people: Optional[dict], fallback) -> int:
+    """Nº de pessoas real numa mesa de rodízio = adultos + crianças."""
+    if rodizio and rodizio != "none":
+        rp = rodizio_people or {}
+        n = int(rp.get("adults", 0) or 0) + int(rp.get("children", 0) or 0)
+        return n or (fallback or 1)
+    return fallback
+
+
 class OpenTableRequest(BaseModel):
     people: int = 1
     rodizio: str = "none"       # none | simples | completo
@@ -1372,7 +1404,12 @@ class OpenTableRequest(BaseModel):
 async def open_table_session(table_number: int, req: OpenTableRequest):
     """PÚBLICO — o cliente abre a mesa (nº de pessoas e, se aplicável, o rodízio)
     na 1ª leitura do QR."""
-    people = max(1, req.people or (req.adults + req.children) or 1)
+    # No rodízio o nº de pessoas vem de adultos+crianças (o default people=1 é
+    # "truthy" e escondia a lotação real); à la carte usa o campo people.
+    if req.rodizio and req.rodizio != "none":
+        people = max(1, (req.adults or 0) + (req.children or 0))
+    else:
+        people = max(1, req.people or 1)
     existing = await _open_session(table_number)
     if existing:
         # Mesa já aberta mas sem rodízio: o cliente pode escolher rodízio agora.
@@ -1380,10 +1417,11 @@ async def open_table_session(table_number: int, req: OpenTableRequest):
             rp = {"adults": req.adults, "children": req.children}
             await db.table_sessions.update_one(
                 {"id": existing["id"]},
-                {"$set": {"rodizio": req.rodizio, "rodizio_people": rp}},
+                {"$set": {"rodizio": req.rodizio, "rodizio_people": rp, "people": people}},
             )
             existing["rodizio"] = req.rodizio
             existing["rodizio_people"] = rp
+            existing["people"] = people
         return existing
     session = {
         "id": str(uuid.uuid4()),
@@ -1405,15 +1443,23 @@ async def get_table_session(table_number: int):
     """PÚBLICO — estado da mesa para o cliente: aberta?, nº de pessoas, conta atual."""
     s = await _open_session(table_number)
     lines = await _open_bill_lines(table_number)
-    total = round(sum((l.get("total_price", 0) or 0) for l in lines), 2)
+    items_total = round(sum((l.get("total_price", 0) or 0) for l in lines), 2)
     n_orders = len({l["order_id"] for l in lines})
+    rodizio = (s or {}).get("rodizio", "none")
+    rp = (s or {}).get("rodizio_people")
+    rcfg = await _rodizio_config()
+    r_charge = _rodizio_charge(rodizio, rp, rcfg)
+    # No rodízio a conta arranca logo no valor fixo por pessoa (+ extras à la carte).
+    total = round(items_total + r_charge, 2)
     return {
         "open": s is not None,
-        "people": (s or {}).get("people"),
+        "people": _rodizio_headcount(rodizio, rp, (s or {}).get("people")),
         "opened_at": (s or {}).get("opened_at"),
-        "rodizio": (s or {}).get("rodizio", "none"),
-        "rodizio_people": (s or {}).get("rodizio_people"),
-        "bill": {"total": total, "lines": lines, "orders": n_orders},
+        "rodizio": rodizio,
+        "rodizio_people": rp,
+        "rodizio_charge": r_charge,
+        "bill": {"total": total, "lines": lines, "orders": n_orders,
+                 "items_total": items_total, "rodizio_charge": r_charge},
     }
 
 

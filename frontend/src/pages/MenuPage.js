@@ -436,7 +436,7 @@ const MenuPage = () => {
                 <button type="button"
                   onClick={() => { setMode('alacarte'); setGateStep('people'); }}
                   className="w-full rounded-xl border-2 p-4 text-left active:scale-[0.98] transition">
-                  <p className="font-heading text-lg font-bold">À la carte</p>
+                  <p className="font-heading text-lg font-bold">À la Carte</p>
                   <p className="text-sm text-muted-foreground">Menu normal, paga o que pedir</p>
                 </button>
                 <button type="button"

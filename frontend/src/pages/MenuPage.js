@@ -12,7 +12,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { useCart } from '@/context/CartContext';
-import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, settingsAPI } from '@/lib/api';
+import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, settingsAPI, rodizioAPI } from '@/lib/api';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -64,6 +64,24 @@ const MenuPage = () => {
   const [bill, setBill] = useState(null);
   const [billOpen, setBillOpen] = useState(false);
   const [orderSuccessOpen, setOrderSuccessOpen] = useState(false);
+  const [rodizioCfg, setRodizioCfg] = useState(null);
+  const [mode, setMode] = useState('none'); // none | alacarte | simples | completo
+  const [gateStep, setGateStep] = useState('mode'); // mode | people | rodizio
+  const [chosenTier, setChosenTier] = useState('simples');
+  const [adultsInput, setAdultsInput] = useState(2);
+  const [childrenInput, setChildrenInput] = useState(0);
+
+  const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
+  const isRodizio = mode === 'simples' || mode === 'completo';
+  const isIncluded = (p) => {
+    if (mode === 'simples') return p.rodizio_incluido === 'ambos';
+    if (mode === 'completo') return p.rodizio_incluido === 'ambos' || p.rodizio_incluido === 'completo';
+    return false;
+  };
+  const mediaVariation = (p) => {
+    const vs = p.variations || [];
+    return vs.find((v) => /m[ée]d/i.test(v.name)) || [...vs].sort((a, b) => (a.price || 0) - (b.price || 0))[0] || null;
+  };
 
   // Refs for scroll tracking
   const sectionRefs = useRef({});
@@ -88,6 +106,7 @@ const MenuPage = () => {
           .then(res => {
             setBill(res.data.bill);
             setNeedsPeople(!res.data.open);
+            if (res.data.open) setMode(res.data.rodizio && res.data.rodizio !== 'none' ? res.data.rodizio : 'alacarte');
           })
           .catch(() => {});
       }
@@ -121,6 +140,7 @@ const MenuPage = () => {
       if (catsRes.data.length > 0) {
         setActiveCategory(catsRes.data[0].id);
       }
+      rodizioAPI.public().then((r) => setRodizioCfg(r.data)).catch(() => {});
     } catch (err) {
       console.error('Error loading menu:', err);
       setError('Erro ao carregar o menu. Tente novamente.');
@@ -211,7 +231,11 @@ const MenuPage = () => {
   const openProductModal = (product) => {
     setSelectedProduct(product);
     setProductQuantity(1);
-    setSelectedVariation(product.variations?.length > 0 ? product.variations[0] : null);
+    setSelectedVariation(
+      (isRodizio && isIncluded(product))
+        ? mediaVariation(product)
+        : (product.variations?.length > 0 ? product.variations[0] : null)
+    );
     setSelectedExtras([]);
     setSelectedComplements({});
     setSelectedPreference(null);
@@ -247,6 +271,7 @@ const MenuPage = () => {
         items: selectedComplements[g.name] || []
       }));
     
+    const included = isRodizio && isIncluded(selectedProduct);
     addItem(
       selectedProduct,
       productQuantity,
@@ -254,10 +279,11 @@ const MenuPage = () => {
       selectedExtras,
       itemNotes,
       complementsForCart,
-      selectedPreference
+      selectedPreference,
+      included ? 0 : null
     );
-    
-    toast.success('Adicionado ao carrinho');
+
+    toast.success(included ? 'Incluído no rodízio' : 'Adicionado ao carrinho');
     setProductModalOpen(false);
   };
 
@@ -373,25 +399,97 @@ const MenuPage = () => {
 
   return (
     <div className="min-h-screen bg-background pb-24">
-      {/* Nº de pessoas — 1ª leitura do QR numa mesa livre */}
+      {/* Entrada — 1ª leitura do QR numa mesa livre */}
       {needsPeople && tableNumber && (
         <div className="fixed inset-0 z-[60] bg-background flex flex-col items-center justify-center p-6 text-center">
           <div className="w-full max-w-xs space-y-8">
             <div>
               <p className="text-xs uppercase tracking-wide text-muted-foreground">Mesa {tableNumber}</p>
               <h2 className="font-heading text-3xl font-bold mt-2">Bem-vindo à {restaurantName}! 👋</h2>
-              <p className="text-muted-foreground mt-2">Quantas pessoas estão na mesa?</p>
             </div>
-            <div className="flex items-center justify-center gap-5">
-              <button type="button" onClick={() => setPeopleInput((p) => Math.max(1, p - 1))}
-                className="h-14 w-14 rounded-full border-2 text-2xl font-bold text-primary active:scale-95 transition">−</button>
-              <span className="font-heading text-5xl font-bold w-20 tabular-nums">{peopleInput}</span>
-              <button type="button" onClick={() => setPeopleInput((p) => p + 1)}
-                className="h-14 w-14 rounded-full border-2 text-2xl font-bold text-primary active:scale-95 transition">+</button>
-            </div>
-            <Button onClick={submitPeople} disabled={openingTable} className="w-full h-12 text-base">
-              {openingTable ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Ver o menu'}
-            </Button>
+
+            {rodizioCfg?.available_today && gateStep === 'mode' ? (
+              /* Escolha do modo: à la carte vs rodízio */
+              <div className="space-y-3">
+                <p className="text-muted-foreground">Como querem pedir hoje?</p>
+                <button type="button"
+                  onClick={() => { setMode('alacarte'); setGateStep('people'); }}
+                  className="w-full rounded-xl border-2 p-4 text-left active:scale-[0.98] transition">
+                  <p className="font-heading text-lg font-bold">À la carte</p>
+                  <p className="text-sm text-muted-foreground">Menu normal, paga o que pedir</p>
+                </button>
+                <button type="button"
+                  onClick={() => { setChosenTier('simples'); setGateStep('rodizio'); }}
+                  className="w-full rounded-xl border-2 border-primary bg-primary/5 p-4 text-left active:scale-[0.98] transition">
+                  <p className="font-heading text-lg font-bold text-primary">{rodizioCfg.tiers?.simples?.name || 'Rodízio Simples'}</p>
+                  <p className="text-sm text-muted-foreground">{eur(rodizioCfg.tiers?.simples?.price)} por pessoa</p>
+                </button>
+                <button type="button"
+                  onClick={() => { setChosenTier('completo'); setGateStep('rodizio'); }}
+                  className="w-full rounded-xl border-2 border-primary bg-primary/5 p-4 text-left active:scale-[0.98] transition">
+                  <p className="font-heading text-lg font-bold text-primary">{rodizioCfg.tiers?.completo?.name || 'Rodízio Completo'}</p>
+                  <p className="text-sm text-muted-foreground">{eur(rodizioCfg.tiers?.completo?.price)} por pessoa</p>
+                </button>
+                {rodizioCfg.waste_note && (
+                  <p className="text-xs text-muted-foreground pt-1">{rodizioCfg.waste_note}</p>
+                )}
+              </div>
+            ) : gateStep === 'rodizio' ? (
+              /* Rodízio: adultos + crianças */
+              <div className="space-y-5">
+                <p className="text-muted-foreground">
+                  {(chosenTier === 'completo' ? rodizioCfg?.tiers?.completo?.name : rodizioCfg?.tiers?.simples?.name)
+                    || 'Rodízio'} — quantos são?
+                </p>
+                <div className="flex items-center justify-between px-2">
+                  <span className="font-medium">Adultos</span>
+                  <div className="flex items-center gap-4">
+                    <button type="button" onClick={() => setAdultsInput((p) => Math.max(0, p - 1))}
+                      className="h-11 w-11 rounded-full border-2 text-xl font-bold text-primary active:scale-95 transition">−</button>
+                    <span className="font-heading text-3xl font-bold w-10 tabular-nums">{adultsInput}</span>
+                    <button type="button" onClick={() => setAdultsInput((p) => p + 1)}
+                      className="h-11 w-11 rounded-full border-2 text-xl font-bold text-primary active:scale-95 transition">+</button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between px-2">
+                  <span className="font-medium">Crianças</span>
+                  <div className="flex items-center gap-4">
+                    <button type="button" onClick={() => setChildrenInput((p) => Math.max(0, p - 1))}
+                      className="h-11 w-11 rounded-full border-2 text-xl font-bold text-primary active:scale-95 transition">−</button>
+                    <span className="font-heading text-3xl font-bold w-10 tabular-nums">{childrenInput}</span>
+                    <button type="button" onClick={() => setChildrenInput((p) => p + 1)}
+                      className="h-11 w-11 rounded-full border-2 text-xl font-bold text-primary active:scale-95 transition">+</button>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  As idades das crianças (grátis ou meia) são confirmadas pela equipa no fim.
+                </p>
+                <Button onClick={submitRodizio} disabled={openingTable} className="w-full h-12 text-base">
+                  {openingTable ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Ver o menu'}
+                </Button>
+                <button type="button" className="text-xs text-muted-foreground underline"
+                  onClick={() => setGateStep('mode')}>voltar</button>
+              </div>
+            ) : (
+              /* À la carte (ou dia sem rodízio): nº de pessoas */
+              <>
+                <p className="text-muted-foreground -mt-4">Quantas pessoas estão na mesa?</p>
+                <div className="flex items-center justify-center gap-5">
+                  <button type="button" onClick={() => setPeopleInput((p) => Math.max(1, p - 1))}
+                    className="h-14 w-14 rounded-full border-2 text-2xl font-bold text-primary active:scale-95 transition">−</button>
+                  <span className="font-heading text-5xl font-bold w-20 tabular-nums">{peopleInput}</span>
+                  <button type="button" onClick={() => setPeopleInput((p) => p + 1)}
+                    className="h-14 w-14 rounded-full border-2 text-2xl font-bold text-primary active:scale-95 transition">+</button>
+                </div>
+                <Button onClick={submitPeople} disabled={openingTable} className="w-full h-12 text-base">
+                  {openingTable ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Ver o menu'}
+                </Button>
+                {rodizioCfg?.available_today && (
+                  <button type="button" className="text-xs text-muted-foreground underline"
+                    onClick={() => setGateStep('mode')}>voltar às opções</button>
+                )}
+              </>
+            )}
           </div>
         </div>
       )}
@@ -508,6 +606,21 @@ const MenuPage = () => {
         </div>
       </div>
 
+      {/* Banner do modo rodízio */}
+      {isRodizio && (
+        <div className="mx-4 mt-4 md:mx-6 rounded-xl border border-primary/30 bg-primary/5 p-3 text-center">
+          <p className="font-heading font-bold text-primary">
+            🍕 {mode === 'completo'
+              ? (rodizioCfg?.tiers?.completo?.name || 'Rodízio Completo')
+              : (rodizioCfg?.tiers?.simples?.name || 'Rodízio Simples')} ativo
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Os itens marcados <span className="font-semibold text-green-700">Incluído</span> já entram no preço por pessoa. Pizzas servidas em tamanho médio.
+            {rodizioCfg?.waste_note ? ` ${rodizioCfg.waste_note}` : ''}
+          </p>
+        </div>
+      )}
+
       {/* Continuous Scroll — All Categories */}
       <div className="p-4 md:p-6 space-y-10">
         {productsByCategory.map(({ category, products: catProducts }) => (
@@ -544,6 +657,13 @@ const MenuPage = () => {
                         </Badge>
                       </div>
                     )}
+                    {isRodizio && isIncluded(product) && (
+                      <div className="absolute top-3 right-3">
+                        <Badge className="bg-green-600 text-white text-xs border-0">
+                          Incluído
+                        </Badge>
+                      </div>
+                    )}
                   </div>
                   <div className="p-4">
                     <h3 className="font-heading text-lg font-semibold">{product.name}</h3>
@@ -551,9 +671,13 @@ const MenuPage = () => {
                       {product.description}
                     </p>
                     <div className="flex items-center justify-between mt-3">
-                      <span className="font-bold text-lg">
-                        € {product.base_price.toFixed(2)}
-                      </span>
+                      {isRodizio && isIncluded(product) ? (
+                        <span className="font-bold text-lg text-green-700">Incluído</span>
+                      ) : (
+                        <span className="font-bold text-lg">
+                          € {product.base_price.toFixed(2)}
+                        </span>
+                      )}
                       <Button size="sm" className="rounded-full px-4">
                         <Plus className="h-4 w-4 mr-1" />
                         Adicionar
@@ -584,8 +708,15 @@ const MenuPage = () => {
               </DialogHeader>
               <p className="text-muted-foreground">{selectedProduct.description}</p>
 
+              {/* No rodízio: pizza servida sempre em tamanho médio, sem escolha */}
+              {isRodizio && isIncluded(selectedProduct) && selectedProduct.variations?.length > 0 && (
+                <div className="mt-4 rounded-lg border border-green-600/30 bg-green-50 p-3 text-sm text-green-800">
+                  Servido em tamanho <span className="font-semibold">médio</span> — incluído no rodízio.
+                </div>
+              )}
+
               {/* Variations */}
-              {selectedProduct.variations?.length > 0 && (
+              {selectedProduct.variations?.length > 0 && !(isRodizio && isIncluded(selectedProduct)) && (
                 <div className="mt-4">
                   <Label className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                     Tamanho
@@ -765,13 +896,15 @@ const MenuPage = () => {
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
-                <Button 
-                  size="lg" 
+                <Button
+                  size="lg"
                   className="rounded-full px-8"
                   onClick={handleAddToCart}
                   data-testid="add-to-cart-btn"
                 >
-                  Adicionar € {calculateItemPrice().toFixed(2)}
+                  {isRodizio && isIncluded(selectedProduct)
+                    ? 'Adicionar (Incluído)'
+                    : `Adicionar € ${calculateItemPrice().toFixed(2)}`}
                 </Button>
               </div>
             </>

@@ -1355,18 +1355,34 @@ async def _open_session(table_number: int):
 
 class OpenTableRequest(BaseModel):
     people: int = 1
+    rodizio: str = "none"       # none | simples | completo
+    adults: int = 0
+    children: int = 0
 
 
 @api_router.post("/tables/{table_number}/open")
 async def open_table_session(table_number: int, req: OpenTableRequest):
-    """PÚBLICO — o cliente abre a mesa (nº de pessoas) na 1ª leitura do QR."""
+    """PÚBLICO — o cliente abre a mesa (nº de pessoas e, se aplicável, o rodízio)
+    na 1ª leitura do QR."""
+    people = max(1, req.people or (req.adults + req.children) or 1)
     existing = await _open_session(table_number)
     if existing:
+        # Mesa já aberta mas sem rodízio: o cliente pode escolher rodízio agora.
+        if req.rodizio != "none" and existing.get("rodizio", "none") == "none":
+            rp = {"adults": req.adults, "children": req.children}
+            await db.table_sessions.update_one(
+                {"id": existing["id"]},
+                {"$set": {"rodizio": req.rodizio, "rodizio_people": rp}},
+            )
+            existing["rodizio"] = req.rodizio
+            existing["rodizio_people"] = rp
         return existing
     session = {
         "id": str(uuid.uuid4()),
         "table_number": table_number,
-        "people": max(1, req.people or 1),
+        "people": people,
+        "rodizio": req.rodizio,
+        "rodizio_people": {"adults": req.adults, "children": req.children},
         "opened_at": datetime.now(timezone.utc).isoformat(),
         "status": "open",
         "closed_at": None,
@@ -1387,6 +1403,8 @@ async def get_table_session(table_number: int):
         "open": s is not None,
         "people": (s or {}).get("people"),
         "opened_at": (s or {}).get("opened_at"),
+        "rodizio": (s or {}).get("rodizio", "none"),
+        "rodizio_people": (s or {}).get("rodizio_people"),
         "bill": {"total": total, "lines": lines, "orders": n_orders},
     }
 

@@ -107,8 +107,8 @@ export const tablesAPI = {
   // Sessão de mesa (fluxo público do cliente por QR)
   getSession: (number) =>
     api.get(`/tables/${number}/session`),
-  openSession: (number, people) =>
-    api.post(`/tables/${number}/open`, { people })
+  openSession: (number, body) =>
+    api.post(`/tables/${number}/open`, body)
 };
 
 // Orders API

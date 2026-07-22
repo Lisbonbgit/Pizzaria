@@ -1287,11 +1287,12 @@ async def mark_order_paid(order_id: str, payment: Optional[OrderPaymentUpdate] =
     return OrderResponse(**order)
 
 
-@api_router.post("/orders/{order_id}/items/{idx}/void", response_model=OrderResponse)
+@api_router.post("/orders/{order_id}/items/{idx}/void")
 async def void_order_item(order_id: str, idx: int, authorization: Optional[str] = Header(None)):
     """Remove um item da conta da mesa SEM faturar (adicionado por engano pelo
     staff ou pelo cliente). Soft-void: marca items.{idx}.removed=True (mantém
-    rasto). Um item já faturado não pode ser removido."""
+    rasto). Um item já faturado não pode ser removido. Devolve um dict simples
+    (não o OrderResponse, que era frágil com orders antigas sem todos os campos)."""
     await get_current_user(authorization)
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
@@ -1302,12 +1303,13 @@ async def void_order_item(order_id: str, idx: int, authorization: Optional[str] 
     if items[idx].get("paid"):
         raise HTTPException(status_code=400, detail="Item já faturado — não pode ser removido")
     await db.orders.update_one({"id": order_id}, {"$set": {f"items.{idx}.removed": True}})
-    od = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    od = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
+    cancelled = False
     # Se já não sobra nada por faturar, cancela a order (sai do conjunto "aberto").
-    if all(it.get("paid") or it.get("removed") for it in od.get("items", [])):
+    if all(it.get("paid") or it.get("removed") for it in (od or {}).get("items", [])):
         await db.orders.update_one({"id": order_id}, {"$set": {"status": "cancelled"}})
-        od["status"] = "cancelled"
-    return OrderResponse(**od)
+        cancelled = True
+    return {"ok": True, "order_id": order_id, "idx": idx, "order_cancelled": cancelled}
 
 # ==================== VENDUS: FECHO DE MESA ====================
 
@@ -1840,6 +1842,8 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
     total = 0.0
     for o in orders:
         for it in o.get("items", []):
+            if it.get("paid") or it.get("removed"):
+                continue  # itens já faturados ou removidos NÃO entram na consulta
             items.append({
                 "product_name": it.get("product_name"),
                 "quantity": it.get("quantity", 1),
@@ -1850,7 +1854,7 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
                 "unit_price": it.get("unit_price", 0),
                 "total_price": it.get("total_price", 0),
             })
-        total += o.get("total", 0)
+            total += it.get("total_price", 0) or 0
     total = round(total, 2)
 
     # Rodízio: a parcela fixa por pessoa vive na SESSÃO, não nas orders. Sem isto

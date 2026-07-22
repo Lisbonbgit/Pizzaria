@@ -1297,6 +1297,12 @@ class CloseTableRequest(BaseModel):
     nif: Optional[str] = None
     split_count: int = 1  # >1 => divide a conta TODA em N faturas iguais
     items: Optional[List[CloseTableItemRef]] = None  # subconjunto: "Separar Conta"
+    # Rodízio (all-you-can-eat): cobra por pessoa + extras à la carte + taxa desperdício
+    rodizio_tier: Optional[str] = None  # simples | completo | None (à la carte)
+    adults: int = 0
+    children_half: int = 0   # crianças a meia (ex.: 6–12 anos)
+    children_free: int = 0   # crianças grátis (ex.: ≤5 anos) — apenas informativo
+    waste_boxes: int = 0     # nº de taxas de desperdício a cobrar
 
 
 @api_router.get("/tables/{table_number}/bill")
@@ -1340,6 +1346,8 @@ async def tables_overview(authorization: Optional[str] = Header(None)):
             "open_total": round(a["total"], 2), "open_orders": a["count"],
             "occupied": a["count"] > 0 or s is not None,
             "people": (s or {}).get("people"),
+            "rodizio": (s or {}).get("rodizio", "none"),
+            "rodizio_people": (s or {}).get("rodizio_people"),
             "last_activity": a["last"] or (s or {}).get("opened_at"),
         })
     return out
@@ -1438,70 +1446,128 @@ async def close_table(table_number: int, req: CloseTableRequest,
     if not all_lines:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
 
-    # "Separar Conta": se vier um subconjunto de itens, fatura só esses.
-    if req.items:
-        sel = {(i.order_id, i.idx) for i in req.items}
-        lines = [l for l in all_lines if (l["order_id"], l["idx"]) in sel]
-        if not lines:
-            raise HTTPException(status_code=400, detail="Nenhum item selecionado válido")
-    else:
-        lines = all_lines
-    partial = len(lines) < len(all_lines)
-
-    # IVA por produto (do que foi importado do Vendus); fallback ao default
-    prod_ids = list({l.get("product_id") for l in lines if l.get("product_id")})
-    tax_by_prod = {}
-    if prod_ids:
-        async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1}):
-            if p.get("vendus_tax_id"):
-                tax_by_prod[p["id"]] = p["vendus_tax_id"]
-
-    # Itens (fatura única/subconjunto) + subtotais por IVA (para dividir).
-    vendus_items = []
-    by_tax = {}
-    total = 0.0
-    for l in lines:
-        qty = l.get("quantity", 1) or 1
-        unit = round(float(l.get("unit_price", 0) or 0), 2)
-        tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
-        title = l.get("product_name", "Item")
-        var = l.get("variation") or {}
-        if isinstance(var, dict) and var.get("name"):
-            title = f"{title} ({var['name']})"
-        vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
-        by_tax[tax] = round(by_tax.get(tax, 0.0) + round(unit * qty, 2), 2)
-        total += round(l.get("total_price", 0) or 0, 2)
-    total = round(total, 2)
-
-    # A divisão igual só se aplica à conta TODA (não a uma separação por itens).
-    n = 1 if partial else max(1, min(int(req.split_count or 1), 50))
     ts = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
 
-    # Constrói as faturas a emitir. n==1: uma fatura itemizada. n>1: uma fatura por
-    # pessoa com a sua parte, agrupada por IVA (o resto do arredondamento vai para a
-    # última, para as n faturas somarem EXATAMENTE o total).
-    invoices = []  # {"items": [...], "amount": float, "ext_ref": str}
-    if n == 1:
-        invoices.append({"items": vendus_items, "amount": total,
-                         "ext_ref": f"mesa-{table_number}-{ts}"})
-    else:
-        shares_by_tax = {}
-        for tax, sub in by_tax.items():
-            base = round(sub / n, 2)
-            shares_by_tax[tax] = [base] * (n - 1) + [round(sub - base * (n - 1), 2)]
-        for i in range(n):
-            items_i, amount_i = [], 0.0
-            for tax, parts in shares_by_tax.items():
-                share = parts[i]
-                if share and share > 0:
-                    items_i.append({"title": f"Conta dividida Mesa {table_number} ({i+1}/{n})",
-                                    "qty": 1, "gross_price": share, "tax_id": tax})
-                    amount_i += share
-            if items_i:
-                invoices.append({"items": items_i, "amount": round(amount_i, 2),
-                                 "ext_ref": f"mesa-{table_number}-{ts}-{i+1}de{n}"})
+    if req.rodizio_tier:
+        # ---- RODÍZIO: cobra por pessoa (nível × adultos + nível/2 × crianças-meia)
+        # + extras à la carte (itens com preço > 0) + taxa de desperdício. Salda a
+        # mesa TODA numa única Fatura Simplificada.
+        cfg = await _rodizio_config()
+        tier = (cfg.get("tiers") or {}).get(req.rodizio_tier)
+        if not tier:
+            raise HTTPException(status_code=400, detail="Nível de rodízio inválido")
+        rtax = cfg.get("tax_id", "INT")
+        price = round(float(tier["price"]), 2)
+        half = round(price / 2, 2)
 
-    client = {"fiscal_id": req.nif} if (req.nif and n == 1) else None
+        # Extras = itens da conta fora do rodízio (os incluídos entraram a €0).
+        extra_lines = [l for l in all_lines if (l.get("total_price", 0) or 0) > 0]
+        prod_ids = list({l.get("product_id") for l in extra_lines if l.get("product_id")})
+        tax_by_prod = {}
+        if prod_ids:
+            async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1}):
+                if p.get("vendus_tax_id"):
+                    tax_by_prod[p["id"]] = p["vendus_tax_id"]
+
+        vendus_items = []
+        total = 0.0
+        if req.adults and req.adults > 0:
+            vendus_items.append({"title": f"{tier['name']} (adulto)", "qty": req.adults,
+                                 "gross_price": price, "tax_id": rtax})
+            total += round(price * req.adults, 2)
+        if req.children_half and req.children_half > 0:
+            vendus_items.append({"title": f"{tier['name']} (criança)", "qty": req.children_half,
+                                 "gross_price": half, "tax_id": rtax})
+            total += round(half * req.children_half, 2)
+        for l in extra_lines:
+            qty = l.get("quantity", 1) or 1
+            unit = round(float(l.get("unit_price", 0) or 0), 2)
+            tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
+            title = l.get("product_name", "Item")
+            var = l.get("variation") or {}
+            if isinstance(var, dict) and var.get("name"):
+                title = f"{title} ({var['name']})"
+            vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
+            total += round(unit * qty, 2)
+        if req.waste_boxes and req.waste_boxes > 0:
+            wfee = round(float(cfg.get("waste_fee", 5.0)), 2)
+            vendus_items.append({"title": "Taxa de desperdício", "qty": req.waste_boxes,
+                                 "gross_price": wfee, "tax_id": cfg.get("waste_fee_tax_id", "INT")})
+            total += round(wfee * req.waste_boxes, 2)
+        total = round(total, 2)
+        if not vendus_items or total <= 0:
+            raise HTTPException(status_code=400, detail="Indique pelo menos 1 adulto ou criança no rodízio")
+
+        lines = all_lines       # o rodízio salda a mesa toda
+        partial = False
+        n = 1
+        invoices = [{"items": vendus_items, "amount": total,
+                     "ext_ref": f"mesa-{table_number}-rodizio-{ts}"}]
+        client = {"fiscal_id": req.nif} if req.nif else None
+    else:
+        # "Separar Conta": se vier um subconjunto de itens, fatura só esses.
+        if req.items:
+            sel = {(i.order_id, i.idx) for i in req.items}
+            lines = [l for l in all_lines if (l["order_id"], l["idx"]) in sel]
+            if not lines:
+                raise HTTPException(status_code=400, detail="Nenhum item selecionado válido")
+        else:
+            lines = all_lines
+        partial = len(lines) < len(all_lines)
+
+        # IVA por produto (do que foi importado do Vendus); fallback ao default
+        prod_ids = list({l.get("product_id") for l in lines if l.get("product_id")})
+        tax_by_prod = {}
+        if prod_ids:
+            async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1}):
+                if p.get("vendus_tax_id"):
+                    tax_by_prod[p["id"]] = p["vendus_tax_id"]
+
+        # Itens (fatura única/subconjunto) + subtotais por IVA (para dividir).
+        vendus_items = []
+        by_tax = {}
+        total = 0.0
+        for l in lines:
+            qty = l.get("quantity", 1) or 1
+            unit = round(float(l.get("unit_price", 0) or 0), 2)
+            tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
+            title = l.get("product_name", "Item")
+            var = l.get("variation") or {}
+            if isinstance(var, dict) and var.get("name"):
+                title = f"{title} ({var['name']})"
+            vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
+            by_tax[tax] = round(by_tax.get(tax, 0.0) + round(unit * qty, 2), 2)
+            total += round(l.get("total_price", 0) or 0, 2)
+        total = round(total, 2)
+
+        # A divisão igual só se aplica à conta TODA (não a uma separação por itens).
+        n = 1 if partial else max(1, min(int(req.split_count or 1), 50))
+
+        # Constrói as faturas a emitir. n==1: uma fatura itemizada. n>1: uma fatura por
+        # pessoa com a sua parte, agrupada por IVA (o resto do arredondamento vai para a
+        # última, para as n faturas somarem EXATAMENTE o total).
+        invoices = []  # {"items": [...], "amount": float, "ext_ref": str}
+        if n == 1:
+            invoices.append({"items": vendus_items, "amount": total,
+                             "ext_ref": f"mesa-{table_number}-{ts}"})
+        else:
+            shares_by_tax = {}
+            for tax, sub in by_tax.items():
+                base = round(sub / n, 2)
+                shares_by_tax[tax] = [base] * (n - 1) + [round(sub - base * (n - 1), 2)]
+            for i in range(n):
+                items_i, amount_i = [], 0.0
+                for tax, parts in shares_by_tax.items():
+                    share = parts[i]
+                    if share and share > 0:
+                        items_i.append({"title": f"Conta dividida Mesa {table_number} ({i+1}/{n})",
+                                        "qty": 1, "gross_price": share, "tax_id": tax})
+                        amount_i += share
+                if items_i:
+                    invoices.append({"items": items_i, "amount": round(amount_i, 2),
+                                     "ext_ref": f"mesa-{table_number}-{ts}-{i+1}de{n}"})
+
+        client = {"fiscal_id": req.nif} if (req.nif and n == 1) else None
 
     def _emit_all():
         c = _vendus_client()

@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
-import { tablesAPI, ordersAPI, checkoutAPI, productsAPI } from '@/lib/api';
+import { tablesAPI, ordersAPI, checkoutAPI, productsAPI, rodizioAPI } from '@/lib/api';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const lineKey = (l) => `${l.order_id}:${l.idx}`;
@@ -54,6 +54,14 @@ const AdminOrders = () => {
   const [freeOpen, setFreeOpen] = useState(false);
   const [freeing, setFreeing] = useState(false);
 
+  // Rodízio (all-you-can-eat)
+  const [rodizioCfg, setRodizioCfg] = useState(null);
+  const [rodizioMode, setRodizioMode] = useState('none'); // none | simples | completo
+  const [rAdults, setRAdults] = useState(0);
+  const [rChildrenHalf, setRChildrenHalf] = useState(0);
+  const [rChildrenFree, setRChildrenFree] = useState(0);
+  const [wasteBoxes, setWasteBoxes] = useState(0);
+
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true);
     try {
@@ -71,6 +79,7 @@ const AdminOrders = () => {
     load();
     checkoutAPI.paymentMethods().then((r) => setMethods(r.data)).catch(() => {});
     productsAPI.list().then((r) => setProducts(r.data)).catch(() => {});
+    rodizioAPI.get().then((r) => setRodizioCfg(r.data)).catch(() => {});
     const id = setInterval(() => load(true), 12000);
     return () => clearInterval(id);
   }, [load]);
@@ -101,6 +110,14 @@ const AdminOrders = () => {
     setAddQty(1);
     setSelected(new Set());
     setBillLines([]);
+    // Rodízio: pré-preenche a contagem a partir do que o cliente indicou.
+    const rmode = t.rodizio && t.rodizio !== 'none' ? t.rodizio : 'none';
+    setRodizioMode(rmode);
+    const rp = t.rodizio_people || {};
+    setRAdults(rmode !== 'none' ? (rp.adults || 0) : 0);
+    setRChildrenHalf(rmode !== 'none' ? (rp.children || 0) : 0); // por defeito, crianças a meia
+    setRChildrenFree(0);
+    setWasteBoxes(0);
     loadBill(t.number);
   };
 
@@ -173,17 +190,39 @@ const AdminOrders = () => {
   const invoiceTotal = hasSelection ? selectedTotal : fullTotal;
   const splitActive = !hasSelection && splitCount > 1;
   const perPerson = splitActive ? invoiceTotal / splitCount : invoiceTotal;
+
+  // ---- Rodízio ----
+  const isRodizioTable = rodizioMode === 'simples' || rodizioMode === 'completo';
+  const rTier = rodizioCfg?.tiers?.[rodizioMode];
+  const rTierPrice = Number(rTier?.price) || 0;
+  const rTierName = rTier?.name || (rodizioMode === 'completo' ? 'Rodízio Completo' : 'Rodízio Simples');
+  const wasteFee = Number(rodizioCfg?.waste_fee) || 5;
+  const extrasLines = billLines.filter((l) => (l.total_price || 0) > 0);
+  const extrasTotal = extrasLines.reduce((s, l) => s + (l.total_price || 0), 0);
+  const rodizioBase = rAdults * rTierPrice + rChildrenHalf * (rTierPrice / 2);
+  const wasteTotal = wasteBoxes * wasteFee;
+  const rodizioTotal = Math.round((rodizioBase + extrasTotal + wasteTotal) * 100) / 100;
+
+  // Total que efetivamente vai ser cobrado (rodízio ou à la carte).
+  const payTotal = isRodizioTable ? rodizioTotal : invoiceTotal;
   const selectedMethod = methods.find((m) => String(m.id) === String(paymentId));
   const isCash = !!selectedMethod && /dinheiro|numer|cash/i.test(selectedMethod.title || '');
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
-  const change = Math.round((received - invoiceTotal) * 100) / 100;
+  const change = Math.round((received - payTotal) * 100) / 100;
 
   const doClose = async () => {
     setConfirmOpen(false);
     setClosing(true);
     try {
       const body = { payment_method_id: Number(paymentId) };
-      if (hasSelection) {
+      if (isRodizioTable) {
+        body.rodizio_tier = rodizioMode;
+        body.adults = rAdults;
+        body.children_half = rChildrenHalf;
+        body.children_free = rChildrenFree;
+        body.waste_boxes = wasteBoxes;
+        body.nif = nif.trim() || null;
+      } else if (hasSelection) {
         body.items = selectedLines.map((l) => ({ order_id: l.order_id, idx: l.idx }));
       } else {
         body.nif = nif.trim() || null;
@@ -298,6 +337,11 @@ const AdminOrders = () => {
                 </div>
                 {busy ? (
                   <div>
+                    {t.rodizio && t.rodizio !== 'none' && (
+                      <span className="inline-block mb-1 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
+                        🍕 Rodízio {t.rodizio === 'completo' ? 'Completo' : 'Simples'}
+                      </span>
+                    )}
                     <p className="font-heading text-2xl font-bold tabular-nums text-foreground">{eur(t.open_total)}</p>
                     <p className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap">
                       {t.people ? <><Users className="h-3 w-3" /><span>{t.people}</span><span>·</span></> : null}
@@ -324,19 +368,76 @@ const AdminOrders = () => {
                 <DialogTitle className="font-heading text-xl flex items-center justify-between pr-8">
                   <span>{tableTitle}</span>
                   <span className="text-xs font-normal text-muted-foreground uppercase tracking-wide">
-                    {hasSelection ? 'A separar itens' : 'Conta toda'}
+                    {isRodizioTable ? rTierName : (hasSelection ? 'A separar itens' : 'Conta toda')}
                   </span>
                 </DialogTitle>
               </DialogHeader>
 
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
                 <div className="flex items-end justify-between">
-                  <span className="text-muted-foreground">{hasSelection ? 'A faturar (selecionados)' : 'Total'}</span>
-                  <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(invoiceTotal)}</span>
+                  <span className="text-muted-foreground">{isRodizioTable ? 'Total a pagar' : (hasSelection ? 'A faturar (selecionados)' : 'Total')}</span>
+                  <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(payTotal)}</span>
                 </div>
 
-                {/* Itens selecionados (separação) */}
-                {hasSelection && (
+                {/* Rodízio — contagem por escalões + extras + taxa */}
+                {isRodizioTable && (
+                  <div className="space-y-3">
+                    <div className="rounded-lg border bg-primary/[0.04] px-3 py-2 text-sm">
+                      <span className="font-semibold text-primary">{rTierName}</span> — {eur(rTierPrice)}/adulto · {eur(rTierPrice / 2)}/criança
+                    </div>
+                    {[
+                      { label: 'Adultos', val: rAdults, set: setRAdults, sub: `${eur(rTierPrice)} cada` },
+                      { label: 'Crianças (6–12, meia)', val: rChildrenHalf, set: setRChildrenHalf, sub: `${eur(rTierPrice / 2)} cada` },
+                      { label: 'Crianças (≤5, grátis)', val: rChildrenFree, set: setRChildrenFree, sub: 'grátis' },
+                    ].map((row) => (
+                      <div key={row.label} className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium">{row.label}</p>
+                          <p className="text-xs text-muted-foreground">{row.sub}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button variant="outline" size="icon" className="h-8 w-8"
+                            onClick={() => row.set((n) => Math.max(0, n - 1))} disabled={row.val <= 0}>−</Button>
+                          <span className="w-8 text-center font-semibold tabular-nums">{row.val}</span>
+                          <Button variant="outline" size="icon" className="h-8 w-8"
+                            onClick={() => row.set((n) => n + 1)}>+</Button>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between border-t pt-3">
+                      <div>
+                        <p className="text-sm font-medium">Taxa de desperdício</p>
+                        <p className="text-xs text-muted-foreground">{eur(wasteFee)} por box</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button variant="outline" size="icon" className="h-8 w-8"
+                          onClick={() => setWasteBoxes((n) => Math.max(0, n - 1))} disabled={wasteBoxes <= 0}>−</Button>
+                        <span className="w-8 text-center font-semibold tabular-nums">{wasteBoxes}</span>
+                        <Button variant="outline" size="icon" className="h-8 w-8"
+                          onClick={() => setWasteBoxes((n) => n + 1)}>+</Button>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border divide-y text-sm">
+                      <div className="flex justify-between px-3 py-1.5">
+                        <span>Rodízio ({rAdults} adulto{rAdults !== 1 ? 's' : ''}{rChildrenHalf > 0 ? ` + ${rChildrenHalf} meia` : ''})</span>
+                        <span className="tabular-nums">{eur(rodizioBase)}</span>
+                      </div>
+                      {extrasTotal > 0 && (
+                        <div className="flex justify-between px-3 py-1.5">
+                          <span>Extras à la carte</span><span className="tabular-nums">{eur(extrasTotal)}</span>
+                        </div>
+                      )}
+                      {wasteTotal > 0 && (
+                        <div className="flex justify-between px-3 py-1.5">
+                          <span>Taxa de desperdício ×{wasteBoxes}</span><span className="tabular-nums">{eur(wasteTotal)}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Itens selecionados (separação) — só à la carte */}
+                {!isRodizioTable && hasSelection && (
                   <div className="rounded-lg border divide-y">
                     {selectedLines.map((l) => (
                       <button key={lineKey(l)} onClick={() => toggle(l)}
@@ -352,8 +453,8 @@ const AdminOrders = () => {
                   </div>
                 )}
 
-                {/* Dividir — só quando é a conta toda */}
-                {!hasSelection && (
+                {/* Dividir — só quando é a conta toda (à la carte) */}
+                {!isRodizioTable && !hasSelection && (
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm">Dividir por</span>
                     <div className="flex items-center gap-2">
@@ -413,6 +514,9 @@ const AdminOrders = () => {
                   onClick={() => {
                     if (!billLines.length) { toast.error('Conta vazia'); return; }
                     if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; }
+                    if (isRodizioTable && (rAdults + rChildrenHalf) <= 0) {
+                      toast.error('Indica pelo menos 1 adulto ou criança no rodízio'); return;
+                    }
                     setConfirmOpen(true);
                   }}
                   disabled={closing || !billLines.length}
@@ -439,14 +543,16 @@ const AdminOrders = () => {
                   </p>
                 ) : (
                   rightLines.map((l) => (
-                    <button key={lineKey(l)} onClick={() => toggle(l)}
-                      className="w-full grid grid-cols-[1fr_2.5rem_5rem] gap-2 items-center px-4 py-3 border-b border-white/5 hover:bg-white/10 text-left transition-colors">
+                    <button key={lineKey(l)} onClick={() => { if (!isRodizioTable) toggle(l); }}
+                      className={`w-full grid grid-cols-[1fr_2.5rem_5rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors ${isRodizioTable ? 'cursor-default' : 'hover:bg-white/10'}`}>
                       <span className="truncate flex items-center gap-1.5">
                         {lineName(l)}
                         {l.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
                       </span>
                       <span className="text-center tabular-nums">{l.quantity}</span>
-                      <span className="text-right tabular-nums">{eur(l.total_price)}</span>
+                      {isRodizioTable && (l.total_price || 0) === 0
+                        ? <span className="text-right text-[11px] text-emerald-300">Incluído</span>
+                        : <span className="text-right tabular-nums">{eur(l.total_price)}</span>}
                     </button>
                   ))
                 )}
@@ -501,11 +607,13 @@ const AdminOrders = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Emitir documento — {tableTitle}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {hasSelection
-                ? `Vai faturar ${selectedLines.length} item(ns) selecionado(s) (${eur(invoiceTotal)}). O resto da conta fica na mesa.`
-                : splitActive
-                  ? `Vai emitir ${splitCount} faturas simplificadas de ${eur(perPerson)} cada e libertar a mesa.`
-                  : `Vai emitir a fatura simplificada (${eur(invoiceTotal)}) e libertar a mesa.`}
+              {isRodizioTable
+                ? `Vai emitir a fatura simplificada do ${rTierName} (${rAdults} adulto${rAdults !== 1 ? 's' : ''}${rChildrenHalf > 0 ? ` + ${rChildrenHalf} criança(s)` : ''}${wasteBoxes > 0 ? ` + ${wasteBoxes} taxa(s)` : ''}${extrasTotal > 0 ? ' + extras' : ''} = ${eur(payTotal)}) e libertar a mesa.`
+                : hasSelection
+                  ? `Vai faturar ${selectedLines.length} item(ns) selecionado(s) (${eur(invoiceTotal)}). O resto da conta fica na mesa.`
+                  : splitActive
+                    ? `Vai emitir ${splitCount} faturas simplificadas de ${eur(perPerson)} cada e libertar a mesa.`
+                    : `Vai emitir a fatura simplificada (${eur(invoiceTotal)}) e libertar a mesa.`}
               {isCash && received > 0 && change >= 0 ? ` Troco a devolver: ${eur(change)}.` : ''} Esta ação não se desfaz.
             </AlertDialogDescription>
           </AlertDialogHeader>

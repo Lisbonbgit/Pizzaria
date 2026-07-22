@@ -243,6 +243,7 @@ class ProductCreate(BaseModel):
     preference_options: Optional[PreferenceOptions] = None
     available: bool = True
     featured: bool = False
+    rodizio_incluido: str = "nao"  # nao | ambos | completo
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -256,6 +257,7 @@ class ProductUpdate(BaseModel):
     preference_options: Optional[PreferenceOptions] = None
     available: Optional[bool] = None
     featured: Optional[bool] = None
+    rodizio_incluido: Optional[str] = None
 
 class ProductResponse(BaseModel):
     id: str
@@ -270,6 +272,7 @@ class ProductResponse(BaseModel):
     preference_options: Optional[dict] = None
     available: bool
     featured: bool
+    rodizio_incluido: str = "nao"
     order: int = 0
     created_at: str
 
@@ -858,11 +861,31 @@ async def create_product(product: ProductCreate, authorization: Optional[str] = 
         "preference_options": product.preference_options.model_dump() if product.preference_options else None,
         "available": product.available,
         "featured": product.featured,
+        "rodizio_incluido": product.rodizio_incluido,
         "order": await db.products.count_documents({"category_id": product.category_id}),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.products.insert_one(prod_doc)
     return ProductResponse(**prod_doc)
+
+
+@api_router.post("/products/rodizio-defaults")
+async def seed_rodizio_defaults(authorization: Optional[str] = Header(None)):
+    """Aplica os defaults de inclusão no rodízio por categoria aos produtos que
+    ainda não têm (Pizzas→ambos; Entradas/Sobremesas→completo)."""
+    await get_current_user(authorization)
+    cats = {c["id"]: (c.get("name") or "").strip().lower()
+            for c in await db.categories.find({}, {"_id": 0, "id": 1, "name": 1}).to_list(500)}
+    n = 0
+    async for p in db.products.find(
+        {"$or": [{"rodizio_incluido": {"$exists": False}}, {"rodizio_incluido": None},
+                 {"rodizio_incluido": "nao"}]}, {"_id": 0, "id": 1, "category_id": 1}):
+        cat = cats.get(p.get("category_id"), "")
+        val = "ambos" if "pizza" in cat else ("completo" if cat in ("entradas", "sobremesas") else "nao")
+        if val != "nao":
+            await db.products.update_one({"id": p["id"]}, {"$set": {"rodizio_incluido": val}})
+            n += 1
+    return {"updated": n}
 
 @api_router.get("/products", response_model=List[ProductResponse])
 async def list_products(category_id: Optional[str] = None, available_only: bool = False):
@@ -2118,6 +2141,81 @@ async def update_restaurant_settings(data: dict, authorization: Optional[str] = 
         upsert=True
     )
     return data
+
+# ==================== RODÍZIO (all-you-can-eat) ====================
+
+RODIZIO_DEFAULT = {
+    "enabled": False,
+    "days": [],                 # 0=Seg..6=Dom
+    "child_free_max_age": 5,
+    "child_half_max_age": 12,
+    "tax_id": "INT",            # IVA do rodízio (13%)
+    "waste_fee": 5.0,
+    "waste_fee_tax_id": "INT",
+    "tiers": {
+        "simples": {"name": "Rodízio Simples", "price": 18.90},
+        "completo": {"name": "Rodízio Completo", "price": 22.90},
+    },
+}
+
+
+class RodizioTier(BaseModel):
+    name: str
+    price: float
+
+
+class RodizioConfig(BaseModel):
+    enabled: bool = False
+    days: List[int] = []
+    child_free_max_age: int = 5
+    child_half_max_age: int = 12
+    tax_id: str = "INT"
+    waste_fee: float = 5.0
+    waste_fee_tax_id: str = "INT"
+    tiers: Dict[str, RodizioTier]
+
+
+async def _rodizio_config() -> dict:
+    doc = await db.settings.find_one({"key": "rodizio"}, {"_id": 0})
+    cfg = dict(RODIZIO_DEFAULT)
+    if doc and isinstance(doc.get("value"), dict):
+        cfg.update(doc["value"])
+    return cfg
+
+
+@api_router.get("/settings/rodizio")
+async def get_rodizio_settings(authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    return await _rodizio_config()
+
+
+@api_router.put("/settings/rodizio")
+async def update_rodizio_settings(cfg: RodizioConfig, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    value = cfg.model_dump()
+    await db.settings.update_one(
+        {"key": "rodizio"}, {"$set": {"key": "rodizio", "value": value}}, upsert=True
+    )
+    return value
+
+
+@api_router.get("/settings/rodizio/public")
+async def get_rodizio_public():
+    """Público — o menu do cliente usa isto para saber se hoje há rodízio."""
+    cfg = await _rodizio_config()
+    today = datetime.now(ZoneInfo("Europe/Lisbon")).weekday()
+    available = bool(cfg.get("enabled")) and today in (cfg.get("days") or [])
+    fee = cfg.get("waste_fee", 5.0)
+    return {
+        "available_today": available,
+        "enabled": cfg.get("enabled"),
+        "days": cfg.get("days"),
+        "tiers": cfg.get("tiers"),
+        "child_free_max_age": cfg.get("child_free_max_age"),
+        "child_half_max_age": cfg.get("child_half_max_age"),
+        "waste_fee": fee,
+        "waste_note": f"As sobras podem ter uma taxa de {fee:.0f} € por box.",
+    }
 
 # ==================== DASHBOARD ROUTES ====================
 

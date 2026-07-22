@@ -4,9 +4,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
-import api from '@/lib/api';
+import api, { rodizioAPI } from '@/lib/api';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -21,6 +22,8 @@ const AdminSettings = () => {
   });
   const [apkInfo, setApkInfo] = useState({ available: false, size_kb: 0 });
   const [agentKey, setAgentKey] = useState('');
+  const [rodizio, setRodizio] = useState(null);
+  const [savingRodizio, setSavingRodizio] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -38,12 +41,39 @@ const AdminSettings = () => {
         const pa = await api.get('/settings/print-agent');
         setAgentKey(pa.data?.api_key || '');
       } catch { /* chave opcional */ }
+      try {
+        const r = await rodizioAPI.get();
+        setRodizio(r.data);
+      } catch { /* rodízio opcional */ }
     } catch (err) {
       console.error('Error loading settings:', err);
     } finally {
       setLoading(false);
     }
   };
+
+  const saveRodizio = async () => {
+    if (!rodizio) return;
+    setSavingRodizio(true);
+    try {
+      await rodizioAPI.update(rodizio);
+      toast.success('Rodízio guardado');
+    } catch { toast.error('Erro ao guardar o rodízio'); }
+    finally { setSavingRodizio(false); }
+  };
+
+  const applyRodizioDefaults = async () => {
+    try {
+      const r = await rodizioAPI.seedDefaults();
+      toast.success(`${r.data.updated} produto(s) atualizado(s) por categoria`);
+    } catch { toast.error('Erro a aplicar defaults'); }
+  };
+
+  const setTier = (key, field, value) =>
+    setRodizio(prev => ({ ...prev, tiers: { ...prev.tiers, [key]: { ...prev.tiers[key], [field]: value } } }));
+
+  const toggleDay = (d) =>
+    setRodizio(prev => ({ ...prev, days: prev.days.includes(d) ? prev.days.filter(x => x !== d) : [...prev.days, d].sort((a, b) => a - b) }));
 
   const handleSave = async () => {
     setSaving(true);
@@ -187,6 +217,74 @@ const AdminSettings = () => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Rodízio (all-you-can-eat) */}
+        {rodizio && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <span>Rodízio (all-you-can-eat)</span>
+              <Switch checked={rodizio.enabled} onCheckedChange={(v) => setRodizio(prev => ({ ...prev, enabled: v }))} />
+            </CardTitle>
+            <CardDescription>Pizzas à vontade cobradas por pessoa, só nos dias escolhidos.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="space-y-2">
+              <Label>Dias com rodízio</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {[['Seg', 0], ['Ter', 1], ['Qua', 2], ['Qui', 3], ['Sex', 4], ['Sáb', 5], ['Dom', 6]].map(([lbl, d]) => {
+                  const on = rodizio.days.includes(d);
+                  return (
+                    <button key={d} type="button" onClick={() => toggleDay(d)}
+                      className={`h-9 w-12 rounded-lg border text-sm font-medium transition ${on ? 'bg-primary text-primary-foreground border-primary' : 'bg-background hover:bg-muted'}`}>{lbl}</button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {['simples', 'completo'].map((k) => (
+                <div key={k} className="rounded-lg border p-3 space-y-2">
+                  <Label className="text-xs uppercase text-muted-foreground">{k === 'simples' ? 'Nível Simples' : 'Nível Completo'}</Label>
+                  <Input value={rodizio.tiers[k].name} onChange={(e) => setTier(k, 'name', e.target.value)} placeholder="Nome" />
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">€</span>
+                    <Input type="number" step="0.01" className="pl-7" value={rodizio.tiers[k].price}
+                      onChange={(e) => setTier(k, 'price', parseFloat(e.target.value) || 0)} placeholder="Preço/adulto" />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Grátis até (anos)</Label>
+                <Input type="number" value={rodizio.child_free_max_age} onChange={(e) => setRodizio(prev => ({ ...prev, child_free_max_age: parseInt(e.target.value) || 0 }))} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Meia até (anos)</Label>
+                <Input type="number" value={rodizio.child_half_max_age} onChange={(e) => setRodizio(prev => ({ ...prev, child_half_max_age: parseInt(e.target.value) || 0 }))} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Taxa desperdício (€/box)</Label>
+                <Input type="number" step="0.5" value={rodizio.waste_fee} onChange={(e) => setRodizio(prev => ({ ...prev, waste_fee: parseFloat(e.target.value) || 0 }))} />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Button onClick={saveRodizio} disabled={savingRodizio}>
+                {savingRodizio ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                Guardar Rodízio
+              </Button>
+              <Button variant="outline" onClick={applyRodizioDefaults}>Aplicar inclusões por categoria</Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              O que está incluído define-se por produto no <strong>Menu → Produtos</strong> (campo "Incluído no rodízio").
+              O botão acima aplica os defaults: pizzas → Simples e Completo; entradas/sobremesas → Só Completo. Depois marca as bebidas incluídas.
+            </p>
+          </CardContent>
+        </Card>
+        )}
 
         {/* App de Impressão (APK) */}
         <Card>

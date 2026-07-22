@@ -56,7 +56,8 @@ const AdminMenu = () => {
     complement_groups: [],
     preference_options: null,
     available: true,
-    featured: false
+    featured: false,
+    rodizio_incluido: 'nao'
   });
   const [newVariation, setNewVariation] = useState({ name: '', price: 0 });
   const [newExtra, setNewExtra] = useState({ name: '', price: 0 });
@@ -168,7 +169,8 @@ const AdminMenu = () => {
         complement_groups: product.complement_groups || [],
         preference_options: product.preference_options || null,
         available: product.available,
-        featured: product.featured
+        featured: product.featured,
+        rodizio_incluido: product.rodizio_incluido || 'nao'
       });
     } else {
       setEditingProduct(null);
@@ -183,7 +185,8 @@ const AdminMenu = () => {
         complement_groups: [],
         preference_options: null,
         available: true,
-        featured: false
+        featured: false,
+        rodizio_incluido: 'nao'
       });
     }
     setNewVariation({ name: '', price: 0 });
@@ -724,6 +727,18 @@ const AdminMenu = () => {
                     onCheckedChange={(checked) => setProductForm(prev => ({ ...prev, featured: checked }))}
                   />
                   <Label htmlFor="prod-featured">Destaque</Label>
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="prod-rodizio">Incluído no rodízio</Label>
+                  <Select value={productForm.rodizio_incluido}
+                    onValueChange={(v) => setProductForm(prev => ({ ...prev, rodizio_incluido: v }))}>
+                    <SelectTrigger id="prod-rodizio"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="nao">Não</SelectItem>
+                      <SelectItem value="ambos">Simples e Completo</SelectItem>
+                      <SelectItem value="completo">Só Completo</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </div>

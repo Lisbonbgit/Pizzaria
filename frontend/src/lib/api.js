@@ -143,6 +143,14 @@ export const reportsAPI = {
     api.get('/admin/report-config')
 };
 
+// Rodízio (all-you-can-eat)
+export const rodizioAPI = {
+  get: () => api.get('/settings/rodizio'),
+  update: (data) => api.put('/settings/rodizio', data),
+  public: () => api.get('/settings/rodizio/public'),
+  seedDefaults: () => api.post('/products/rodizio-defaults')
+};
+
 // Settings API
 export const settingsAPI = {
   getPrinter: () => 

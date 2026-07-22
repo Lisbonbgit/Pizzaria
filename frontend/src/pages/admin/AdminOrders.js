@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Loader2, RefreshCw, Receipt, Printer, Plus, Users, Store, X, ChevronsUpDown,
+  Loader2, RefreshCw, Receipt, Printer, Plus, Users, Store, X, ChevronsUpDown, Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,9 +10,6 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import {
-  Popover, PopoverContent, PopoverTrigger,
-} from '@/components/ui/popover';
 import {
   Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
 } from '@/components/ui/command';
@@ -187,6 +184,40 @@ const AdminOrders = () => {
       toast.error('Erro ao adicionar o produto');
     } finally {
       setAdding(false);
+    }
+  };
+
+  // O scroll-lock do Dialog (react-remove-scroll) bloqueia roda E toque na lista
+  // do seletor. Movemos a lista manualmente com listeners NÃO-passivos (única forma
+  // fiável no tablet). Bypassa o lock; sem risco de scroll duplo (o nativo é travado).
+  const pickerListRef = useCallback((node) => {
+    if (!node || node.__scrollBound) return;
+    node.__scrollBound = true;
+    let lastY = 0;
+    node.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const f = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? node.clientHeight : 1;
+      node.scrollTop += e.deltaY * f;
+    }, { passive: false });
+    node.addEventListener('touchstart', (e) => { lastY = e.touches[0].clientY; }, { passive: true });
+    node.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const y = e.touches[0].clientY;
+      node.scrollTop += (lastY - y);
+      lastY = y;
+    }, { passive: false });
+  }, []);
+
+  const removeItem = async (l) => {
+    if (!window.confirm(`Remover "${lineName(l)}" da conta? Não será faturado.`)) return;
+    try {
+      await checkoutAPI.removeItem(l.order_id, l.idx);
+      setSelected((prev) => { const n = new Set(prev); n.delete(lineKey(l)); return n; });
+      toast.success('Item removido da conta');
+      loadBill(openTableNum);
+      load(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao remover o item');
     }
   };
 
@@ -556,8 +587,8 @@ const AdminOrders = () => {
 
             {/* DIREITA — itens da mesa (toca para separar) */}
             <div className="w-full md:w-[42%] md:max-w-md flex flex-col min-h-0 bg-[#3a1414] text-white">
-              <div className="px-4 py-3 grid grid-cols-[1fr_2.5rem_5rem] gap-2 text-[11px] uppercase tracking-wide text-white/50 border-b border-white/10">
-                <span>Produto</span><span className="text-center">Qtd</span><span className="text-right">Preço</span>
+              <div className="px-4 py-3 grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 text-[11px] uppercase tracking-wide text-white/50 border-b border-white/10">
+                <span>Produto</span><span className="text-center">Qtd</span><span className="text-right">Preço</span><span></span>
               </div>
               <div className="flex-1 overflow-y-auto">
                 {tableLoading ? (
@@ -570,8 +601,8 @@ const AdminOrders = () => {
                   </p>
                 ) : (
                   rightLines.map((l) => (
-                    <button key={lineKey(l)} onClick={() => { if (!isRodizioTable) toggle(l); }}
-                      className={`w-full grid grid-cols-[1fr_2.5rem_5rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors ${isRodizioTable ? 'cursor-default' : 'hover:bg-white/10'}`}>
+                    <div key={lineKey(l)} onClick={() => { if (!isRodizioTable) toggle(l); }}
+                      className={`w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors ${isRodizioTable ? '' : 'cursor-pointer hover:bg-white/10'}`}>
                       <span className="truncate flex items-center gap-1.5">
                         {lineName(l)}
                         {l.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
@@ -580,7 +611,12 @@ const AdminOrders = () => {
                       {isRodizioTable && (l.total_price || 0) === 0
                         ? <span className="text-right text-[11px] text-emerald-300">Incluído</span>
                         : <span className="text-right tabular-nums">{eur(l.total_price)}</span>}
-                    </button>
+                      <button type="button" title="Remover (não fatura)" aria-label="Remover item"
+                        onClick={(e) => { e.stopPropagation(); removeItem(l); }}
+                        className="justify-self-end text-white/40 hover:text-red-400 transition-colors">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
                   ))
                 )}
               </div>
@@ -588,27 +624,18 @@ const AdminOrders = () => {
               {/* Rodapé direito — ações */}
               <div className="border-t border-white/10 p-3 space-y-2">
                 <div className="flex gap-2">
-                  <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
-                    <PopoverTrigger asChild>
-                      <Button variant="outline" role="combobox"
-                        className="flex-1 justify-between bg-white/10 border-white/20 text-white hover:bg-white/15 hover:text-white h-9 font-normal">
-                        <span className="truncate">{selectedProductName || 'Procurar produto…'}</span>
-                        <ChevronsUpDown className="h-4 w-4 opacity-60 shrink-0" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent className="p-0 w-[min(92vw,26rem)]" align="end" sideOffset={6}>
+                  <Button variant="outline" role="combobox"
+                    onClick={() => setPickerOpen(true)}
+                    className="flex-1 justify-between bg-white/10 border-white/20 text-white hover:bg-white/15 hover:text-white h-9 font-normal">
+                    <span className="truncate">{selectedProductName || 'Procurar produto…'}</span>
+                    <ChevronsUpDown className="h-4 w-4 opacity-60 shrink-0" />
+                  </Button>
+                  <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
+                    <DialogContent className="p-0 gap-0 max-w-md overflow-hidden">
+                      <DialogHeader className="sr-only"><DialogTitle>Adicionar produto</DialogTitle></DialogHeader>
                       <Command>
-                        <CommandInput placeholder="Escreve o nome do produto…" />
-                        <CommandList
-                          className="max-h-[min(60vh,26rem)]"
-                          onWheel={(e) => {
-                            // O scroll-lock do Dialog (react-remove-scroll) bloqueia a roda
-                            // em conteúdo portalizado; rolamos a lista manualmente.
-                            const el = e.currentTarget;
-                            const factor = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1;
-                            el.scrollTop += e.deltaY * factor;
-                          }}
-                        >
+                        <CommandInput placeholder="Escreve o nome do produto…" className="pr-10" />
+                        <CommandList ref={pickerListRef} className="max-h-[60vh]">
                           <CommandEmpty>Nenhum produto encontrado.</CommandEmpty>
                           {productGroups.map((g) => (
                             <CommandGroup key={g.cid} heading={g.name}>
@@ -623,8 +650,8 @@ const AdminOrders = () => {
                           ))}
                         </CommandList>
                       </Command>
-                    </PopoverContent>
-                  </Popover>
+                    </DialogContent>
+                  </Dialog>
                   <Input type="number" min={1} value={addQty} onChange={(e) => setAddQty(e.target.value)}
                     className="w-14 bg-white/10 border-white/20 text-white h-9" aria-label="Quantidade" />
                   <Button variant="secondary" size="icon" className="h-9 w-9 shrink-0" onClick={addProduct} disabled={adding || !addProductId}>

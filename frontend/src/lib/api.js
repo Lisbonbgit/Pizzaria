@@ -196,7 +196,9 @@ export const checkoutAPI = {
   printConsulta: (tableNumber) =>
     api.post(`/tables/${tableNumber}/print-consulta`),
   freeTable: (tableNumber) =>
-    api.post(`/tables/${tableNumber}/free`)
+    api.post(`/tables/${tableNumber}/free`),
+  removeItem: (orderId, idx) =>
+    api.post(`/orders/${orderId}/items/${idx}/void`)
 };
 
 export default api;

@@ -1,6 +1,6 @@
 """
 Daily Report Scheduler Module
-Envia relatórios diários por email às 23:59 (Europe/Lisbon)
+Envia relatórios diários por email às 23:30 (Europe/Lisbon)
 """
 
 import os

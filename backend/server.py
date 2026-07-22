@@ -103,7 +103,7 @@ async def lifespan(app: FastAPI):
                 SCHEDULER_ENABLED = True
                 scheduler.add_job(
                     run_scheduled_report,
-                    CronTrigger(hour=23, minute=59, timezone='Europe/Lisbon'),
+                    CronTrigger(hour=23, minute=30, timezone='Europe/Lisbon'),
                     id='daily_report',
                     name='Daily Report Email',
                     replace_existing=True
@@ -1252,6 +1252,29 @@ async def mark_order_paid(order_id: str, payment: Optional[OrderPaymentUpdate] =
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     return OrderResponse(**order)
 
+
+@api_router.post("/orders/{order_id}/items/{idx}/void", response_model=OrderResponse)
+async def void_order_item(order_id: str, idx: int, authorization: Optional[str] = Header(None)):
+    """Remove um item da conta da mesa SEM faturar (adicionado por engano pelo
+    staff ou pelo cliente). Soft-void: marca items.{idx}.removed=True (mantém
+    rasto). Um item já faturado não pode ser removido."""
+    await get_current_user(authorization)
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    items = order.get("items", [])
+    if idx < 0 or idx >= len(items):
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+    if items[idx].get("paid"):
+        raise HTTPException(status_code=400, detail="Item já faturado — não pode ser removido")
+    await db.orders.update_one({"id": order_id}, {"$set": {f"items.{idx}.removed": True}})
+    od = await db.orders.find_one({"id": order_id}, {"_id": 0})
+    # Se já não sobra nada por faturar, cancela a order (sai do conjunto "aberto").
+    if all(it.get("paid") or it.get("removed") for it in od.get("items", [])):
+        await db.orders.update_one({"id": order_id}, {"$set": {"status": "cancelled"}})
+        od["status"] = "cancelled"
+    return OrderResponse(**od)
+
 # ==================== VENDUS: FECHO DE MESA ====================
 
 VENDUS_DEFAULT_TAX_ID = os.environ.get("VENDUS_DEFAULT_TAX_ID", "NOR")
@@ -1276,7 +1299,7 @@ async def _open_bill_lines(table_number: int) -> list:
     for o in orders:
         src = o.get("source", "client")
         for idx, it in enumerate(o.get("items", [])):
-            if it.get("paid"):
+            if it.get("paid") or it.get("removed"):
                 continue
             lines.append({
                 "order_id": o["id"], "idx": idx,
@@ -1334,7 +1357,7 @@ async def tables_overview(authorization: Optional[str] = Header(None)):
         n = o.get("table_number")
         a = agg.setdefault(n, {"total": 0.0, "count": 0, "last": None})
         a["total"] += sum((it.get("total_price", 0) or 0)
-                          for it in o.get("items", []) if not it.get("paid"))
+                          for it in o.get("items", []) if not it.get("paid") and not it.get("removed"))
         a["count"] += 1
         ca = o.get("created_at")
         if ca and (a["last"] is None or ca > a["last"]):
@@ -1740,6 +1763,37 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
             })
         total += o.get("total", 0)
     total = round(total, 2)
+
+    # Rodízio: a parcela fixa por pessoa vive na SESSÃO, não nas orders. Sem isto
+    # a consulta só mostrava os extras à la carte (os incluídos entram a €0).
+    s = await _open_session(table_number)
+    rodizio = (s or {}).get("rodizio", "none")
+    rp = (s or {}).get("rodizio_people")
+    if rodizio and rodizio != "none":
+        rcfg = await _rodizio_config()
+        tier = (rcfg.get("tiers") or {}).get(rodizio) or {}
+        price = round(float(tier.get("price", 0) or 0), 2)
+        half = round(price / 2, 2)
+        adults = int((rp or {}).get("adults", 0) or 0)
+        children = int((rp or {}).get("children", 0) or 0)
+        tier_name = tier.get("name", "Rodízio")
+        rodizio_lines = []
+        if adults > 0:
+            rodizio_lines.append({
+                "product_name": f"{tier_name} (adulto)", "quantity": adults,
+                "variation": None, "extras": [], "selected_complements": [],
+                "selected_preference": None, "unit_price": price,
+                "total_price": round(adults * price, 2),
+            })
+        if children > 0:
+            rodizio_lines.append({
+                "product_name": f"{tier_name} (criança)", "quantity": children,
+                "variation": None, "extras": [], "selected_complements": [],
+                "selected_preference": None, "unit_price": half,
+                "total_price": round(children * half, 2),
+            })
+        items = rodizio_lines + items
+        total = round(total + _rodizio_charge(rodizio, rp, rcfg), 2)
 
     # snapshot com a forma que o formatador 'cashier' espera (order-like)
     snapshot = {
@@ -2804,7 +2858,7 @@ class SchedulerStatusResponse(BaseModel):
     enabled: bool
     next_run: Optional[str] = None
     timezone: str = "Europe/Lisbon"
-    schedule: str = "23:59"
+    schedule: str = "23:30"
 
 @api_router.post("/admin/test-daily-report", response_model=TestReportResponse)
 async def test_daily_report(authorization: Optional[str] = Header(None)):
@@ -2860,7 +2914,7 @@ async def get_report_config(authorization: Optional[str] = Header(None)):
         "report_email": REPORT_EMAIL or "Não configurado",
         "scheduler_enabled": SCHEDULER_ENABLED,
         "timezone": "Europe/Lisbon",
-        "schedule_time": "23:59"
+        "schedule_time": "23:30"
     }
 
 @api_router.post("/admin/scheduler/enable")
@@ -2881,7 +2935,7 @@ async def enable_scheduler(authorization: Optional[str] = Header(None)):
     if not scheduler.get_job('daily_report'):
         scheduler.add_job(
             run_scheduled_report,
-            CronTrigger(hour=23, minute=59, timezone='Europe/Lisbon'),
+            CronTrigger(hour=23, minute=30, timezone='Europe/Lisbon'),
             id='daily_report',
             name='Daily Report Email',
             replace_existing=True
@@ -2943,7 +2997,7 @@ async def get_scheduler_status(authorization: Optional[str] = Header(None)):
         enabled=SCHEDULER_ENABLED,
         next_run=next_run,
         timezone="Europe/Lisbon",
-        schedule="23:59"
+        schedule="23:30"
     )
 
 @api_router.get("/admin/report-logs")

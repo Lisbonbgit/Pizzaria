@@ -1407,7 +1407,7 @@ async def tables_overview(authorization: Optional[str] = Header(None)):
         rp = (s or {}).get("rodizio_people")
         # No rodízio a conta já inclui o valor fixo por pessoa (adultos + crianças
         # a meia), somado aos extras à la carte (itens com preço > 0).
-        r_charge = _rodizio_charge(rodizio, rp, rcfg)
+        r_charge = _rodizio_charge(rodizio, rp, rcfg, (s or {}).get("rodizio_paid"))
         out.append({
             "id": t["id"], "number": t["number"], "name": t.get("name"),
             "open_total": round(a["total"] + r_charge, 2), "open_orders": a["count"],
@@ -1415,6 +1415,7 @@ async def tables_overview(authorization: Optional[str] = Header(None)):
             "people": _rodizio_headcount(rodizio, rp, (s or {}).get("people")),
             "rodizio": rodizio,
             "rodizio_people": rp,
+            "rodizio_paid": (s or {}).get("rodizio_paid") or {"adults": 0, "children": 0, "waste": 0},
             "rodizio_charge": r_charge,
             "last_activity": a["last"] or (s or {}).get("opened_at"),
         })
@@ -1429,10 +1430,10 @@ async def _open_session(table_number: int):
     )
 
 
-def _rodizio_charge(rodizio: Optional[str], rodizio_people: Optional[dict], cfg: dict) -> float:
-    """Conta estimada do rodízio: adultos a preço cheio + crianças a meia. Fica
-    logo como valor da mesa mal o cliente confirma a lotação (o preço é fixo por
-    pessoa). O staff afina crianças grátis/meia e a taxa de desperdício no fecho."""
+def _rodizio_charge(rodizio: Optional[str], rodizio_people: Optional[dict], cfg: dict,
+                    paid: Optional[dict] = None) -> float:
+    """Conta do rodízio AINDA por pagar: (adultos-pagos)×preço + (crianças-pagas)×meia.
+    Com `paid` (o que já foi faturado à parte) devolve só o remanescente."""
     if not rodizio or rodizio == "none":
         return 0.0
     tier = (cfg.get("tiers") or {}).get(rodizio)
@@ -1440,8 +1441,9 @@ def _rodizio_charge(rodizio: Optional[str], rodizio_people: Optional[dict], cfg:
         return 0.0
     price = round(float(tier.get("price", 0) or 0), 2)
     rp = rodizio_people or {}
-    adults = int(rp.get("adults", 0) or 0)
-    children = int(rp.get("children", 0) or 0)
+    pd = paid or {}
+    adults = max(0, int(rp.get("adults", 0) or 0) - int(pd.get("adults", 0) or 0))
+    children = max(0, int(rp.get("children", 0) or 0) - int(pd.get("children", 0) or 0))
     return round(adults * price + children * (price / 2), 2)
 
 
@@ -1490,6 +1492,7 @@ async def open_table_session(table_number: int, req: OpenTableRequest):
         "people": people,
         "rodizio": req.rodizio,
         "rodizio_people": {"adults": req.adults, "children": req.children},
+        "rodizio_paid": {"adults": 0, "children": 0, "waste": 0},
         "opened_at": datetime.now(timezone.utc).isoformat(),
         "status": "open",
         "closed_at": None,
@@ -1509,7 +1512,7 @@ async def get_table_session(table_number: int):
     rodizio = (s or {}).get("rodizio", "none")
     rp = (s or {}).get("rodizio_people")
     rcfg = await _rodizio_config()
-    r_charge = _rodizio_charge(rodizio, rp, rcfg)
+    r_charge = _rodizio_charge(rodizio, rp, rcfg, (s or {}).get("rodizio_paid"))
     # No rodízio a conta arranca logo no valor fixo por pessoa (+ extras à la carte).
     total = round(items_total + r_charge, 2)
     return {
@@ -1550,15 +1553,22 @@ async def close_table(table_number: int, req: CloseTableRequest,
     pedidos como pagos."""
     await get_current_user(authorization)
     all_lines = await _open_bill_lines(table_number)
-    if not all_lines:
+    if not all_lines and not req.rodizio_tier:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
 
     ts = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+    rodizio_pay = None  # {adults, children, waste} faturado agora (rodízio parcial)
 
     if req.rodizio_tier:
-        # ---- RODÍZIO: cobra por pessoa (nível × adultos + nível/2 × crianças-meia)
-        # + extras à la carte (itens com preço > 0) + taxa de desperdício. Salda a
-        # mesa TODA numa única Fatura Simplificada.
+        # ---- RODÍZIO: fatura por pessoa (adultos/crianças) — pode ser PARCIAL
+        # (pagar só algumas pessoas + alguns extras). O que já foi pago fica
+        # contabilizado em session.rodizio_paid. Extras vêm em req.items (subconjunto).
+        s = await _open_session(table_number)
+        rp = (s or {}).get("rodizio_people") or {}
+        pd = (s or {}).get("rodizio_paid") or {}
+        rem_adults = max(0, int(rp.get("adults", 0) or 0) - int(pd.get("adults", 0) or 0))
+        rem_children = max(0, int(rp.get("children", 0) or 0) - int(pd.get("children", 0) or 0))
+
         cfg = await _rodizio_config()
         tier = (cfg.get("tiers") or {}).get(req.rodizio_tier)
         if not tier:
@@ -1567,8 +1577,22 @@ async def close_table(table_number: int, req: CloseTableRequest,
         price = round(float(tier["price"]), 2)
         half = round(price / 2, 2)
 
-        # Extras = itens da conta fora do rodízio (os incluídos entraram a €0).
-        extra_lines = [l for l in all_lines if (l.get("total_price", 0) or 0) > 0]
+        # Pessoas a faturar AGORA (não pode exceder o que falta).
+        pay_adults = min(max(0, int(req.adults or 0)), rem_adults)
+        pay_half = max(0, int(req.children_half or 0))
+        pay_free = max(0, int(req.children_free or 0))
+        if pay_half + pay_free > rem_children:
+            pay_half = min(pay_half, rem_children)
+            pay_free = max(0, rem_children - pay_half)
+        pay_children = pay_half + pay_free
+
+        # Extras selecionados (subconjunto de itens com preço > 0); sem req.items → nenhum.
+        if req.items:
+            sel = {(i.order_id, i.idx) for i in req.items}
+            extra_lines = [l for l in all_lines
+                           if (l["order_id"], l["idx"]) in sel and (l.get("total_price", 0) or 0) > 0]
+        else:
+            extra_lines = []
         prod_ids = list({l.get("product_id") for l in extra_lines if l.get("product_id")})
         tax_by_prod = {}
         if prod_ids:
@@ -1578,14 +1602,14 @@ async def close_table(table_number: int, req: CloseTableRequest,
 
         vendus_items = []
         total = 0.0
-        if req.adults and req.adults > 0:
-            vendus_items.append({"title": f"{tier['name']} (adulto)", "qty": req.adults,
+        if pay_adults > 0:
+            vendus_items.append({"title": f"{tier['name']} (adulto)", "qty": pay_adults,
                                  "gross_price": price, "tax_id": rtax})
-            total += round(price * req.adults, 2)
-        if req.children_half and req.children_half > 0:
-            vendus_items.append({"title": f"{tier['name']} (criança)", "qty": req.children_half,
+            total += round(price * pay_adults, 2)
+        if pay_half > 0:
+            vendus_items.append({"title": f"{tier['name']} (criança)", "qty": pay_half,
                                  "gross_price": half, "tax_id": rtax})
-            total += round(half * req.children_half, 2)
+            total += round(half * pay_half, 2)
         for l in extra_lines:
             qty = l.get("quantity", 1) or 1
             unit = round(float(l.get("unit_price", 0) or 0), 2)
@@ -1603,14 +1627,15 @@ async def close_table(table_number: int, req: CloseTableRequest,
             total += round(wfee * req.waste_boxes, 2)
         total = round(total, 2)
         if not vendus_items or total <= 0:
-            raise HTTPException(status_code=400, detail="Indique pelo menos 1 adulto ou criança no rodízio")
+            raise HTTPException(status_code=400, detail="Nada selecionado para faturar")
 
-        lines = all_lines       # o rodízio salda a mesa toda
+        lines = extra_lines     # só os extras selecionados ficam pagos como itens
         partial = False
         n = 1
         invoices = [{"items": vendus_items, "amount": total,
                      "ext_ref": f"mesa-{table_number}-rodizio-{ts}"}]
         client = {"fiscal_id": req.nif} if req.nif else None
+        rodizio_pay = {"adults": pay_adults, "children": pay_children, "waste": int(req.waste_boxes or 0)}
     else:
         # "Separar Conta": se vier um subconjunto de itens, fatura só esses.
         if req.items:
@@ -1710,13 +1735,45 @@ async def close_table(table_number: int, req: CloseTableRequest,
                 "payment_method": str(req.payment_method_id),
                 "vendus_document_id": docs[0].get("id")}})
 
-    # Fecha a sessão só quando já não há nada por faturar (mesa saldada).
-    remaining = await _open_bill_lines(table_number)
-    if not remaining:
+    # Fecho da sessão. Rodízio: contabiliza as pessoas pagas e salda quando o
+    # rodízio todo + todos os extras com preço estiverem pagos. À la carte: salda
+    # quando já não há linhas por faturar.
+    if rodizio_pay is not None:
+        s2 = await _open_session(table_number)
+        pd2 = (s2 or {}).get("rodizio_paid") or {"adults": 0, "children": 0, "waste": 0}
+        new_paid = {
+            "adults": int(pd2.get("adults", 0) or 0) + rodizio_pay["adults"],
+            "children": int(pd2.get("children", 0) or 0) + rodizio_pay["children"],
+            "waste": int(pd2.get("waste", 0) or 0) + rodizio_pay["waste"],
+        }
         await db.table_sessions.update_many(
             {"table_number": table_number, "status": "open"},
-            {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
-        )
+            {"$set": {"rodizio_paid": new_paid}})
+        rp2 = (s2 or {}).get("rodizio_people") or {}
+        rcfg2 = await _rodizio_config()
+        rodizio_left = _rodizio_charge((s2 or {}).get("rodizio", "none"), rp2, rcfg2, new_paid)
+        priced_remaining = [l for l in await _open_bill_lines(table_number) if (l.get("total_price", 0) or 0) > 0]
+        settled = (rodizio_left <= 0) and not priced_remaining
+        remaining_total = round(rodizio_left + sum((l.get("total_price", 0) or 0) for l in priced_remaining), 2)
+        if settled:
+            # marca TODOS os itens restantes (incl. incluídos €0) pagos e fecha a sessão
+            for l in await _open_bill_lines(table_number):
+                await db.orders.update_one({"id": l["order_id"]}, {"$set": {f"items.{l['idx']}.paid": True}})
+            await db.orders.update_many(
+                {"table_number": table_number, "paid": False, "status": {"$ne": "cancelled"}},
+                {"$set": {"paid": True, "status": "delivered"}})
+            await db.table_sessions.update_many(
+                {"table_number": table_number, "status": "open"},
+                {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}})
+    else:
+        remaining = await _open_bill_lines(table_number)
+        settled = not remaining
+        remaining_total = round(sum((l.get("total_price", 0) or 0) for l in remaining), 2)
+        if settled:
+            await db.table_sessions.update_many(
+                {"table_number": table_number, "status": "open"},
+                {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}},
+            )
     # imprime cada fatura (ESC/POS certificado do Vendus, com corte) na CAIXA
     for d in docs:
         escpos_b64 = d.get("output")
@@ -1742,8 +1799,8 @@ async def close_table(table_number: int, req: CloseTableRequest,
         })
     return {"table_number": table_number, "total": total,
             "invoices": len(docs), "split": n, "partial": partial,
-            "table_free": not remaining,
-            "remaining_total": round(sum((l.get("total_price", 0) or 0) for l in remaining), 2),
+            "table_free": settled,
+            "remaining_total": remaining_total,
             "vendus": {"id": docs[0].get("id"), "number": docs[0].get("number"),
                        "atcud": docs[0].get("atcud")},
             "numbers": [d.get("number") for d in docs]}
@@ -1806,8 +1863,9 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
         tier = (rcfg.get("tiers") or {}).get(rodizio) or {}
         price = round(float(tier.get("price", 0) or 0), 2)
         half = round(price / 2, 2)
-        adults = int((rp or {}).get("adults", 0) or 0)
-        children = int((rp or {}).get("children", 0) or 0)
+        pd = (s or {}).get("rodizio_paid") or {}
+        adults = max(0, int((rp or {}).get("adults", 0) or 0) - int(pd.get("adults", 0) or 0))
+        children = max(0, int((rp or {}).get("children", 0) or 0) - int(pd.get("children", 0) or 0))
         tier_name = tier.get("name", "Rodízio")
         rodizio_lines = []
         if adults > 0:
@@ -1825,7 +1883,7 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
                 "total_price": round(children * half, 2),
             })
         items = rodizio_lines + items
-        total = round(total + _rodizio_charge(rodizio, rp, rcfg), 2)
+        total = round(total + _rodizio_charge(rodizio, rp, rcfg, pd), 2)
 
     if not items:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")

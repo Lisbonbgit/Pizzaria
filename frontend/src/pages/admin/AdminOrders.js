@@ -62,9 +62,9 @@ const AdminOrders = () => {
   // Rodízio (all-you-can-eat)
   const [rodizioCfg, setRodizioCfg] = useState(null);
   const [rodizioMode, setRodizioMode] = useState('none'); // none | simples | completo
-  const [rAdults, setRAdults] = useState(0);
-  const [rChildrenHalf, setRChildrenHalf] = useState(0);
-  const [rChildrenFree, setRChildrenFree] = useState(0);
+  const [rodAdults, setRodAdults] = useState(0);   // adultos AINDA por pagar
+  const [rodChildren, setRodChildren] = useState(0); // crianças AINDA por pagar
+  const [freeKids, setFreeKids] = useState(new Set()); // chaves de crianças marcadas grátis
   const [wasteBoxes, setWasteBoxes] = useState(0);
 
   const load = useCallback(async (silent = false) => {
@@ -116,22 +116,30 @@ const AdminOrders = () => {
     setAddQty(1);
     setSelected(new Set());
     setBillLines([]);
-    // Rodízio: pré-preenche a contagem a partir do que o cliente indicou.
+    // Rodízio: gera pessoas AINDA por pagar = lotação − já faturado.
     const rmode = t.rodizio && t.rodizio !== 'none' ? t.rodizio : 'none';
     setRodizioMode(rmode);
     const rp = t.rodizio_people || {};
-    setRAdults(rmode !== 'none' ? (rp.adults || 0) : 0);
-    setRChildrenHalf(rmode !== 'none' ? (rp.children || 0) : 0); // por defeito, crianças a meia
-    setRChildrenFree(0);
+    const paid = t.rodizio_paid || {};
+    setRodAdults(rmode !== 'none' ? Math.max(0, (rp.adults || 0) - (paid.adults || 0)) : 0);
+    setRodChildren(rmode !== 'none' ? Math.max(0, (rp.children || 0) - (paid.children || 0)) : 0);
+    setFreeKids(new Set());
     setWasteBoxes(0);
     loadBill(t.number);
   };
 
   const closeModal = () => { setOpenTableNum(null); setBillLines([]); setSelected(new Set()); };
 
-  const toggle = (l) => {
-    const k = lineKey(l);
+  const toggle = (k) => {
     setSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(k)) n.delete(k); else n.add(k);
+      return n;
+    });
+  };
+
+  const toggleFreeKid = (k) => {
+    setFreeKids((prev) => {
       const n = new Set(prev);
       if (n.has(k)) n.delete(k); else n.add(k);
       return n;
@@ -221,49 +229,76 @@ const AdminOrders = () => {
     }
   };
 
-  // ---- valores derivados ----
-  const selectedLines = billLines.filter((l) => selected.has(lineKey(l)));
-  const rightLines = billLines.filter((l) => !selected.has(lineKey(l)));
-  const hasSelection = selectedLines.length > 0;
-  const fullTotal = billLines.reduce((s, l) => s + (l.total_price || 0), 0);
-  const selectedTotal = selectedLines.reduce((s, l) => s + (l.total_price || 0), 0);
-  const invoiceTotal = hasSelection ? selectedTotal : fullTotal;
-  const splitActive = !hasSelection && splitCount > 1;
-  const perPerson = splitActive ? invoiceTotal / splitCount : invoiceTotal;
-
-  // ---- Rodízio ----
+  // ---- Rodízio: config ----
   const isRodizioTable = rodizioMode === 'simples' || rodizioMode === 'completo';
   const rTier = rodizioCfg?.tiers?.[rodizioMode];
   const rTierPrice = Number(rTier?.price) || 0;
   const rTierName = rTier?.name || (rodizioMode === 'completo' ? 'Rodízio Completo' : 'Rodízio Simples');
   const wasteFee = Number(rodizioCfg?.waste_fee) || 5;
-  const extrasLines = billLines.filter((l) => (l.total_price || 0) > 0);
-  const extrasTotal = extrasLines.reduce((s, l) => s + (l.total_price || 0), 0);
-  const rodizioBase = rAdults * rTierPrice + rChildrenHalf * (rTierPrice / 2);
-  const wasteTotal = wasteBoxes * wasteFee;
-  const rodizioTotal = Math.round((rodizioBase + extrasTotal + wasteTotal) * 100) / 100;
 
-  // Total que efetivamente vai ser cobrado (rodízio ou à la carte).
-  const payTotal = isRodizioTable ? rodizioTotal : invoiceTotal;
+  // ---- Entradas faturáveis: rodízio-por-pessoa (sintéticas) + extras à la carte ----
+  const rodizioEntries = [];
+  if (isRodizioTable) {
+    for (let i = 0; i < rodAdults; i++)
+      rodizioEntries.push({ key: `rod:adult:${i}`, kind: 'adult', name: `${rTierName} (adulto)`, price: rTierPrice });
+    for (let i = 0; i < rodChildren; i++) {
+      const k = `rod:child:${i}`;
+      const free = freeKids.has(k);
+      rodizioEntries.push({ key: k, kind: 'child', name: `${rTierName} (criança)`, price: free ? 0 : rTierPrice / 2, free });
+    }
+    for (let i = 0; i < wasteBoxes; i++)
+      rodizioEntries.push({ key: `rod:waste:${i}`, kind: 'waste', name: 'Taxa de desperdício', price: wasteFee });
+  }
+  const pricedItemEntries = billLines
+    .filter((l) => (l.total_price || 0) > 0)
+    .map((l) => ({ key: lineKey(l), kind: 'item', name: lineName(l), price: l.total_price || 0, line: l }));
+  const includedEntries = billLines.filter((l) => (l.total_price || 0) === 0); // "Incluído", não faturáveis
+
+  const billable = [...rodizioEntries, ...pricedItemEntries];
+  const selectedEntries = billable.filter((e) => selected.has(e.key));
+  const rightEntries = billable.filter((e) => !selected.has(e.key));
+  const hasSelection = selectedEntries.length > 0;
+  const fullTotal = Math.round(billable.reduce((s, e) => s + (e.price || 0), 0) * 100) / 100;
+  const selectedTotal = Math.round(selectedEntries.reduce((s, e) => s + (e.price || 0), 0) * 100) / 100;
+  const invoiceTotal = hasSelection ? selectedTotal : fullTotal;
+  const payTotal = invoiceTotal;
+  const splitActive = !isRodizioTable && !hasSelection && splitCount > 1;
+  const perPerson = splitActive ? invoiceTotal / splitCount : invoiceTotal;
+
   const selectedMethod = methods.find((m) => String(m.id) === String(paymentId));
   const isCash = !!selectedMethod && /dinheiro|numer|cash/i.test(selectedMethod.title || '');
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
   const change = Math.round((received - payTotal) * 100) / 100;
+
+  const countEntries = (entries) => {
+    let adults = 0, children_half = 0, children_free = 0, waste_boxes = 0;
+    const items = [];
+    for (const e of entries) {
+      if (e.kind === 'adult') adults += 1;
+      else if (e.kind === 'child') { if (e.free) children_free += 1; else children_half += 1; }
+      else if (e.kind === 'waste') waste_boxes += 1;
+      else if (e.kind === 'item') items.push({ order_id: e.line.order_id, idx: e.line.idx });
+    }
+    return { adults, children_half, children_free, waste_boxes, items };
+  };
 
   const doClose = async () => {
     setConfirmOpen(false);
     setClosing(true);
     try {
       const body = { payment_method_id: Number(paymentId) };
+      const toBill = hasSelection ? selectedEntries : billable;
       if (isRodizioTable) {
+        const c = countEntries(toBill);
         body.rodizio_tier = rodizioMode;
-        body.adults = rAdults;
-        body.children_half = rChildrenHalf;
-        body.children_free = rChildrenFree;
-        body.waste_boxes = wasteBoxes;
+        body.adults = c.adults;
+        body.children_half = c.children_half;
+        body.children_free = c.children_free;
+        body.waste_boxes = c.waste_boxes;
+        body.items = c.items;
         body.nif = nif.trim() || null;
       } else if (hasSelection) {
-        body.items = selectedLines.map((l) => ({ order_id: l.order_id, idx: l.idx }));
+        body.items = selectedEntries.map((e) => ({ order_id: e.line.order_id, idx: e.line.idx }));
       } else {
         body.nif = nif.trim() || null;
         body.split_count = splitActive ? splitCount : 1;
@@ -279,7 +314,20 @@ const AdminOrders = () => {
         setSelected(new Set());
         setCashReceived('');
         setSplitCount(1);
+        setFreeKids(new Set());
+        setWasteBoxes(0);
         await loadBill(openTableNum);
+        if (isRodizioTable) {
+          try {
+            const ov = await tablesAPI.overview();
+            const t = (ov.data || []).find((x) => x.number === openTableNum);
+            if (t) {
+              const rp = t.rodizio_people || {}; const paid = t.rodizio_paid || {};
+              setRodAdults(Math.max(0, (rp.adults || 0) - (paid.adults || 0)));
+              setRodChildren(Math.max(0, (rp.children || 0) - (paid.children || 0)));
+            }
+          } catch { /* ignore */ }
+        }
         load(true);
         toast.info(`Falta faturar ${eur(r.data.remaining_total)} nesta mesa`);
       }
@@ -426,88 +474,39 @@ const AdminOrders = () => {
                 <DialogTitle className="font-heading text-xl flex items-center justify-between pr-8">
                   <span>{tableTitle}</span>
                   <span className="text-xs font-normal text-muted-foreground uppercase tracking-wide">
-                    {isRodizioTable ? rTierName : (hasSelection ? 'A separar itens' : 'Conta toda')}
+                    {hasSelection ? 'A separar' : (isRodizioTable ? rTierName : 'Conta toda')}
                   </span>
                 </DialogTitle>
               </DialogHeader>
 
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
                 <div className="flex items-end justify-between">
-                  <span className="text-muted-foreground">{isRodizioTable ? 'Total a pagar' : (hasSelection ? 'A faturar (selecionados)' : 'Total')}</span>
+                  <span className="text-muted-foreground">{hasSelection ? 'A faturar (selecionados)' : 'Total a pagar'}</span>
                   <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(payTotal)}</span>
                 </div>
 
-                {/* Rodízio — contagem por escalões + extras + taxa */}
+                {/* Dica do rodízio */}
                 {isRodizioTable && (
-                  <div className="space-y-3">
-                    <div className="rounded-lg border bg-primary/[0.04] px-3 py-2 text-sm">
-                      <span className="font-semibold text-primary">{rTierName}</span> — {eur(rTierPrice)}/adulto · {eur(rTierPrice / 2)}/criança
-                    </div>
-                    {[
-                      { label: 'Adultos', val: rAdults, set: setRAdults, sub: `${eur(rTierPrice)} cada` },
-                      { label: 'Crianças (6–12, meia)', val: rChildrenHalf, set: setRChildrenHalf, sub: `${eur(rTierPrice / 2)} cada` },
-                      { label: 'Crianças (≤5, grátis)', val: rChildrenFree, set: setRChildrenFree, sub: 'grátis' },
-                    ].map((row) => (
-                      <div key={row.label} className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium">{row.label}</p>
-                          <p className="text-xs text-muted-foreground">{row.sub}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Button variant="outline" size="icon" className="h-8 w-8"
-                            onClick={() => row.set((n) => Math.max(0, n - 1))} disabled={row.val <= 0}>−</Button>
-                          <span className="w-8 text-center font-semibold tabular-nums">{row.val}</span>
-                          <Button variant="outline" size="icon" className="h-8 w-8"
-                            onClick={() => row.set((n) => n + 1)}>+</Button>
-                        </div>
-                      </div>
-                    ))}
-                    <div className="flex items-center justify-between border-t pt-3">
-                      <div>
-                        <p className="text-sm font-medium">Taxa de desperdício</p>
-                        <p className="text-xs text-muted-foreground">{eur(wasteFee)} por box</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button variant="outline" size="icon" className="h-8 w-8"
-                          onClick={() => setWasteBoxes((n) => Math.max(0, n - 1))} disabled={wasteBoxes <= 0}>−</Button>
-                        <span className="w-8 text-center font-semibold tabular-nums">{wasteBoxes}</span>
-                        <Button variant="outline" size="icon" className="h-8 w-8"
-                          onClick={() => setWasteBoxes((n) => n + 1)}>+</Button>
-                      </div>
-                    </div>
-                    <div className="rounded-lg border divide-y text-sm">
-                      <div className="flex justify-between px-3 py-1.5">
-                        <span>Rodízio ({rAdults} adulto{rAdults !== 1 ? 's' : ''}{rChildrenHalf > 0 ? ` + ${rChildrenHalf} meia` : ''})</span>
-                        <span className="tabular-nums">{eur(rodizioBase)}</span>
-                      </div>
-                      {extrasTotal > 0 && (
-                        <div className="flex justify-between px-3 py-1.5">
-                          <span>Extras à la carte</span><span className="tabular-nums">{eur(extrasTotal)}</span>
-                        </div>
-                      )}
-                      {wasteTotal > 0 && (
-                        <div className="flex justify-between px-3 py-1.5">
-                          <span>Taxa de desperdício ×{wasteBoxes}</span><span className="tabular-nums">{eur(wasteTotal)}</span>
-                        </div>
-                      )}
-                    </div>
+                  <div className="rounded-lg border bg-primary/[0.04] px-3 py-2 text-sm">
+                    <span className="font-semibold text-primary">{rTierName}</span> — {eur(rTierPrice)}/adulto · {eur(rTierPrice / 2)}/criança.
+                    <span className="text-muted-foreground"> Toca nas pessoas à direita para separar/pagar à parte.</span>
                   </div>
                 )}
 
-                {/* Itens selecionados (separação) — só à la carte */}
-                {!isRodizioTable && hasSelection && (
+                {/* Selecionados (pessoas do rodízio e/ou itens) */}
+                {hasSelection && (
                   <div className="rounded-lg border divide-y">
-                    {selectedLines.map((l) => (
-                      <button key={lineKey(l)} onClick={() => toggle(l)}
+                    {selectedEntries.map((e) => (
+                      <button key={e.key} onClick={() => toggle(e.key)}
                         className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm hover:bg-muted/50 text-left">
-                        <span className="truncate">{l.quantity}× {lineName(l)}</span>
+                        <span className="truncate">{e.name}{e.kind === 'child' && e.free ? ' — grátis' : ''}</span>
                         <span className="flex items-center gap-2 shrink-0">
-                          <span className="tabular-nums">{eur(l.total_price)}</span>
+                          <span className="tabular-nums">{eur(e.price)}</span>
                           <X className="h-4 w-4 text-muted-foreground" />
                         </span>
                       </button>
                     ))}
-                    <p className="px-3 py-1.5 text-xs text-muted-foreground">Toca num item para o devolver à mesa.</p>
+                    <p className="px-3 py-1.5 text-xs text-muted-foreground">Toca para devolver à mesa.</p>
                   </div>
                 )}
 
@@ -570,14 +569,12 @@ const AdminOrders = () => {
               <div className="px-6 py-4 border-t">
                 <Button
                   onClick={() => {
-                    if (!billLines.length) { toast.error('Conta vazia'); return; }
+                    if (!billable.length) { toast.error('Nada para faturar'); return; }
                     if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; }
-                    if (isRodizioTable && (rAdults + rChildrenHalf) <= 0) {
-                      toast.error('Indica pelo menos 1 adulto ou criança no rodízio'); return;
-                    }
+                    if (payTotal <= 0) { toast.error('Total a zero — seleciona o que faturar'); return; }
                     setConfirmOpen(true);
                   }}
-                  disabled={closing || !billLines.length}
+                  disabled={closing || !billable.length}
                   className="w-full h-14 text-base font-semibold bg-[#5a1a1a] hover:bg-[#4a1414]">
                   {closing ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Receipt className="h-5 w-5 mr-2" />}
                   Emitir Documento
@@ -595,29 +592,54 @@ const AdminOrders = () => {
                   <div className="flex items-center gap-2 text-white/70 py-8 justify-center text-sm">
                     <Loader2 className="h-5 w-5 animate-spin" /> A carregar…
                   </div>
-                ) : rightLines.length === 0 ? (
+                ) : (rightEntries.length === 0 && includedEntries.length === 0) ? (
                   <p className="text-center text-white/50 py-8 text-sm">
-                    {hasSelection ? 'Todos os itens estão a ser faturados.' : 'Conta vazia.'}
+                    {hasSelection ? 'Tudo a ser faturado.' : 'Conta vazia.'}
                   </p>
                 ) : (
-                  rightLines.map((l) => (
-                    <div key={lineKey(l)} onClick={() => { if (!isRodizioTable) toggle(l); }}
-                      className={`w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors ${isRodizioTable ? '' : 'cursor-pointer hover:bg-white/10'}`}>
-                      <span className="truncate flex items-center gap-1.5">
-                        {lineName(l)}
-                        {l.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
-                      </span>
-                      <span className="text-center tabular-nums">{l.quantity}</span>
-                      {isRodizioTable && (l.total_price || 0) === 0
-                        ? <span className="text-right text-[11px] text-emerald-300">Incluído</span>
-                        : <span className="text-right tabular-nums">{eur(l.total_price)}</span>}
-                      <button type="button" title="Remover (não fatura)" aria-label="Remover item"
-                        onClick={(e) => { e.stopPropagation(); removeItem(l); }}
-                        className="justify-self-end text-white/40 hover:text-red-400 transition-colors">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
-                    </div>
-                  ))
+                  <>
+                    {rightEntries.map((e) => (
+                      <div key={e.key} onClick={() => toggle(e.key)}
+                        className="w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors cursor-pointer hover:bg-white/10">
+                        <span className="truncate flex items-center gap-1.5">
+                          {e.name}
+                          {e.kind === 'item' && e.line?.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
+                          {e.kind === 'child' && (
+                            <button type="button" onClick={(ev) => { ev.stopPropagation(); toggleFreeKid(e.key); }}
+                              className={`text-[10px] px-1.5 py-0.5 rounded-full border shrink-0 ${e.free ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200' : 'border-white/25 text-white/60'}`}
+                              title="Alternar grátis (≤5 anos) / meia (6–12)">
+                              {e.free ? 'grátis' : '½'}
+                            </button>
+                          )}
+                        </span>
+                        <span className="text-center tabular-nums">1</span>
+                        <span className="text-right tabular-nums">{eur(e.price)}</span>
+                        {e.kind === 'item' ? (
+                          <button type="button" title="Remover (não fatura)" aria-label="Remover item"
+                            onClick={(ev) => { ev.stopPropagation(); removeItem(e.line); }}
+                            className="justify-self-end text-white/40 hover:text-red-400 transition-colors">
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        ) : <span />}
+                      </div>
+                    ))}
+                    {includedEntries.map((l) => (
+                      <div key={lineKey(l)}
+                        className="w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left">
+                        <span className="truncate flex items-center gap-1.5 text-white/70">
+                          {lineName(l)}
+                          {l.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
+                        </span>
+                        <span className="text-center tabular-nums text-white/70">{l.quantity}</span>
+                        <span className="text-right text-[11px] text-emerald-300">Incluído</span>
+                        <button type="button" title="Remover" aria-label="Remover item"
+                          onClick={() => removeItem(l)}
+                          className="justify-self-end text-white/40 hover:text-red-400 transition-colors">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </>
                 )}
               </div>
 
@@ -658,6 +680,18 @@ const AdminOrders = () => {
                     {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                   </Button>
                 </div>
+                {isRodizioTable && (
+                  <div className="flex items-center justify-between text-sm text-white/80 px-1">
+                    <span>Taxa de desperdício <span className="text-white/50">({eur(wasteFee)}/box)</span></span>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="icon" className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
+                        onClick={() => setWasteBoxes((n) => Math.max(0, n - 1))} disabled={wasteBoxes <= 0}>−</Button>
+                      <span className="w-6 text-center tabular-nums">{wasteBoxes}</span>
+                      <Button variant="outline" size="icon" className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
+                        onClick={() => setWasteBoxes((n) => n + 1)}>+</Button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center justify-between text-sm text-white/70 px-1">
                   <span className="flex items-center gap-1"><Users className="h-4 w-4" />{openTablePeople} pessoa{openTablePeople !== 1 ? 's' : ''}</span>
                   <span className="tabular-nums">Total {eur(fullTotal)}</span>
@@ -690,13 +724,11 @@ const AdminOrders = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Emitir documento — {tableTitle}?</AlertDialogTitle>
             <AlertDialogDescription>
-              {isRodizioTable
-                ? `Vai emitir a fatura simplificada do ${rTierName} (${rAdults} adulto${rAdults !== 1 ? 's' : ''}${rChildrenHalf > 0 ? ` + ${rChildrenHalf} criança(s)` : ''}${wasteBoxes > 0 ? ` + ${wasteBoxes} taxa(s)` : ''}${extrasTotal > 0 ? ' + extras' : ''} = ${eur(payTotal)}) e libertar a mesa.`
-                : hasSelection
-                  ? `Vai faturar ${selectedLines.length} item(ns) selecionado(s) (${eur(invoiceTotal)}). O resto da conta fica na mesa.`
-                  : splitActive
-                    ? `Vai emitir ${splitCount} faturas simplificadas de ${eur(perPerson)} cada e libertar a mesa.`
-                    : `Vai emitir a fatura simplificada (${eur(invoiceTotal)}) e libertar a mesa.`}
+              {hasSelection
+                ? `Vai faturar ${selectedEntries.length} selecionado(s) (${eur(payTotal)}). O resto fica na mesa.`
+                : splitActive
+                  ? `Vai emitir ${splitCount} faturas de ${eur(perPerson)} cada e libertar a mesa.`
+                  : `Vai emitir a fatura (${eur(payTotal)})${isRodizioTable ? ` do ${rTierName}` : ''} e libertar a mesa.`}
               {isCash && received > 0 && change >= 0 ? ` Troco a devolver: ${eur(change)}.` : ''} Esta ação não se desfaz.
             </AlertDialogDescription>
           </AlertDialogHeader>

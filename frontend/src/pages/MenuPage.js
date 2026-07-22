@@ -461,8 +461,11 @@ const MenuPage = () => {
                     <p className="text-xs text-muted-foreground mt-1">{rodizioCfg.tiers.completo.description}</p>
                   )}
                 </button>
+                <p className="text-xs text-muted-foreground pt-1">
+                  Crianças até aos {rodizioCfg.child_free_max_age ?? 5} anos são por nossa conta 😊. Dos {(rodizioCfg.child_free_max_age ?? 5) + 1} aos {rodizioCfg.child_half_max_age ?? 12} anos pagam meia dose.
+                </p>
                 {rodizioCfg.waste_note && (
-                  <p className="text-xs text-muted-foreground pt-1">{rodizioCfg.waste_note}</p>
+                  <p className="text-xs text-muted-foreground">{rodizioCfg.waste_note}</p>
                 )}
               </div>
             ) : gateStep === 'rodizio' ? (
@@ -493,7 +496,7 @@ const MenuPage = () => {
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  As idades das crianças (grátis ou meia) são confirmadas pela equipa no fim.
+                  Contem as crianças aqui 🙂 — as até aos {rodizioCfg?.child_free_max_age ?? 5} anos não pagam e dos {(rodizioCfg?.child_free_max_age ?? 5) + 1} aos {rodizioCfg?.child_half_max_age ?? 12} anos pagam meia dose. A equipa confirma as idades no fim.
                 </p>
                 <Button onClick={submitRodizio} disabled={openingTable} className="w-full h-12 text-base">
                   {openingTable ? <Loader2 className="h-5 w-5 animate-spin" /> : 'Ver o menu'}

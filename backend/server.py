@@ -1778,8 +1778,6 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
     'cashier' com um snapshot da conta atual; o agente imprime quando ligar."""
     await get_current_user(authorization)
     orders = await _open_orders_for_table(table_number)
-    if not orders:
-        raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
 
     items = []
     total = 0.0
@@ -1828,6 +1826,9 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
             })
         items = rodizio_lines + items
         total = round(total + _rodizio_charge(rodizio, rp, rcfg), 2)
+
+    if not items:
+        raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
 
     # snapshot com a forma que o formatador 'cashier' espera (order-like)
     snapshot = {

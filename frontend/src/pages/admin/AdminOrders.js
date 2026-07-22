@@ -599,7 +599,16 @@ const AdminOrders = () => {
                     <PopoverContent className="p-0 w-[min(92vw,26rem)]" align="end" sideOffset={6}>
                       <Command>
                         <CommandInput placeholder="Escreve o nome do produto…" />
-                        <CommandList className="max-h-[min(60vh,26rem)]">
+                        <CommandList
+                          className="max-h-[min(60vh,26rem)]"
+                          onWheel={(e) => {
+                            // O scroll-lock do Dialog (react-remove-scroll) bloqueia a roda
+                            // em conteúdo portalizado; rolamos a lista manualmente.
+                            const el = e.currentTarget;
+                            const factor = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? el.clientHeight : 1;
+                            el.scrollTop += e.deltaY * factor;
+                          }}
+                        >
                           <CommandEmpty>Nenhum produto encontrado.</CommandEmpty>
                           {productGroups.map((g) => (
                             <CommandGroup key={g.cid} heading={g.name}>

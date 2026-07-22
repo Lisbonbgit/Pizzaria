@@ -142,7 +142,15 @@ export const reportsAPI = {
   sendEmail: (date = null) =>
     api.post('/admin/send-daily-report', { date }),
   getConfig: () =>
-    api.get('/admin/report-config')
+    api.get('/admin/report-config'),
+  schedulerStatus: () =>
+    api.get('/admin/scheduler/status'),
+  schedulerEnable: () =>
+    api.post('/admin/scheduler/enable'),
+  schedulerDisable: () =>
+    api.post('/admin/scheduler/disable'),
+  testNow: () =>
+    api.post('/admin/test-daily-report')
 };
 
 // Rodízio (all-you-can-eat)

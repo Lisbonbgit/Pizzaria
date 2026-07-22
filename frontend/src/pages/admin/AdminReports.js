@@ -45,10 +45,48 @@ const AdminReports = () => {
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [sendingEmail, setSendingEmail] = useState(false);
+  const [schedCfg, setSchedCfg] = useState(null);
+  const [schedStatus, setSchedStatus] = useState(null);
+  const [busySched, setBusySched] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => {
     const now = new Date();
     return now.toISOString().split('T')[0];
   });
+
+  const loadScheduler = useCallback(async () => {
+    try {
+      const [c, s] = await Promise.all([reportsAPI.getConfig(), reportsAPI.schedulerStatus()]);
+      setSchedCfg(c.data);
+      setSchedStatus(s.data);
+    } catch { /* ignore */ }
+  }, []);
+
+  const toggleScheduler = async (enable) => {
+    setBusySched(true);
+    try {
+      await (enable ? reportsAPI.schedulerEnable() : reportsAPI.schedulerDisable());
+      toast.success(enable ? 'Relatório automático ativado (23:30)' : 'Relatório automático desativado');
+      loadScheduler();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao alterar o agendamento');
+    } finally {
+      setBusySched(false);
+    }
+  };
+
+  const sendTestNow = async () => {
+    setTesting(true);
+    try {
+      const r = await reportsAPI.testNow();
+      if (r.data.success) toast.success(r.data.message || 'Relatório de teste enviado');
+      else toast.error(r.data.error || r.data.message || 'Falha ao enviar');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao enviar o teste');
+    } finally {
+      setTesting(false);
+    }
+  };
 
   const loadReport = useCallback(async () => {
     setLoading(true);
@@ -66,6 +104,10 @@ const AdminReports = () => {
   useEffect(() => {
     loadReport();
   }, [loadReport]);
+
+  useEffect(() => {
+    loadScheduler();
+  }, [loadScheduler]);
 
   const handleSendEmail = async () => {
     setSendingEmail(true);
@@ -158,6 +200,57 @@ const AdminReports = () => {
           )}
         </Button>
       </div>
+
+      {/* Envio automático diário */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Clock className="h-4 w-4" /> Relatório automático (todos os dias às 23:30)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+            <span className="flex items-center gap-1.5">
+              Email (Resend):
+              {schedCfg?.resend_configured
+                ? <Badge className="bg-green-600 text-white border-0">configurado</Badge>
+                : <Badge variant="destructive">falta a chave</Badge>}
+            </span>
+            <span>Destinatário: <span className="font-medium">{schedCfg?.report_email || '—'}</span></span>
+            <span className="flex items-center gap-1.5">
+              Automático:
+              {schedStatus?.enabled
+                ? <Badge className="bg-green-600 text-white border-0">ligado</Badge>
+                : <Badge variant="secondary">desligado</Badge>}
+            </span>
+            {schedStatus?.enabled && schedStatus?.next_run && (
+              <span className="text-muted-foreground">próximo: {new Date(schedStatus.next_run).toLocaleString('pt-PT')}</span>
+            )}
+          </div>
+          {!schedCfg?.resend_configured && (
+            <p className="text-xs text-muted-foreground">
+              Falta configurar a chave da Resend (RESEND_API_KEY) e o remetente no servidor. Depois disto, liga o automático aqui.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {schedStatus?.enabled ? (
+              <Button variant="outline" onClick={() => toggleScheduler(false)} disabled={busySched}>
+                {busySched ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <XCircle className="h-4 w-4 mr-2" />}
+                Desativar automático
+              </Button>
+            ) : (
+              <Button onClick={() => toggleScheduler(true)} disabled={busySched || !schedCfg?.resend_configured}>
+                {busySched ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-2" />}
+                Ativar automático (23:30)
+              </Button>
+            )}
+            <Button variant="outline" onClick={sendTestNow} disabled={testing || !schedCfg?.resend_configured}>
+              {testing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Send className="h-4 w-4 mr-2" />}
+              Enviar teste agora
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Date label */}
       <p className="text-sm text-muted-foreground mb-6 capitalize">{formatDate(selectedDate)}</p>

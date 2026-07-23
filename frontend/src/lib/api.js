@@ -208,7 +208,9 @@ export const checkoutAPI = {
   freeTable: (tableNumber) =>
     api.post(`/tables/${tableNumber}/free`),
   removeItem: (orderId, idx) =>
-    api.post(`/orders/${orderId}/items/${idx}/void`)
+    api.post(`/orders/${orderId}/items/${idx}/void`),
+  setItemDiscount: (orderId, idx, pct) =>
+    api.post(`/orders/${orderId}/items/${idx}/discount`, { pct })
 };
 
 export default api;

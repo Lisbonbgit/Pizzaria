@@ -52,6 +52,7 @@ const AdminOrders = () => {
   const [paymentId, setPaymentId] = useState('');
   const [nif, setNif] = useState('');
   const [splitCount, setSplitCount] = useState(1);
+  const [globalDiscount, setGlobalDiscount] = useState('');
   const [cashReceived, setCashReceived] = useState('');
   const [printingConsulta, setPrintingConsulta] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -111,6 +112,7 @@ const AdminOrders = () => {
     setPaymentId('');
     setNif('');
     setSplitCount(1);
+    setGlobalDiscount('');
     setCashReceived('');
     setAddProductId('');
     setAddQty(1);
@@ -261,14 +263,30 @@ const AdminOrders = () => {
   const fullTotal = Math.round(billable.reduce((s, e) => s + (e.price || 0), 0) * 100) / 100;
   const selectedTotal = Math.round(selectedEntries.reduce((s, e) => s + (e.price || 0), 0) * 100) / 100;
   const invoiceTotal = hasSelection ? selectedTotal : fullTotal;
-  const payTotal = invoiceTotal;
+  const globalPct = Math.max(0, Math.min(100, Number(String(globalDiscount).replace(',', '.')) || 0));
+  const payTotal = Math.round(invoiceTotal * (1 - globalPct / 100) * 100) / 100; // total já com desconto global
   const splitActive = !isRodizioTable && !hasSelection && splitCount > 1;
-  const perPerson = splitActive ? invoiceTotal / splitCount : invoiceTotal;
+  const perPerson = splitActive ? payTotal / splitCount : payTotal;
 
   const selectedMethod = methods.find((m) => String(m.id) === String(paymentId));
   const isCash = !!selectedMethod && /dinheiro|numer|cash/i.test(selectedMethod.title || '');
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
   const change = Math.round((received - payTotal) * 100) / 100;
+
+  const setItemDiscount = async (l) => {
+    const cur = l.discount_pct || 0;
+    const v = window.prompt(`Desconto (%) em "${lineName(l)}" (0 a 100):`, String(cur));
+    if (v === null) return;
+    const pct = Math.max(0, Math.min(100, Number(String(v).replace(',', '.')) || 0));
+    try {
+      await checkoutAPI.setItemDiscount(l.order_id, l.idx, pct);
+      toast.success(pct > 0 ? `Desconto de ${pct}% aplicado` : 'Desconto removido');
+      loadBill(openTableNum);
+      load(true);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao aplicar o desconto');
+    }
+  };
 
   const countEntries = (entries) => {
     let adults = 0, children_half = 0, children_free = 0, waste_boxes = 0;
@@ -287,6 +305,7 @@ const AdminOrders = () => {
     setClosing(true);
     try {
       const body = { payment_method_id: Number(paymentId) };
+      if (globalPct > 0) body.global_discount_pct = globalPct;
       const toBill = hasSelection ? selectedEntries : billable;
       if (isRodizioTable) {
         const c = countEntries(toBill);
@@ -482,7 +501,22 @@ const AdminOrders = () => {
               <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
                 <div className="flex items-end justify-between">
                   <span className="text-muted-foreground">{hasSelection ? 'A faturar (selecionados)' : 'Total a pagar'}</span>
-                  <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(payTotal)}</span>
+                  <span className="text-right">
+                    {globalPct > 0 && (
+                      <span className="block text-sm text-muted-foreground line-through tabular-nums">{eur(invoiceTotal)}</span>
+                    )}
+                    <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(payTotal)}</span>
+                  </span>
+                </div>
+
+                {/* Desconto global na conta */}
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm">Desconto na conta {globalPct > 0 ? `(−${eur(Math.round((invoiceTotal - payTotal) * 100) / 100)})` : ''}</span>
+                  <div className="relative w-28">
+                    <Input type="number" inputMode="decimal" min={0} max={100} step="1" className="pr-7 text-right"
+                      placeholder="0" value={globalDiscount} onChange={(e) => setGlobalDiscount(e.target.value)} aria-label="Desconto global %" />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">%</span>
+                  </div>
                 </div>
 
                 {/* Dica do rodízio */}
@@ -604,6 +638,14 @@ const AdminOrders = () => {
                         <span className="truncate flex items-center gap-1.5">
                           {e.name}
                           {e.kind === 'item' && e.line?.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
+                          {e.kind === 'item' && (e.line?.discount_pct > 0) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 shrink-0">−{e.line.discount_pct}%</span>
+                          )}
+                          {e.kind === 'item' && (
+                            <button type="button" onClick={(ev) => { ev.stopPropagation(); setItemDiscount(e.line); }}
+                              className="text-[10px] px-1.5 py-0.5 rounded-full border border-white/25 text-white/60 hover:text-white hover:border-white/50 shrink-0 transition-colors"
+                              title="Desconto neste item">%</button>
+                          )}
                           {e.kind === 'child' && (
                             <button type="button" onClick={(ev) => { ev.stopPropagation(); toggleFreeKid(e.key); }}
                               className={`text-[10px] px-1.5 py-0.5 rounded-full border shrink-0 ${e.free ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200' : 'border-white/25 text-white/60'}`}

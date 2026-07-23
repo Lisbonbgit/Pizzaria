@@ -1311,6 +1311,29 @@ async def void_order_item(order_id: str, idx: int, authorization: Optional[str] 
         cancelled = True
     return {"ok": True, "order_id": order_id, "idx": idx, "order_cancelled": cancelled}
 
+
+class ItemDiscount(BaseModel):
+    pct: float = 0  # 0..100
+
+
+@api_router.post("/orders/{order_id}/items/{idx}/discount")
+async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
+                            authorization: Optional[str] = Header(None)):
+    """Define um desconto (%) num item da mesa. Fica gravado no item e reflete-se
+    na conta, na consulta e na fatura (enviado ao Vendus como discount_percentage)."""
+    await get_current_user(authorization)
+    pct = max(0.0, min(100.0, float(body.pct or 0)))
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    items = order.get("items", [])
+    if idx < 0 or idx >= len(items):
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+    if items[idx].get("paid"):
+        raise HTTPException(status_code=400, detail="Item já faturado")
+    await db.orders.update_one({"id": order_id}, {"$set": {f"items.{idx}.discount_pct": pct}})
+    return {"ok": True, "order_id": order_id, "idx": idx, "discount_pct": pct}
+
 # ==================== VENDUS: FECHO DE MESA ====================
 
 VENDUS_DEFAULT_TAX_ID = os.environ.get("VENDUS_DEFAULT_TAX_ID", "NOR")
@@ -1337,13 +1360,18 @@ async def _open_bill_lines(table_number: int) -> list:
         for idx, it in enumerate(o.get("items", [])):
             if it.get("paid") or it.get("removed"):
                 continue
+            dpct = float(it.get("discount_pct", 0) or 0)
+            gross = round(float(it.get("total_price", 0) or 0), 2)
+            net = round(gross * (1 - dpct / 100.0), 2)
             lines.append({
                 "order_id": o["id"], "idx": idx,
                 "product_id": it.get("product_id"),
                 "product_name": it.get("product_name"),
                 "quantity": it.get("quantity", 1),
                 "unit_price": it.get("unit_price", 0),
-                "total_price": it.get("total_price", 0),
+                "total_price": net,          # já com o desconto do item aplicado
+                "gross_total": gross,        # antes do desconto
+                "discount_pct": dpct,
                 "variation": it.get("variation"),
                 "source": src,
             })
@@ -1366,6 +1394,7 @@ class CloseTableRequest(BaseModel):
     children_half: int = 0   # crianças a meia (ex.: 6–12 anos)
     children_free: int = 0   # crianças grátis (ex.: ≤5 anos) — apenas informativo
     waste_boxes: int = 0     # nº de taxas de desperdício a cobrar
+    global_discount_pct: float = 0  # desconto (%) sobre TODA a fatura (0..100)
 
 
 @api_router.get("/tables/{table_number}/bill")
@@ -1561,6 +1590,11 @@ async def close_table(table_number: int, req: CloseTableRequest,
     ts = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
     rodizio_pay = None  # {adults, children, waste} faturado agora (rodízio parcial)
 
+    # Desconto GLOBAL (%) sobre toda a fatura; combina com o desconto por item.
+    g_disc = max(0.0, min(100.0, float(req.global_discount_pct or 0)))
+    def _eff_disc(item_pct):
+        return round(100.0 * (1 - (1 - (float(item_pct or 0)) / 100.0) * (1 - g_disc / 100.0)), 4)
+
     if req.rodizio_tier:
         # ---- RODÍZIO: fatura por pessoa (adultos/crianças) — pode ser PARCIAL
         # (pagar só algumas pessoas + alguns extras). O que já foi pago fica
@@ -1604,14 +1638,19 @@ async def close_table(table_number: int, req: CloseTableRequest,
 
         vendus_items = []
         total = 0.0
+
+        def _add(title, qty, gross, tax, item_pct=0):
+            eff = _eff_disc(item_pct)
+            li = {"title": title, "qty": qty, "gross_price": gross, "tax_id": tax}
+            if eff > 0:
+                li["discount_percentage"] = eff
+            vendus_items.append(li)
+            return round(gross * qty * (1 - eff / 100.0), 2)
+
         if pay_adults > 0:
-            vendus_items.append({"title": f"{tier['name']} (adulto)", "qty": pay_adults,
-                                 "gross_price": price, "tax_id": rtax})
-            total += round(price * pay_adults, 2)
+            total += _add(f"{tier['name']} (adulto)", pay_adults, price, rtax)
         if pay_half > 0:
-            vendus_items.append({"title": f"{tier['name']} (criança)", "qty": pay_half,
-                                 "gross_price": half, "tax_id": rtax})
-            total += round(half * pay_half, 2)
+            total += _add(f"{tier['name']} (criança)", pay_half, half, rtax)
         for l in extra_lines:
             qty = l.get("quantity", 1) or 1
             unit = round(float(l.get("unit_price", 0) or 0), 2)
@@ -1620,13 +1659,10 @@ async def close_table(table_number: int, req: CloseTableRequest,
             var = l.get("variation") or {}
             if isinstance(var, dict) and var.get("name"):
                 title = f"{title} ({var['name']})"
-            vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
-            total += round(unit * qty, 2)
+            total += _add(title, qty, unit, tax, l.get("discount_pct", 0))
         if req.waste_boxes and req.waste_boxes > 0:
             wfee = round(float(cfg.get("waste_fee", 5.0)), 2)
-            vendus_items.append({"title": "Taxa de desperdício", "qty": req.waste_boxes,
-                                 "gross_price": wfee, "tax_id": cfg.get("waste_fee_tax_id", "INT")})
-            total += round(wfee * req.waste_boxes, 2)
+            total += _add("Taxa de desperdício", req.waste_boxes, wfee, cfg.get("waste_fee_tax_id", "INT"))
         total = round(total, 2)
         if not vendus_items or total <= 0:
             raise HTTPException(status_code=400, detail="Nada selecionado para faturar")
@@ -1669,9 +1705,14 @@ async def close_table(table_number: int, req: CloseTableRequest,
             var = l.get("variation") or {}
             if isinstance(var, dict) and var.get("name"):
                 title = f"{title} ({var['name']})"
-            vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
-            by_tax[tax] = round(by_tax.get(tax, 0.0) + round(unit * qty, 2), 2)
-            total += round(l.get("total_price", 0) or 0, 2)
+            eff = _eff_disc(l.get("discount_pct", 0))          # desconto do item + global
+            li = {"title": title, "qty": qty, "gross_price": unit, "tax_id": tax}
+            if eff > 0:
+                li["discount_percentage"] = eff
+            vendus_items.append(li)
+            amt = round(unit * qty * (1 - eff / 100.0), 2)     # valor líquido da linha
+            by_tax[tax] = round(by_tax.get(tax, 0.0) + amt, 2)
+            total += amt
         total = round(total, 2)
 
         # A divisão igual só se aplica à conta TODA (não a uma separação por itens).

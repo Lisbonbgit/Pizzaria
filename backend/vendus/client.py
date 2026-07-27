@@ -83,6 +83,53 @@ class VendusClient:
     def list_payment_methods(self) -> list:
         return self._request("GET", "documents/paymentmethods/") or []
 
+    # ---- Relatório de vendas (receita real faturada pela app) ----
+    def list_app_invoices(self, *, date: str, per_page: int = 200) -> list:
+        """Documentos faturados na caixa da app (register_id configurado) a partir
+        de `date` (formato YYYY-MM-DD, inclusive). `view=detailed` traz os
+        `payments` e `amount_gross`. Devolve só os documentos DESSE dia e exclui
+        recibos (RG), que são apenas o comprovativo da mesma venda."""
+        params: dict = {"since": date, "view": "detailed", "per_page": per_page}
+        if self._cfg.register_id is not None:
+            params["register_id"] = self._cfg.register_id
+        docs = self._request("GET", "documents/", params=params) or []
+        return [
+            d for d in docs
+            if str(d.get("date", "")).startswith(date) and d.get("type") != "RG"
+        ]
+
+    def app_sales_summary(self, date: str) -> dict:
+        """Resumo das vendas faturadas pela app num dia: total e repartição por
+        forma de pagamento (Dinheiro, Multibanco, ...), lido das faturas reais do
+        Vendus. Fonte de verdade da receita — inclui rodízio e descontos, que não
+        ficam no `total` dos pedidos."""
+        docs = self.list_app_invoices(date=date)
+        by_method: dict = {}
+        total = 0.0
+        for d in docs:
+            gross = float(d.get("amount_gross") or 0)
+            total = round(total + gross, 2)
+            pays = d.get("payments") or []
+            if pays:
+                for p in pays:
+                    title = (p.get("title") or "Outro").strip() or "Outro"
+                    amt = float(p.get("amount") or 0)
+                    cur = by_method.setdefault(title, {"count": 0, "total": 0.0})
+                    cur["total"] = round(cur["total"] + amt, 2)
+                # 1 fatura = 1 forma de pagamento (contamos o documento uma vez)
+                title0 = (pays[0].get("title") or "Outro").strip() or "Outro"
+                by_method[title0]["count"] += 1
+            else:
+                cur = by_method.setdefault("Sem pagamento", {"count": 0, "total": 0.0})
+                cur["total"] = round(cur["total"] + gross, 2)
+                cur["count"] += 1
+        return {
+            "total": round(total, 2),
+            "by_method": by_method,
+            "count": len(docs),
+            "documents": [d.get("number") for d in docs],
+        }
+
     def create_invoice(self, *, items: list, payments: list, doc_type: str = "FR",
                        client: Optional[dict] = None,
                        external_reference: Optional[str] = None,

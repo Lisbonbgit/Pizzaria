@@ -11,7 +11,19 @@ from typing import Optional
 from motor.motor_asyncio import AsyncIOMotorClient
 import resend
 
+from vendus import VendusConfig, VendusClient
+
 logger = logging.getLogger(__name__)
+
+
+def _app_sales_summary_sync(date_str: str) -> dict:
+    """Lê ao Vendus o resumo de vendas faturadas pela app num dia (YYYY-MM-DD).
+    Síncrono (httpx) — chamar via asyncio.to_thread. Fonte de verdade da receita."""
+    c = VendusClient(VendusConfig.load(os.environ))
+    try:
+        return c.app_sales_summary(date_str)
+    finally:
+        c.close()
 
 # Configuration
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
@@ -55,31 +67,16 @@ async def get_daily_orders(db, date: Optional[datetime] = None) -> list:
 
 
 def calculate_report_stats(orders: list) -> dict:
-    """Calcula estatísticas do relatório"""
-    if not orders:
-        return {
-            "total_orders": 0,
-            "total_revenue": 0.0,
-            "average_ticket": 0.0,
-            "payment_methods": {},
-            "paid_orders": 0,
-            "unpaid_orders": 0
-        }
-    
+    """Estatísticas de ATIVIDADE dos pedidos da app (contagens).
+    A RECEITA não vem daqui — vem das faturas do Vendus (ver app_sales_summary),
+    porque o `total` do pedido não inclui rodízio nem descontos."""
     total_orders = len(orders)
-    total_revenue = sum(order.get("total", 0) for order in orders)
-    average_ticket = total_revenue / total_orders if total_orders > 0 else 0
-    
-    # Contagem de pedidos pagos vs não pagos
     paid_orders = sum(1 for order in orders if order.get("paid", False))
     unpaid_orders = total_orders - paid_orders
-    
     return {
         "total_orders": total_orders,
-        "total_revenue": total_revenue,
-        "average_ticket": average_ticket,
         "paid_orders": paid_orders,
-        "unpaid_orders": unpaid_orders
+        "unpaid_orders": unpaid_orders,
     }
 
 
@@ -88,8 +85,10 @@ def format_currency(value: float) -> str:
     return f"{value:.2f} EUR"
 
 
-def generate_html_report(orders: list, stats: dict, report_date: str) -> str:
-    """Gera o HTML do relatório diário"""
+def generate_html_report(orders: list, stats: dict, vendus: Optional[dict],
+                         report_date: str, vendus_error: Optional[str] = None) -> str:
+    """Gera o HTML do relatório diário. `vendus` = resumo de vendas faturadas
+    (app_sales_summary) — fonte de verdade da receita; None se o Vendus falhou."""
     
     # Ordenar pedidos por hora
     orders_html = ""
@@ -143,6 +142,36 @@ def generate_html_report(orders: list, stats: dict, report_date: str) -> str:
         </tr>
         """
     
+    # --- Dados fiscais (Vendus) — receita real faturada pela app ---
+    if vendus is not None:
+        fiscal_total_str = format_currency(vendus.get("total", 0))
+        invoices_count = vendus.get("count", 0)
+        by_method = vendus.get("by_method", {})
+    else:
+        fiscal_total_str = "indisponivel"
+        invoices_count = 0
+        by_method = {}
+
+    if by_method:
+        payments_rows = ""
+        for name, d in sorted(by_method.items(), key=lambda kv: -kv[1]["total"]):
+            payments_rows += f"""
+                    <tr>
+                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb;">{name}</td>
+                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: center; color: #6b7280;">{d['count']}</td>
+                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: right; font-weight: 700; color: #111827;">{format_currency(d['total'])}</td>
+                    </tr>"""
+    else:
+        payments_rows = """
+                    <tr><td colspan="3" style="padding: 20px; text-align: center; color: #6b7280;">Sem faturas emitidas neste dia.</td></tr>"""
+
+    warning_html = ""
+    if vendus is None:
+        warning_html = f"""
+            <div style="background: #fef3c7; color: #92400e; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; font-size: 13px;">
+                Nao foi possivel obter os valores faturados do Vendus ({vendus_error or 'erro'}). A atividade abaixo e apenas indicativa.
+            </div>"""
+
     html = f"""
 <!DOCTYPE html>
 <html>
@@ -158,44 +187,52 @@ def generate_html_report(orders: list, stats: dict, report_date: str) -> str:
             <p style="margin: 10px 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">{report_date}</p>
         </div>
         
-        <!-- Stats Cards -->
+        <!-- Faturado + formas de pagamento (Vendus) -->
         <div style="background: white; padding: 30px; border-left: 1px solid #e5e7eb; border-right: 1px solid #e5e7eb;">
+            {warning_html}
             <table style="width: 100%; border-collapse: collapse;">
                 <tr>
-                    <td style="padding: 15px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #fef2f2;">
-                        <div style="font-size: 28px; font-weight: 700; color: #dc2626;">{stats['total_orders']}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Pedidos</div>
+                    <td style="padding: 18px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f0fdf4;">
+                        <div style="font-size: 30px; font-weight: 700; color: #16a34a;">{fiscal_total_str}</div>
+                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Faturado (app)</div>
                     </td>
                     <td style="width: 15px;"></td>
-                    <td style="padding: 15px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f0fdf4;">
-                        <div style="font-size: 28px; font-weight: 700; color: #22c55e;">{format_currency(stats['total_revenue'])}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Receita Bruta</div>
+                    <td style="padding: 18px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f8fafc;">
+                        <div style="font-size: 30px; font-weight: 700; color: #334155;">{invoices_count}</div>
+                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Faturas</div>
                     </td>
                 </tr>
             </table>
-            
-            <table style="width: 100%; border-collapse: collapse; margin-top: 15px;">
-                <tr>
-                    <td style="padding: 15px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #eff6ff;">
-                        <div style="font-size: 20px; font-weight: 700; color: #3b82f6;">{format_currency(stats['average_ticket'])}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Ticket Medio</div>
-                    </td>
-                    <td style="width: 15px;"></td>
-                    <td style="padding: 15px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px;">
-                        <div style="font-size: 14px;">
-                            <span style="color: #22c55e; font-weight: 600;">{stats['paid_orders']} pagos</span>
-                            <span style="color: #9ca3af; margin: 0 5px;">|</span>
-                            <span style="color: #f59e0b; font-weight: 600;">{stats['unpaid_orders']} pendentes</span>
-                        </div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Estado Pagamentos</div>
-                    </td>
-                </tr>
+
+            <h3 style="margin: 22px 0 8px; font-size: 14px; color: #374151; text-transform: uppercase;">Por forma de pagamento</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background-color: #f9fafb;">
+                        <th style="padding: 10px; text-align: left; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Forma</th>
+                        <th style="padding: 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Faturas</th>
+                        <th style="padding: 10px; text-align: right; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Valor</th>
+                    </tr>
+                </thead>
+                <tbody>{payments_rows}
+                    <tr style="background-color: #f0fdf4;">
+                        <td style="padding: 12px 10px; font-weight: 700;">Total</td>
+                        <td style="padding: 12px 10px; text-align: center; font-weight: 700;">{invoices_count}</td>
+                        <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #16a34a;">{fiscal_total_str}</td>
+                    </tr>
+                </tbody>
             </table>
+
+            <div style="margin-top: 18px; font-size: 13px; color: #6b7280; text-align: center;">
+                Atividade: <strong style="color:#374151;">{stats['total_orders']}</strong> pedidos lancados
+                &nbsp;|&nbsp; <span style="color:#22c55e;">{stats['paid_orders']} pagos</span>
+                &nbsp;|&nbsp; <span style="color:#f59e0b;">{stats['unpaid_orders']} pendentes</span>
+            </div>
         </div>
-        
+
         <!-- Orders Table -->
         <div style="background: white; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
-            <h2 style="margin: 0 0 20px; font-size: 18px; color: #374151;">Lista de Pedidos</h2>
+            <h2 style="margin: 0 0 6px; font-size: 18px; color: #374151;">Pedidos do dia (atividade)</h2>
+            <p style="margin: 0 0 16px; font-size: 12px; color: #9ca3af;">Itens lancados na app. No rodizio aparecem a 0,00 EUR — o valor por pessoa esta no total faturado acima.</p>
             <table style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background-color: #f9fafb;">
@@ -264,15 +301,30 @@ async def send_daily_report(db, date: Optional[datetime] = None, force: bool = F
         return {"success": False, "error": error_msg}
     
     try:
-        # Buscar pedidos do dia
+        # Buscar pedidos do dia (atividade)
         orders = await get_daily_orders(db, date)
         logger.info(f"Encontrados {len(orders)} pedidos para o relatório")
-        
-        # Calcular estatísticas
+
+        # Estatísticas de atividade
         stats = calculate_report_stats(orders)
-        
+
+        # Receita REAL: faturas do Vendus (caixa da app). Se o Vendus falhar, o
+        # relatório sai na mesma, com aviso, em vez de não sair de todo.
+        vendus = None
+        vendus_error = None
+        try:
+            vendus = await asyncio.to_thread(_app_sales_summary_sync, date.strftime("%Y-%m-%d"))
+            logger.info(f"Vendus: {vendus.get('count')} faturas, total {vendus.get('total')} EUR")
+        except Exception as e:
+            vendus_error = str(e)
+            logger.error(f"Relatório: falha ao obter vendas do Vendus: {vendus_error}")
+
+        # Enriquecer o registo com os valores faturados
+        stats = {**stats, "faturado": (vendus or {}).get("total"),
+                 "faturas": (vendus or {}).get("count", 0)}
+
         # Gerar HTML
-        html_content = generate_html_report(orders, stats, report_date_str)
+        html_content = generate_html_report(orders, stats, vendus, report_date_str, vendus_error)
         
         # Preparar email
         subject = f"Relatorio Diario - {report_date_str}"

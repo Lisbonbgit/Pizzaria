@@ -31,6 +31,13 @@ const paymentMethodIcons = {
   cartao: CreditCard,
   mbway: Smartphone,
   multibanco: Wallet,
+  // Nomes tal como vêm do Vendus (fonte de verdade da receita)
+  Dinheiro: Banknote,
+  Multibanco: Wallet,
+  'MB WAY': Smartphone,
+  'MBWay': Smartphone,
+  Cartão: CreditCard,
+  'Cartão de Crédito': CreditCard,
 };
 
 const paymentMethodLabels = {

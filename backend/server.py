@@ -2874,21 +2874,32 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
     cancelled_orders = total_orders - len(non_cancelled)
     delivered_orders = len([o for o in orders if o.get("status") == "delivered"])
     
-    total_revenue = sum(o.get("total", 0) for o in non_cancelled)
-    avg_ticket = total_revenue / len(non_cancelled) if non_cancelled else 0
-    
     paid_orders = len([o for o in non_cancelled if o.get("paid", False)])
     unpaid_orders = len(non_cancelled) - paid_orders
-    
-    # Payment methods breakdown
+
+    # Receita REAL: lida das faturas do Vendus (caixa da app), não do `total` dos
+    # pedidos. No rodízio os itens estão a €0 e o valor por pessoa só é cobrado no
+    # fecho; os descontos também não ficam no pedido. A fonte de verdade é o Vendus.
+    total_revenue = 0.0
+    avg_ticket = 0.0
+    invoices_count = 0
     payment_methods = {}
-    for o in non_cancelled:
-        if o.get("paid", False):
-            method = o.get("payment_method", "não especificado")
-            if method not in payment_methods:
-                payment_methods[method] = {"count": 0, "total": 0}
-            payment_methods[method]["count"] += 1
-            payment_methods[method]["total"] += o.get("total", 0)
+    revenue_source = "vendus"
+    revenue_error = None
+    try:
+        c = _vendus_client()
+        try:
+            _summ = c.app_sales_summary(target_date.strftime("%Y-%m-%d"))
+        finally:
+            c.close()
+        total_revenue = _summ["total"]
+        payment_methods = _summ["by_method"]
+        invoices_count = _summ["count"]
+        avg_ticket = (total_revenue / invoices_count) if invoices_count else 0.0
+    except Exception as e:
+        revenue_source = "erro"
+        revenue_error = str(e)[:200]
+        logger.error(f"report-data: falha ao obter vendas do Vendus: {revenue_error}")
     
     # Top products
     product_counts = {}
@@ -2933,6 +2944,9 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
             "total_orders": total_orders,
             "total_revenue": round(total_revenue, 2),
             "avg_ticket": round(avg_ticket, 2),
+            "invoices_count": invoices_count,
+            "revenue_source": revenue_source,
+            "revenue_error": revenue_error,
             "cancelled_orders": cancelled_orders,
             "delivered_orders": delivered_orders,
             "paid_orders": paid_orders,

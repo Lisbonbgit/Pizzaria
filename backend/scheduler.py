@@ -25,6 +25,26 @@ def _app_sales_summary_sync(date_str: str) -> dict:
     finally:
         c.close()
 
+
+async def resolve_resend_config(db) -> dict:
+    """Resolve a config do Resend: primeiro do ambiente (.env) e, se faltar, da
+    BD (db.settings key 'resend_config', preenchida no painel Relatórios). Assim
+    o dono pode colar a chave no admin sem mexer nos ficheiros do servidor."""
+    api_key = RESEND_API_KEY
+    report_email = REPORT_EMAIL
+    sender_email = REPORT_SENDER_EMAIL
+    if not api_key or not report_email:
+        try:
+            doc = await db.settings.find_one({"key": "resend_config"}, {"_id": 0})
+            val = (doc or {}).get("value", {}) or {}
+        except Exception:
+            val = {}
+        api_key = api_key or (val.get("api_key") or "")
+        report_email = report_email or (val.get("report_email") or "")
+        if val.get("sender_email"):
+            sender_email = val["sender_email"]
+    return {"api_key": api_key, "report_email": report_email, "sender_email": sender_email}
+
 # Configuration
 RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '')
 REPORT_EMAIL = os.environ.get('REPORT_EMAIL', '')
@@ -286,20 +306,23 @@ async def send_daily_report(db, date: Optional[datetime] = None, force: bool = F
     report_date_str = date.strftime("%d/%m/%Y")
     
     logger.info(f"Gerando relatório diário para {report_date_str}")
-    
-    # Verificar configuração
-    if not RESEND_API_KEY:
+
+    # Verificar configuração (ambiente OU painel/BD)
+    rcfg = await resolve_resend_config(db)
+    if not rcfg["api_key"]:
         error_msg = "RESEND_API_KEY não configurada"
         logger.error(error_msg)
         await log_report_attempt(db, report_date_str, False, error_msg)
         return {"success": False, "error": error_msg}
-    
-    if not REPORT_EMAIL:
+
+    if not rcfg["report_email"]:
         error_msg = "REPORT_EMAIL não configurado"
         logger.error(error_msg)
         await log_report_attempt(db, report_date_str, False, error_msg)
         return {"success": False, "error": error_msg}
-    
+
+    resend.api_key = rcfg["api_key"]
+
     try:
         # Buscar pedidos do dia (atividade)
         orders = await get_daily_orders(db, date)
@@ -330,14 +353,14 @@ async def send_daily_report(db, date: Optional[datetime] = None, force: bool = F
         subject = f"Relatorio Diario - {report_date_str}"
         
         params = {
-            "from": REPORT_SENDER_EMAIL,
-            "to": [REPORT_EMAIL],
+            "from": rcfg["sender_email"],
+            "to": [rcfg["report_email"]],
             "subject": subject,
             "html": html_content
         }
         
         # Enviar email de forma assíncrona (não bloqueante)
-        logger.info(f"Enviando relatório para {REPORT_EMAIL}")
+        logger.info(f"Enviando relatório para {rcfg['report_email']}")
         email_result = await asyncio.to_thread(resend.Emails.send, params)
         
         email_id = email_result.get("id") if isinstance(email_result, dict) else str(email_result)

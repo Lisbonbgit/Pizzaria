@@ -99,7 +99,8 @@ async def lifespan(app: FastAPI):
     try:
         config = await db.settings.find_one({"key": "scheduler_config"}, {"_id": 0})
         if config and config.get("value", {}).get("enabled"):
-            if RESEND_API_KEY and REPORT_EMAIL:
+            rcfg = await resolve_resend_config(db)
+            if rcfg["api_key"] and rcfg["report_email"]:
                 SCHEDULER_ENABLED = True
                 scheduler.add_job(
                     run_scheduled_report,
@@ -111,7 +112,7 @@ async def lifespan(app: FastAPI):
                 scheduler.start()
                 logger.info("Scheduler de relatórios diários iniciado automaticamente")
             else:
-                logger.warning("Scheduler configurado mas RESEND_API_KEY ou REPORT_EMAIL não definidos")
+                logger.warning("Scheduler configurado mas falta a chave do Resend ou o email de destino")
     except Exception as e:
         logger.error(f"Não foi possível carregar a config do scheduler no arranque: {e}")
 
@@ -2832,10 +2833,15 @@ async def seed_database(authorization: Optional[str] = Header(None)):
 
 # ==================== REPORT DATA & EMAIL ROUTES ====================
 
-from scheduler import send_daily_report, RESEND_API_KEY, REPORT_EMAIL
+from scheduler import send_daily_report, resolve_resend_config, RESEND_API_KEY, REPORT_EMAIL
 
 class SendReportRequest(BaseModel):
     date: Optional[str] = None  # ISO date string e.g. "2025-07-04"
+
+class ResendConfigRequest(BaseModel):
+    api_key: Optional[str] = None      # chave do Resend (re_...); vazio = manter a atual
+    report_email: Optional[str] = None # destinatário do relatório
+    sender_email: Optional[str] = None # remetente (default onboarding@resend.dev)
 
 @api_router.get("/admin/report-data")
 async def get_report_data(date: Optional[str] = None, authorization: Optional[str] = Header(None)):
@@ -3058,15 +3064,47 @@ async def test_daily_report(authorization: Optional[str] = Header(None)):
 
 @api_router.get("/admin/report-config")
 async def get_report_config(authorization: Optional[str] = Header(None)):
-    """Retorna a configuração atual do sistema de relatórios"""
+    """Retorna a configuração atual do sistema de relatórios (ambiente ou BD)"""
     await get_current_user(authorization)
-    
+    rcfg = await resolve_resend_config(db)
     return {
-        "resend_configured": bool(RESEND_API_KEY),
-        "report_email": REPORT_EMAIL or "Não configurado",
+        "resend_configured": bool(rcfg["api_key"]),
+        "report_email": rcfg["report_email"] or "",
+        "sender_email": rcfg["sender_email"],
+        "source": "env" if RESEND_API_KEY else ("db" if rcfg["api_key"] else "none"),
         "scheduler_enabled": SCHEDULER_ENABLED,
         "timezone": "Europe/Lisbon",
         "schedule_time": "23:30"
+    }
+
+@api_router.post("/admin/resend-config")
+async def save_resend_config(request: ResendConfigRequest, authorization: Optional[str] = Header(None)):
+    """Guarda a config do Resend na BD (para configurar sem mexer no .env do
+    servidor). A chave só é gravada se vier preenchida; senão mantém a atual."""
+    await get_current_user(authorization)
+
+    doc = await db.settings.find_one({"key": "resend_config"}, {"_id": 0})
+    current = (doc or {}).get("value", {}) or {}
+
+    new_key = (request.api_key or "").strip()
+    value = {
+        "api_key": new_key or current.get("api_key", ""),
+        "report_email": (request.report_email or current.get("report_email", "")).strip(),
+        "sender_email": (request.sender_email or current.get("sender_email", "")).strip(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.settings.update_one(
+        {"key": "resend_config"},
+        {"$set": {"key": "resend_config", "value": value}},
+        upsert=True,
+    )
+
+    rcfg = await resolve_resend_config(db)
+    return {
+        "message": "Configuração guardada",
+        "resend_configured": bool(rcfg["api_key"]),
+        "report_email": rcfg["report_email"],
+        "sender_email": rcfg["sender_email"],
     }
 
 @api_router.post("/admin/scheduler/enable")
@@ -3074,11 +3112,12 @@ async def enable_scheduler(authorization: Optional[str] = Header(None)):
     """Ativa o scheduler de relatórios diários"""
     global SCHEDULER_ENABLED
     await get_current_user(authorization)
-    
-    if not RESEND_API_KEY or not REPORT_EMAIL:
+
+    rcfg = await resolve_resend_config(db)
+    if not rcfg["api_key"] or not rcfg["report_email"]:
         raise HTTPException(
             status_code=400,
-            detail="Configure RESEND_API_KEY e REPORT_EMAIL antes de ativar o scheduler"
+            detail="Configure a chave do Resend e o email de destino antes de ativar o envio automático"
         )
     
     SCHEDULER_ENABLED = True

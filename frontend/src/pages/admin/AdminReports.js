@@ -22,6 +22,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import AdminLayout from '@/components/AdminLayout';
 import { reportsAPI } from '@/lib/api';
@@ -56,6 +57,8 @@ const AdminReports = () => {
   const [schedStatus, setSchedStatus] = useState(null);
   const [busySched, setBusySched] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [cfgForm, setCfgForm] = useState({ api_key: '', report_email: '', sender_email: '' });
+  const [savingCfg, setSavingCfg] = useState(false);
   const [selectedDate, setSelectedDate] = useState(() => {
     const now = new Date();
     return now.toISOString().split('T')[0];
@@ -66,8 +69,28 @@ const AdminReports = () => {
       const [c, s] = await Promise.all([reportsAPI.getConfig(), reportsAPI.schedulerStatus()]);
       setSchedCfg(c.data);
       setSchedStatus(s.data);
+      setCfgForm((f) => ({
+        ...f,
+        report_email: f.report_email || c.data.report_email || '',
+        sender_email: f.sender_email || c.data.sender_email || '',
+      }));
     } catch { /* ignore */ }
   }, []);
+
+  const saveCfg = async () => {
+    if (!cfgForm.report_email) { toast.error('Indica o email de destino'); return; }
+    setSavingCfg(true);
+    try {
+      await reportsAPI.saveResendConfig(cfgForm);
+      toast.success('Configuração guardada');
+      setCfgForm((f) => ({ ...f, api_key: '' }));
+      loadScheduler();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao guardar a configuração');
+    } finally {
+      setSavingCfg(false);
+    }
+  };
 
   const toggleScheduler = async (enable) => {
     setBusySched(true);
@@ -208,6 +231,54 @@ const AdminReports = () => {
         </Button>
       </div>
 
+      {/* Configurar email do relatório (Resend) */}
+      <Card className="mb-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Mail className="h-4 w-4" /> Configurar email do relatório (Resend)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Chave do Resend (API key)</label>
+              <Input
+                type="password"
+                autoComplete="off"
+                placeholder={schedCfg?.resend_configured ? '•••••• (já guardada — preenche só para trocar)' : 're_...'}
+                value={cfgForm.api_key}
+                onChange={(e) => setCfgForm({ ...cfgForm, api_key: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Email de destino (quem recebe)</label>
+              <Input
+                type="email"
+                placeholder="ex.: dono@lenhaebrasa.com"
+                value={cfgForm.report_email}
+                onChange={(e) => setCfgForm({ ...cfgForm, report_email: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1 sm:col-span-2">
+              <label className="text-xs font-medium text-muted-foreground">Remetente (opcional)</label>
+              <Input
+                type="email"
+                placeholder="onboarding@resend.dev"
+                value={cfgForm.sender_email}
+                onChange={(e) => setCfgForm({ ...cfgForm, sender_email: e.target.value })}
+              />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            A chave é a API key do Resend (começa por <code>re_</code>). Se deixares o remetente vazio, usa <code>onboarding@resend.dev</code>, que só entrega no email da própria conta Resend — para enviar para outro email, verifica um domínio no Resend e usa um remetente desse domínio.
+          </p>
+          <Button onClick={saveCfg} disabled={savingCfg}>
+            {savingCfg ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-2" />}
+            Guardar configuração
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Envio automático diário */}
       <Card className="mb-6">
         <CardHeader className="pb-3">
@@ -236,7 +307,7 @@ const AdminReports = () => {
           </div>
           {!schedCfg?.resend_configured && (
             <p className="text-xs text-muted-foreground">
-              Falta configurar a chave da Resend (RESEND_API_KEY) e o remetente no servidor. Depois disto, liga o automático aqui.
+              Primeiro preenche a chave da Resend e o email de destino no cartão acima e clica em Guardar. Depois liga o automático aqui.
             </p>
           )}
           <div className="flex flex-wrap gap-2">

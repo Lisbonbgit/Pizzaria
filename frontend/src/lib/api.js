@@ -143,6 +143,8 @@ export const reportsAPI = {
     api.post('/admin/send-daily-report', { date }),
   getConfig: () =>
     api.get('/admin/report-config'),
+  saveResendConfig: (data) =>
+    api.post('/admin/resend-config', data),
   schedulerStatus: () =>
     api.get('/admin/scheduler/status'),
   schedulerEnable: () =>

@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import bcrypt
 import jwt
@@ -24,6 +24,7 @@ import secrets
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from vendus import VendusConfig, VendusClient, VendusError
+from pos.auth import hash_token, verify_token
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -414,6 +415,25 @@ class PosUserResponse(BaseModel):
     name: str
     active: bool
     created_at: str
+
+# ==================== POS DEVICE TOKEN MODELS ====================
+# Tokens de dispositivo (terminais POS) — servem para o auth-duplo dos
+# terminais (tarefa futura). Só existe o hash (bcrypt, via pos/auth.py) em
+# `pos_devices.token_hash`; o token em claro é devolvido UMA ÚNICA VEZ,
+# na resposta da criação, e nunca mais é recuperável depois disso.
+
+class PosDeviceTokenCreate(BaseModel):
+    label: str
+    days: Optional[int] = None
+
+class PosDeviceTokenResponse(BaseModel):
+    """Única resposta que inclui o token em claro — não usar noutro sítio."""
+    id: str
+    label: str
+    active: bool
+    created_at: str
+    expires_at: str
+    token: str
 
 # ==================== AUTH HELPERS ====================
 
@@ -2640,6 +2660,51 @@ async def delete_pos_user(user_id: str, authorization: Optional[str] = Header(No
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Utilizador POS não encontrado")
     return {"message": "Utilizador POS eliminado"}
+
+# ==================== POS: DISPOSITIVOS (pos_devices) ====================
+# Tokens de dispositivo para os terminais POS (auth-duplo, tarefa futura).
+# O token em claro (secrets.token_urlsafe) só existe no momento da criação —
+# a partir daí só fica o hash (bcrypt, hash_token/verify_token de pos/auth.py).
+
+@api_router.post("/admin/pos/device-token", response_model=PosDeviceTokenResponse)
+async def create_pos_device_token(payload: PosDeviceTokenCreate, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+
+    days = payload.days or 90
+    raw_token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    device_doc = {
+        "id": str(uuid.uuid4()),
+        "token_hash": hash_token(raw_token),
+        "label": payload.label,
+        "active": True,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=days)).isoformat(),
+    }
+    await db.pos_devices.insert_one(device_doc)
+    return PosDeviceTokenResponse(**device_doc, token=raw_token)
+
+@api_router.post("/admin/pos/device-token/{device_id}/revoke")
+async def revoke_pos_device_token(device_id: str, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+
+    result = await db.pos_devices.update_one({"id": device_id}, {"$set": {"active": False}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Dispositivo POS não encontrado")
+    return {"message": "Token de dispositivo revogado"}
+
+async def valid_device_token(raw: str) -> bool:
+    """Testa um token de dispositivo em claro contra os `pos_devices` ativos
+    e não expirados. Usado pelo auth-duplo dos terminais POS (tarefa futura)."""
+    now = datetime.now(timezone.utc)
+    devices = await db.pos_devices.find({"active": True}, {"_id": 0}).to_list(1000)
+    for device in devices:
+        expires_at = datetime.fromisoformat(device["expires_at"])
+        if expires_at <= now:
+            continue
+        if verify_token(raw, device["token_hash"]):
+            return True
+    return False
 
 # ==================== DASHBOARD ROUTES ====================
 

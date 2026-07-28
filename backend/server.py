@@ -6,6 +6,7 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import re
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Dict, Any
@@ -394,6 +395,26 @@ class DashboardStats(BaseModel):
     orders_by_status: Dict[str, int]
     orders_by_table: List[dict]
 
+# ==================== POS USER MODELS ====================
+# Utilizadores do POS/Caixa (staff que opera o balcão) — autenticam por PIN,
+# não confundir com AdminUser (login por email/password do painel de admin).
+
+class PosUserCreate(BaseModel):
+    name: str
+    pin: str
+
+class PosUserUpdate(BaseModel):
+    name: Optional[str] = None
+    pin: Optional[str] = None
+    active: Optional[bool] = None
+
+class PosUserResponse(BaseModel):
+    """Nunca inclui `pin_hash` — o PIN nunca é devolvido pela API."""
+    id: str
+    name: str
+    active: bool
+    created_at: str
+
 # ==================== AUTH HELPERS ====================
 
 def hash_password(password: str) -> str:
@@ -401,6 +422,10 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def valid_pin(pin: str) -> bool:
+    """PIN dos utilizadores POS: exatamente 4 dígitos numéricos."""
+    return bool(re.fullmatch(r"\d{4}", pin or ""))
 
 def create_token(user_id: str, email: str) -> str:
     payload = {
@@ -2555,6 +2580,66 @@ async def get_rodizio_public():
         "waste_fee": fee,
         "waste_note": f"As sobras podem ter uma taxa de {fee:.0f} € por box.",
     }
+
+# ==================== POS: UTILIZADORES (pos_users) ====================
+# CRUD de utilizadores do POS/Caixa, geridos pelo admin. O PIN nunca é guardado
+# nem devolvido em claro — só o hash (bcrypt, via hash_password/verify_password
+# já existentes para o login de admin).
+
+@api_router.post("/admin/pos/users", response_model=PosUserResponse)
+async def create_pos_user(user: PosUserCreate, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+
+    if not valid_pin(user.pin):
+        raise HTTPException(status_code=400, detail="PIN deve ter exatamente 4 dígitos")
+
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "id": user_id,
+        "name": user.name,
+        "pin_hash": hash_password(user.pin),
+        "active": True,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.pos_users.insert_one(user_doc)
+    return PosUserResponse(**user_doc)
+
+@api_router.get("/admin/pos/users", response_model=List[PosUserResponse])
+async def list_pos_users(authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+
+    users = await db.pos_users.find({}, {"_id": 0}).sort("created_at", 1).to_list(200)
+    return [PosUserResponse(**u) for u in users]
+
+@api_router.put("/admin/pos/users/{user_id}", response_model=PosUserResponse)
+async def update_pos_user(user_id: str, update: PosUserUpdate, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+
+    update_data = {k: v for k, v in update.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+
+    if "pin" in update_data:
+        pin = update_data.pop("pin")
+        if not valid_pin(pin):
+            raise HTTPException(status_code=400, detail="PIN deve ter exatamente 4 dígitos")
+        update_data["pin_hash"] = hash_password(pin)
+
+    result = await db.pos_users.update_one({"id": user_id}, {"$set": update_data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Utilizador POS não encontrado")
+
+    pos_user = await db.pos_users.find_one({"id": user_id}, {"_id": 0})
+    return PosUserResponse(**pos_user)
+
+@api_router.delete("/admin/pos/users/{user_id}")
+async def delete_pos_user(user_id: str, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+
+    result = await db.pos_users.delete_one({"id": user_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Utilizador POS não encontrado")
+    return {"message": "Utilizador POS eliminado"}
 
 # ==================== DASHBOARD ROUTES ====================
 

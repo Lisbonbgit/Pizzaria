@@ -11,6 +11,7 @@ import OrderConfirmation from "@/pages/OrderConfirmation";
 import AdminLogin from "@/pages/admin/AdminLogin";
 import AdminDashboard from "@/pages/admin/AdminDashboard";
 import AdminOrders from "@/pages/admin/AdminOrders";
+import AdminPos from "@/pages/admin/AdminPos";
 import AdminMenu from "@/pages/admin/AdminMenu";
 import AdminTables from "@/pages/admin/AdminTables";
 import AdminSettings from "@/pages/admin/AdminSettings";
@@ -57,6 +58,7 @@ function App() {
             <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
             <Route path="/admin/orders" element={<ProtectedRoute><AdminOrders /></ProtectedRoute>} />
+            <Route path="/admin/pos" element={<ProtectedRoute><AdminPos /></ProtectedRoute>} />
             <Route path="/admin/menu" element={<ProtectedRoute><AdminMenu /></ProtectedRoute>} />
             <Route path="/admin/tables" element={<ProtectedRoute><AdminTables /></ProtectedRoute>} />
             <Route path="/admin/printers" element={<ProtectedRoute><AdminPrinters /></ProtectedRoute>} />

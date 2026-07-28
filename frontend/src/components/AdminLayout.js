@@ -18,7 +18,7 @@ import { useAuth } from '@/context/AuthContext';
 
 const navItems = [
   { path: '/admin', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/admin/orders', label: 'Pedidos', icon: ClipboardList },
+  { path: '/admin/pos', label: 'POS', icon: ClipboardList },
   { path: '/admin/menu', label: 'Menu', icon: UtensilsCrossed },
   { path: '/admin/tables', label: 'Mesas', icon: Grid3X3 },
   { path: '/admin/reports', label: 'Relatórios', icon: BarChart3 },

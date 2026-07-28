@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import PosLogin from '@/pages/pos/PosLogin';
 import PosAbrirCaixa from '@/pages/pos/PosAbrirCaixa';
 import PosHome from '@/pages/pos/PosHome';
+import PosFecharCaixa from '@/pages/pos/PosFecharCaixa';
 import { posAPI } from '@/lib/api';
 
 // Shell da janela do POS (`/pos`, fora do ProtectedRoute admin).
@@ -20,16 +21,23 @@ const PosApp = () => {
   const [session, setSession] = useState(undefined);
   const [caixaLoading, setCaixaLoading] = useState(false);
   const [caixaError, setCaixaError] = useState(false);
+  // Controla o fluxo "Fechar Caixa" (Task 7) — ecrã cheio, substitui a Home
+  // enquanto ativo.
+  const [showFecharCaixa, setShowFecharCaixa] = useState(false);
 
   const deviceToken = localStorage.getItem('pos_device_token');
   const posToken = localStorage.getItem('pos_token');
 
   // Limpa a sessão POS (PIN) sem tocar na autorização do dispositivo.
+  // Também repõe `showFecharCaixa`: sem isto, um novo login (depois de
+  // terminar um fecho de caixa) podia reabrir o ecrã do Z assim que a
+  // próxima caixa fosse aberta (o valor antigo `true` ficava pendurado).
   const logout = useCallback(() => {
     localStorage.removeItem('pos_token');
     setUser(null);
     setSession(undefined);
     setCaixaError(false);
+    setShowFecharCaixa(false);
   }, []);
 
   // Re-resolve a sessão de caixa atual. Chamado no arranque (após login) e
@@ -109,14 +117,31 @@ const PosApp = () => {
     return <PosAbrirCaixa operator={user} onAberta={refreshCaixa} />;
   }
 
+  // Fluxo "Fechar Caixa" (Task 7) — substitui a Home enquanto ativo.
+  // `onClosed` é chamado a partir do ecrã do Z ("Terminar"): reresolve o
+  // estado da caixa (fica fechada) e faz logout — a próxima pessoa a usar o
+  // POS faz login por PIN de novo (o `logout` acima já repõe
+  // `showFecharCaixa`, por isso não é preciso fazê-lo aqui).
+  if (showFecharCaixa) {
+    return (
+      <PosFecharCaixa
+        operator={user}
+        onCancel={() => setShowFecharCaixa(false)}
+        onClosed={async () => {
+          await refreshCaixa();
+          logout();
+        }}
+      />
+    );
+  }
+
   // Caixa aberta — Home real do POS (Task 5), com o checkout de mesa (Task 6,
   // `TableCheckout` partilhado com o admin via `posCheckout`) já ligado.
-  // `onFecharCaixa` continua placeholder — o fecho de caixa é a Task 7.
   return (
     <PosHome
       session={session}
       operator={user}
-      onFecharCaixa={() => toast.info('Fecho de caixa na próxima tarefa')}
+      onFecharCaixa={() => setShowFecharCaixa(true)}
       refreshCaixa={refreshCaixa}
       onLogout={logout}
     />

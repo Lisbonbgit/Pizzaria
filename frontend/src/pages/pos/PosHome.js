@@ -1,8 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Loader2, LogOut, RefreshCw, Store, Users, Wallet } from 'lucide-react';
+import { Banknote, Loader2, LogOut, RefreshCw, Store, Users, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
-import { posCheckout } from '@/lib/api';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import { posAPI, posCheckout } from '@/lib/api';
 import TableCheckout from '@/pages/checkout/TableCheckout';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
@@ -31,20 +36,28 @@ const formatHora = (iso) => {
 // para o ecrã cheio maroon do POS (tablet): mesa ocupada = cartão branco em
 // destaque; mesa livre = contorno subtil sobre o fundo maroon.
 //
-// `onFecharCaixa` é, nesta tarefa, um placeholder passado pelo PosApp (o
-// fecho de caixa real é a Task 7) — aqui limitamo-nos a chamar o prop ao
-// clicar. `refreshCaixa` fica disponível (não é chamado por este
-// componente) para a Task 7 voltar a resolver o estado da caixa depois do
-// fecho de verdade.
+// `onFecharCaixa` abre o fluxo cheio de fecho de caixa (Task 7,
+// `PosFecharCaixa`, montado pelo PosApp por cima desta Home). `refreshCaixa`
+// fica disponível (não é chamado por este componente) para esse fluxo voltar
+// a resolver o estado da caixa depois do fecho de verdade.
 //
 // O checkout de mesa (Task 6) é o `TableCheckout` partilhado com o admin —
 // aqui é aberto com `api={posCheckout}` para que o fecho vá pelo device+PIN
 // token (não o JWT admin) e o backend ligue a venda à sessão de caixa.
+//
+// Sangria/Reforço (Task 7, opcional): dialog simples (tipo + valor + motivo)
+// sobre `posAPI.cashMovement` — não altera a grelha de mesas, por isso não
+// mexe em `tables`/`load`.
 const PosHome = ({ session, operator, onFecharCaixa, refreshCaixa, onLogout }) => {
   const [tables, setTables] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedTableNum, setSelectedTableNum] = useState(null);
+  const [movDialogOpen, setMovDialogOpen] = useState(false);
+  const [movType, setMovType] = useState('sangria');
+  const [movValor, setMovValor] = useState('');
+  const [movMotivo, setMovMotivo] = useState('');
+  const [movSubmitting, setMovSubmitting] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true);
@@ -65,6 +78,32 @@ const PosHome = ({ session, operator, onFecharCaixa, refreshCaixa, onLogout }) =
     const id = setInterval(() => load(true), REFRESH_MS);
     return () => clearInterval(id);
   }, [load]);
+
+  const abrirMovDialog = useCallback(() => {
+    setMovType('sangria');
+    setMovValor('');
+    setMovMotivo('');
+    setMovDialogOpen(true);
+  }, []);
+
+  const registarMovimento = useCallback(async () => {
+    const valor = Number(movValor);
+    if (Number.isNaN(valor) || valor <= 0) {
+      toast.error('Indique um montante válido');
+      return;
+    }
+    setMovSubmitting(true);
+    try {
+      await posAPI.cashMovement(movType, valor, movMotivo.trim() || undefined);
+      toast.success(movType === 'reforco' ? 'Reforço registado' : 'Sangria registada');
+      setMovDialogOpen(false);
+    } catch (err) {
+      console.error('Erro ao registar movimento de caixa:', err);
+      toast.error(err.response?.data?.detail || 'Não foi possível registar o movimento');
+    } finally {
+      setMovSubmitting(false);
+    }
+  }, [movType, movValor, movMotivo]);
 
   const occupiedCount = tables.filter((t) => t.occupied).length;
   const selectedTable = tables.find((t) => t.number === selectedTableNum) || null;
@@ -93,6 +132,14 @@ const PosHome = ({ session, operator, onFecharCaixa, refreshCaixa, onLogout }) =
           >
             <RefreshCw className={`h-4 w-4 sm:mr-1.5 ${refreshing ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">Atualizar</span>
+          </Button>
+          <Button
+            variant="outline"
+            onClick={abrirMovDialog}
+            className="h-11 border-white/30 bg-transparent px-3 text-white hover:bg-white/10 hover:text-white"
+          >
+            <Banknote className="h-4 w-4 sm:mr-1.5" />
+            <span className="hidden sm:inline">Sangria/Reforço</span>
           </Button>
           <Button
             onClick={onFecharCaixa}
@@ -226,6 +273,72 @@ const PosHome = ({ session, operator, onFecharCaixa, refreshCaixa, onLogout }) =
         onClose={() => setSelectedTableNum(null)}
         onChanged={() => load(true)}
       />
+
+      {/* Sangria/Reforço (Task 7, opcional) — dialog simples sobre posAPI.cashMovement. */}
+      <Dialog open={movDialogOpen} onOpenChange={(open) => !movSubmitting && setMovDialogOpen(open)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Movimento de Caixa</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={movType === 'sangria' ? 'default' : 'outline'}
+                onClick={() => setMovType('sangria')}
+                disabled={movSubmitting}
+                className="flex-1"
+              >
+                Sangria
+              </Button>
+              <Button
+                type="button"
+                variant={movType === 'reforco' ? 'default' : 'outline'}
+                onClick={() => setMovType('reforco')}
+                disabled={movSubmitting}
+                className="flex-1"
+              >
+                Reforço
+              </Button>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mov-valor">Valor</Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">€</span>
+                <Input
+                  id="mov-valor"
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step="0.01"
+                  value={movValor}
+                  onChange={(e) => setMovValor(e.target.value)}
+                  disabled={movSubmitting}
+                  className="pl-7"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="mov-motivo">Motivo (opcional)</Label>
+              <Input
+                id="mov-motivo"
+                value={movMotivo}
+                onChange={(e) => setMovMotivo(e.target.value)}
+                disabled={movSubmitting}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMovDialogOpen(false)} disabled={movSubmitting}>
+              Cancelar
+            </Button>
+            <Button onClick={registarMovimento} disabled={movSubmitting}>
+              {movSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -20,7 +20,8 @@ const PosLogin = ({ onLogin }) => {
       const res = await posAPI.login(candidatePin);
       localStorage.setItem('pos_token', res.data.token);
       onLogin(res.data.user);
-      setPin('');
+      // Sem setPin('') aqui: em sucesso o PosApp deixa de renderizar este
+      // ecrã (passa a ter posToken+user), por isso não há estado local para limpar.
     } catch (err) {
       console.error('Erro no login do POS:', err);
       toast.error('PIN inválido');

@@ -37,6 +37,29 @@ api.interceptors.response.use(
   }
 );
 
+// Instância de axios separada para o POS (janela do POS/Caixa).
+// Autentica com device token + token POS (PIN), NUNCA com o JWT do admin.
+export const posApi = axios.create({
+  baseURL: API_BASE,
+  headers: {
+    'Content-Type': 'application/json'
+  }
+});
+
+// Interceptor do POS: adiciona X-Device-Token e X-POS-Token quando existirem.
+// Propositadamente NÃO adiciona Authorization (essa é a instância `api`, do admin).
+posApi.interceptors.request.use((config) => {
+  const deviceToken = localStorage.getItem('pos_device_token');
+  const posToken = localStorage.getItem('pos_token');
+  if (deviceToken) {
+    config.headers['X-Device-Token'] = deviceToken;
+  }
+  if (posToken) {
+    config.headers['X-POS-Token'] = posToken;
+  }
+  return config;
+});
+
 // Auth API
 export const authAPI = {
   login: (email, password) => 
@@ -213,6 +236,60 @@ export const checkoutAPI = {
     api.post(`/orders/${orderId}/items/${idx}/void`),
   setItemDiscount: (orderId, idx, pct) =>
     api.post(`/orders/${orderId}/items/${idx}/discount`, { pct })
+};
+
+// POS - Autenticação e Caixa (via posApi: device + token PIN, sem Authorization)
+export const posAPI = {
+  login: (pin) =>
+    posApi.post('/pos/login', { pin }),
+  cashCurrent: () =>
+    posApi.get('/pos/cash/current'),
+  cashOpen: (opening_amount) =>
+    posApi.post('/pos/cash/open', { opening_amount }),
+  cashMovement: (type, amount, reason) =>
+    posApi.post('/pos/cash/movement', { type, amount, reason }),
+  cashClose: (counted_amount) =>
+    posApi.post('/pos/cash/close', { counted_amount }),
+  cashZ: (id) =>
+    posApi.get(`/pos/cash/${id}/z`)
+};
+
+// POS - Checkout / mesas (mesmos caminhos do checkoutAPI/tablesAPI admin, mas via posApi)
+export const posCheckout = {
+  overview: () =>
+    posApi.get('/tables-overview'),
+  paymentMethods: () =>
+    posApi.get('/vendus/payment-methods'),
+  getBill: (tableNumber) =>
+    posApi.get(`/tables/${tableNumber}/bill`),
+  closeTable: (tableNumber, data) =>
+    posApi.post(`/tables/${tableNumber}/close`, data),
+  setItemDiscount: (orderId, idx, pct) =>
+    posApi.post(`/orders/${orderId}/items/${idx}/discount`, { pct }),
+  removeItem: (orderId, idx) =>
+    posApi.post(`/orders/${orderId}/items/${idx}/void`),
+  printConsulta: (tableNumber) =>
+    posApi.post(`/tables/${tableNumber}/print-consulta`),
+  freeTable: (tableNumber) =>
+    posApi.post(`/tables/${tableNumber}/free`)
+};
+
+// Admin - Gestão do POS (utilizadores, definições, device tokens) via api (JWT admin)
+export const adminPosAPI = {
+  listUsers: () =>
+    api.get('/admin/pos/users'),
+  createUser: (data) =>
+    api.post('/admin/pos/users', data),
+  updateUser: (id, data) =>
+    api.put(`/admin/pos/users/${id}`, data),
+  deleteUser: (id) =>
+    api.delete(`/admin/pos/users/${id}`),
+  getSettings: () =>
+    api.get('/admin/pos/settings'),
+  saveSettings: (data) =>
+    api.put('/admin/pos/settings', data),
+  createDeviceToken: (label, days = null) =>
+    api.post('/admin/pos/device-token', days ? { label, days } : { label })
 };
 
 export default api;

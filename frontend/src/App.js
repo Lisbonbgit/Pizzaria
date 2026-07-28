@@ -7,6 +7,9 @@ import { Toaster } from "@/components/ui/sonner";
 import MenuPage from "@/pages/MenuPage";
 import OrderConfirmation from "@/pages/OrderConfirmation";
 
+// POS pages (janela própria, fora do admin — guard é device token + PIN)
+import PosApp from "@/pages/pos/PosApp";
+
 // Admin pages
 import AdminLogin from "@/pages/admin/AdminLogin";
 import AdminDashboard from "@/pages/admin/AdminDashboard";
@@ -53,7 +56,10 @@ function App() {
             <Route path="/" element={<MenuPage />} />
             <Route path="/pedir" element={<PedirRedirect />} />
             <Route path="/pedido/:orderId" element={<OrderConfirmation />} />
-            
+
+            {/* POS Routes — SEM ProtectedRoute: o guard é o device token + PIN, não o JWT admin */}
+            <Route path="/pos" element={<PosApp />} />
+
             {/* Admin Routes */}
             <Route path="/admin/login" element={<AdminLogin />} />
             <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />

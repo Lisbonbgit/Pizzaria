@@ -2873,6 +2873,52 @@ async def get_current_cash_session(operador: dict = Depends(get_pos_operator)):
     """Devolve a sessão de caixa aberta atual, ou `null` se a caixa estiver fechada."""
     return await db.cash_sessions.find_one({"status": "open"}, {"_id": 0})
 
+
+class CashMovementRequest(BaseModel):
+    type: str
+    amount: float
+    reason: Optional[str] = None
+
+
+@api_router.post("/pos/cash/movement")
+async def add_cash_movement(
+    body: CashMovementRequest,
+    operador: dict = Depends(get_pos_operator),
+):
+    """Regista uma sangria ou reforço na sessão de caixa ABERTA.
+
+    O operador (`by`) vem SEMPRE do token POS (`get_pos_operator`), nunca do
+    corpo do pedido — mesma responsabilização não-falsificável do `open`
+    (§2.6). A sessão é resolvida aqui no servidor (a única aberta), nunca por
+    um id vindo do corpo; sem caixa aberta, 409."""
+    if body.type not in ("sangria", "reforco"):
+        raise HTTPException(status_code=400, detail="Tipo de movimento inválido")
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="Montante do movimento tem de ser positivo")
+
+    sessao = await db.cash_sessions.find_one({"status": "open"})
+    if not sessao:
+        raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
+    movimento = {
+        "type": body.type,
+        "amount": round(float(body.amount), 2),
+        "by": operador["id"],
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    if body.reason:
+        movimento["reason"] = body.reason
+
+    # Filtro repete "status": "open" (não só o id) — se a caixa fechar mesmo
+    # entre o find_one e este update, o movimento não fica preso a uma sessão
+    # já fechada.
+    resultado = await db.cash_sessions.update_one(
+        {"id": sessao["id"], "status": "open"}, {"$push": {"movements": movimento}}
+    )
+    if resultado.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+    return await db.cash_sessions.find_one({"id": sessao["id"]}, {"_id": 0})
+
 # ==================== POS: DEFINIÇÕES (pos_settings) ====================
 # Definições do POS/Caixa: exigir caixa aberta antes de faturar, o método de
 # pagamento "Dinheiro" do Vendus (o id escolhe-se em /vendus/payment-methods,

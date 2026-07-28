@@ -31,6 +31,7 @@ from pos.cash import pick_open_session
 from pos.sales import build_pos_sales_rows
 from pos.idempotency import stable_ext_ref
 from pos.cash_math import expected_cash, reconciliation_diff
+from pos.z_report import build_z_escpos
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -3148,7 +3149,7 @@ async def close_cash_session(
         raise HTTPException(status_code=409, detail="Caixa já fechada")
 
     # DADOS do Z (a Task 11 renderiza/imprime). Snapshot completo do fecho.
-    return {
+    z_data = {
         "restaurant": restaurant_name,
         "z_footer_text": pos_cfg.get("z_footer_text", ""),
         "session_id": sessao["id"],
@@ -3167,6 +3168,79 @@ async def close_cash_session(
         "difference": diferenca,
         "reconciliation": reconciliacao,
         "warnings": avisos,
+    }
+
+    # Imprime o talão Z na CAIXA — mesmo mecanismo (`print_jobs` +
+    # `escpos_direct_b64` + `printer_type="cashier"`) usado pelas faturas em
+    # `close_table`. O fecho já está COMMITADO acima (`find_one_and_update`);
+    # uma falha aqui é só registada — NUNCA transforma um fecho bem-sucedido
+    # num 500 (o operador ainda vê o Z no ecrã e pode reimprimir via
+    # `GET /pos/cash/{id}/z`).
+    try:
+        escpos_bytes = build_z_escpos(z_data)
+        await db.print_jobs.insert_one({
+            "id": str(uuid.uuid4()),
+            "order_id": None,
+            "escpos_direct_b64": base64.b64encode(escpos_bytes).decode("ascii"),
+            "printer_id": None,
+            "printer_name": "Caixa",
+            "printer_type": "cashier",
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.error(f"Falha a enfileirar impressão do Z (fecho já commitado, sessão {sessao['id']}): {e}")
+
+    return z_data
+
+
+@api_router.get("/pos/cash/{session_id}/z")
+async def get_cash_session_z(session_id: str, authorization: Optional[str] = Header(None),
+                              x_device_token: Optional[str] = Header(None)):
+    """Devolve os DADOS do Z de uma sessão de caixa FECHADA — para consulta no
+    ecrã ou reimpressão (o mesmo `build_z_escpos` do fecho). Reconstrói o
+    mesmo dict devolvido por `close_cash_session` a partir do documento
+    persistido: `vendus_total`/`vendus_count` NÃO são persistidos, por isso
+    são re-derivados de `totals_by_method` (soma dos `total`/`count` por
+    método). 404 se a sessão não existir; 409 se ainda estiver aberta (o Z só
+    existe depois do fecho)."""
+    await get_pos_or_admin(authorization, x_device_token)
+
+    sessao = await db.cash_sessions.find_one({"id": session_id}, {"_id": 0})
+    if not sessao:
+        raise HTTPException(status_code=404, detail="Sessão de caixa não encontrada")
+    if sessao.get("status") != "closed":
+        raise HTTPException(status_code=409, detail="Sessão de caixa ainda está aberta — o Z só existe após o fecho")
+
+    rest = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
+    restaurant_name = ((rest or {}).get("value") or {}).get("name", "Pizzaria")
+    pos_cfg = await _pos_settings_config()
+
+    totals_by_method = sessao.get("totals_by_method") or {}
+    vendus_total = round(sum(float(v.get("total", 0) or 0) for v in totals_by_method.values()), 2)
+    vendus_count = sum(int(v.get("count", 0) or 0) for v in totals_by_method.values())
+
+    return {
+        "restaurant": restaurant_name,
+        "z_footer_text": pos_cfg.get("z_footer_text", ""),
+        "session_id": sessao["id"],
+        "opened_by": sessao.get("opened_by_name") or sessao.get("opened_by"),
+        "opened_at": sessao.get("opened_at"),
+        "closed_by": sessao.get("closed_by_name") or sessao.get("closed_by"),
+        "closed_at": sessao.get("closed_at"),
+        "opening_amount": sessao.get("opening_amount", 0.0),
+        "movements": sessao.get("movements") or [],
+        "cash_sales": sessao.get("cash_sales", 0.0),
+        "totals_by_method": totals_by_method,
+        "vendus_total": vendus_total,
+        "vendus_count": vendus_count,
+        "expected_cash": sessao.get("expected_cash", 0.0),
+        "counted_amount": sessao.get("counted_amount", 0.0),
+        "difference": sessao.get("difference", 0.0),
+        "reconciliation": sessao.get("reconciliation") or {"ok": True, "orphans": [], "missing": [], "details": {}},
     }
 
 # ==================== POS: DEFINIÇÕES (pos_settings) ====================

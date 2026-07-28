@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import PosLogin from '@/pages/pos/PosLogin';
 import PosAbrirCaixa from '@/pages/pos/PosAbrirCaixa';
+import PosHome from '@/pages/pos/PosHome';
 import { posAPI } from '@/lib/api';
 
 // Shell da janela do POS (`/pos`, fora do ProtectedRoute admin).
@@ -11,8 +12,7 @@ import { posAPI } from '@/lib/api';
 //   1. Sem pos_device_token  -> dispositivo não autorizado (sem login).
 //   2. Sem pos_token/user    -> ecrã de login por PIN.
 //   3. Caso contrário        -> porta da caixa: resolve a sessão atual
-//      (posAPI.cashCurrent) e mostra Abrir Caixa ou a Home (placeholder;
-//      Task 5 substitui pelo componente real).
+//      (posAPI.cashCurrent) e mostra Abrir Caixa ou a Home (PosHome, Task 5).
 const PosApp = () => {
   const [user, setUser] = useState(null);
   // undefined = ainda por resolver (1ª chamada em curso); null = caixa
@@ -109,21 +109,18 @@ const PosApp = () => {
     return <PosAbrirCaixa operator={user} onAberta={refreshCaixa} />;
   }
 
-  // Caixa aberta — placeholder até a Task 5 trazer o <PosHome/> real.
-  // `session` fica guardado no estado para a Task 5 reutilizar.
+  // Caixa aberta — Home real do POS (Task 5). `onFecharCaixa` e `onOpenTable`
+  // são placeholders por agora: o fecho de caixa é a Task 7 e o checkout de
+  // mesa é a Task 6; aqui só avisamos com um toast.
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center gap-4 bg-[#5a1a1a] p-6 text-white">
-      <div className="text-xl font-semibold">Caixa aberta</div>
-      <p className="text-white/80">Operador: {user.name}</p>
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={logout}
-        className="mt-4 border-white/40 bg-transparent text-white hover:bg-white/10 hover:text-white"
-      >
-        Sair
-      </Button>
-    </div>
+    <PosHome
+      session={session}
+      operator={user}
+      onFecharCaixa={() => toast.info('Fecho de caixa na próxima tarefa')}
+      onOpenTable={() => toast.info('Checkout na próxima tarefa')}
+      refreshCaixa={refreshCaixa}
+      onLogout={logout}
+    />
   );
 };
 

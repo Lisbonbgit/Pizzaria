@@ -23,8 +23,10 @@ import base64
 import secrets
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from pymongo.errors import DuplicateKeyError
 from vendus import VendusConfig, VendusClient, VendusError
 from pos.auth import hash_token, verify_token, create_pos_token, decode_pos_token
+from pos.cash import pick_open_session
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -95,6 +97,18 @@ async def lifespan(app: FastAPI):
             )
         except Exception as e:
             logger.error(f"Não foi possível provisionar PRINT_AGENT_API_KEY: {e}")
+
+    # --- Índice único parcial da caixa (uma só sessão aberta de cada vez) ---
+    # Garante a unicidade atómica ao nível da BD (§4.1): duas aberturas em
+    # concorrência só conseguem UM insert_one bem-sucedido, a outra apanha
+    # DuplicateKeyError (tratado em open_cash_session). Falha aqui não deve
+    # impedir o arranque da API — fica registada e revista manualmente.
+    try:
+        await db.cash_sessions.create_index(
+            [("status", 1)], unique=True, partialFilterExpression={"status": "open"}
+        )
+    except Exception as e:
+        logger.error(f"Não foi possível criar o índice único de cash_sessions: {e}")
 
     # --- Scheduler do relatório diário ---
     # Protegido: uma falha/lentidão da BD no arranque não deve impedir a API de servir.
@@ -2806,6 +2820,58 @@ async def get_pos_or_admin(
     if x_device_token and await valid_device_token(x_device_token):
         return {"kind": "pos"}
     raise HTTPException(status_code=401, detail="Autenticação necessária (admin ou dispositivo POS)")
+
+# ==================== POS: CAIXA (cash_sessions) ====================
+# Sessão de caixa (spec §4.1). Esta tarefa (Task 6) implementa só a ABERTURA
+# e a consulta da sessão atual; movimentos (Task 8) e fecho/reconciliação
+# (Task 10) chegam depois. Unicidade atómica de "uma só caixa aberta":
+# índice único parcial em {status:"open"} (criado no arranque, ver lifespan)
+# + tratamento de DuplicateKeyError no insert — a abertura é idempotente,
+# nunca cria uma segunda sessão aberta (pick_open_session em pos/cash.py).
+
+
+class CashOpenRequest(BaseModel):
+    opening_amount: float = 0
+
+
+@api_router.post("/pos/cash/open")
+async def open_cash_session(
+    body: CashOpenRequest,
+    operador: dict = Depends(get_pos_operator),
+):
+    """Abre a caixa. O operador vem SEMPRE do token POS (`get_pos_operator`),
+    nunca do corpo do pedido — responsabilização não-falsificável (§2.6).
+
+    Idempotente: se já existir uma sessão aberta, esta chamada devolve-a em
+    vez de criar uma segunda (o índice único parcial garante que só um
+    `insert_one` concorrente pode ter sucesso; os restantes apanham
+    `DuplicateKeyError` e vão buscar a sessão já aberta)."""
+    if body.opening_amount < 0:
+        raise HTTPException(status_code=400, detail="Montante de abertura não pode ser negativo")
+
+    nova_sessao = {
+        "id": str(uuid.uuid4()),
+        "status": "open",
+        "opened_by": operador["id"],
+        "opened_by_name": operador["name"],
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "opening_amount": round(float(body.opening_amount), 2),
+        "movements": [],
+    }
+    try:
+        # Copia para o insert: o motor acrescenta "_id" ao dict passado, e
+        # queremos devolver `nova_sessao` limpo (sem _id) quando não há conflito.
+        await db.cash_sessions.insert_one(dict(nova_sessao))
+        return nova_sessao
+    except DuplicateKeyError:
+        existente = await db.cash_sessions.find_one({"status": "open"}, {"_id": 0})
+        return pick_open_session(existente, nova_sessao)
+
+
+@api_router.get("/pos/cash/current")
+async def get_current_cash_session(operador: dict = Depends(get_pos_operator)):
+    """Devolve a sessão de caixa aberta atual, ou `null` se a caixa estiver fechada."""
+    return await db.cash_sessions.find_one({"status": "open"}, {"_id": 0})
 
 # ==================== POS: DEFINIÇÕES (pos_settings) ====================
 # Definições do POS/Caixa: exigir caixa aberta antes de faturar, o método de

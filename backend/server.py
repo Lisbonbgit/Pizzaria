@@ -2807,6 +2807,48 @@ async def get_pos_or_admin(
         return {"kind": "pos"}
     raise HTTPException(status_code=401, detail="Autenticação necessária (admin ou dispositivo POS)")
 
+# ==================== POS: DEFINIÇÕES (pos_settings) ====================
+# Definições do POS/Caixa: exigir caixa aberta antes de faturar, o método de
+# pagamento "Dinheiro" do Vendus (o id escolhe-se em /vendus/payment-methods,
+# tarefa à parte) e o texto de rodapé impresso no fecho (Z). Guardado em
+# db.settings sob a chave "pos" — mesmo padrão do "rodizio"/"restaurant".
+
+POS_SETTINGS_DEFAULT = {
+    "require_open_cash": True,
+    "cash_payment_method_id": None,
+    "z_footer_text": "",
+}
+
+
+class PosSettingsConfig(BaseModel):
+    require_open_cash: bool = True
+    cash_payment_method_id: Optional[int] = None
+    z_footer_text: str = ""
+
+
+async def _pos_settings_config() -> dict:
+    doc = await db.settings.find_one({"key": "pos"}, {"_id": 0})
+    cfg = dict(POS_SETTINGS_DEFAULT)
+    if doc and isinstance(doc.get("value"), dict):
+        cfg.update(doc["value"])
+    return cfg
+
+
+@api_router.get("/admin/pos/settings")
+async def get_pos_settings(authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    return await _pos_settings_config()
+
+
+@api_router.put("/admin/pos/settings")
+async def update_pos_settings(cfg: PosSettingsConfig, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    value = cfg.model_dump()
+    await db.settings.update_one(
+        {"key": "pos"}, {"$set": {"key": "pos", "value": value}}, upsert=True
+    )
+    return value
+
 # ==================== DASHBOARD ROUTES ====================
 
 @api_router.get("/dashboard/stats", response_model=DashboardStats)

@@ -3,6 +3,7 @@ import { Loader2, LogOut, RefreshCw, Store, Users, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { posCheckout } from '@/lib/api';
+import TableCheckout from '@/pages/checkout/TableCheckout';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const REFRESH_MS = 10000;
@@ -30,15 +31,20 @@ const formatHora = (iso) => {
 // para o ecrã cheio maroon do POS (tablet): mesa ocupada = cartão branco em
 // destaque; mesa livre = contorno subtil sobre o fundo maroon.
 //
-// `onFecharCaixa` e `onOpenTable` são, nesta tarefa, placeholders passados
-// pelo PosApp (o fecho de caixa real é a Task 7; o checkout de mesa é a
-// Task 6) — aqui limitamo-nos a chamar os props ao clicar. `refreshCaixa`
-// fica disponível (não é chamado por este componente) para a Task 7 voltar
-// a resolver o estado da caixa depois do fecho de verdade.
-const PosHome = ({ session, operator, onFecharCaixa, onOpenTable, refreshCaixa, onLogout }) => {
+// `onFecharCaixa` é, nesta tarefa, um placeholder passado pelo PosApp (o
+// fecho de caixa real é a Task 7) — aqui limitamo-nos a chamar o prop ao
+// clicar. `refreshCaixa` fica disponível (não é chamado por este
+// componente) para a Task 7 voltar a resolver o estado da caixa depois do
+// fecho de verdade.
+//
+// O checkout de mesa (Task 6) é o `TableCheckout` partilhado com o admin —
+// aqui é aberto com `api={posCheckout}` para que o fecho vá pelo device+PIN
+// token (não o JWT admin) e o backend ligue a venda à sessão de caixa.
+const PosHome = ({ session, operator, onFecharCaixa, refreshCaixa, onLogout }) => {
   const [tables, setTables] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedTableNum, setSelectedTableNum] = useState(null);
 
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true);
@@ -61,6 +67,7 @@ const PosHome = ({ session, operator, onFecharCaixa, onOpenTable, refreshCaixa, 
   }, [load]);
 
   const occupiedCount = tables.filter((t) => t.occupied).length;
+  const selectedTable = tables.find((t) => t.number === selectedTableNum) || null;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#5a1a1a] text-white">
@@ -147,15 +154,16 @@ const PosHome = ({ session, operator, onFecharCaixa, onOpenTable, refreshCaixa, 
                   <button
                     key={t.id || t.number}
                     type="button"
-                    onClick={() => onOpenTable(t.number)}
+                    onClick={() => setSelectedTableNum(t.number)}
+                    disabled={!busy}
                     aria-label={`${t.name || `Mesa ${t.number}`}${
                       busy ? `, ocupada, ${eur(t.open_total)} em aberto` : ', livre'
                     }`}
                     className={[
                       'group relative flex aspect-square touch-manipulation flex-col justify-between overflow-hidden rounded-xl border p-4 text-left transition-all active:scale-[0.98]',
                       busy
-                        ? 'border-amber-300/60 bg-white text-[#5a1a1a] hover:shadow-lg'
-                        : 'border-white/20 bg-white/5 text-white/70 hover:bg-white/10',
+                        ? 'border-amber-300/60 bg-white text-[#5a1a1a] hover:shadow-lg cursor-pointer'
+                        : 'border-white/20 bg-white/5 text-white/70 hover:bg-white/10 cursor-default',
                     ].join(' ')}
                   >
                     <span className={`absolute inset-x-0 top-0 h-1.5 ${busy ? 'bg-amber-400' : 'bg-white/15'}`} />
@@ -208,6 +216,16 @@ const PosHome = ({ session, operator, onFecharCaixa, onOpenTable, refreshCaixa, 
           </>
         )}
       </main>
+
+      {/* Checkout de mesa — componente partilhado com o admin (Task 6), aberto
+          via posCheckout para que o fecho fique ligado à sessão de caixa. */}
+      <TableCheckout
+        api={posCheckout}
+        tableNumber={selectedTableNum}
+        table={selectedTable}
+        onClose={() => setSelectedTableNum(null)}
+        onChanged={() => load(true)}
+      />
     </div>
   );
 };

@@ -109,15 +109,14 @@ const PosApp = () => {
     return <PosAbrirCaixa operator={user} onAberta={refreshCaixa} />;
   }
 
-  // Caixa aberta — Home real do POS (Task 5). `onFecharCaixa` e `onOpenTable`
-  // são placeholders por agora: o fecho de caixa é a Task 7 e o checkout de
-  // mesa é a Task 6; aqui só avisamos com um toast.
+  // Caixa aberta — Home real do POS (Task 5), com o checkout de mesa (Task 6,
+  // `TableCheckout` partilhado com o admin via `posCheckout`) já ligado.
+  // `onFecharCaixa` continua placeholder — o fecho de caixa é a Task 7.
   return (
     <PosHome
       session={session}
       operator={user}
       onFecharCaixa={() => toast.info('Fecho de caixa na próxima tarefa')}
-      onOpenTable={() => toast.info('Checkout na próxima tarefa')}
       refreshCaixa={refreshCaixa}
       onLogout={logout}
     />

@@ -224,6 +224,11 @@ export const seedAPI = {
 export const checkoutAPI = {
   getBill: (tableNumber) =>
     api.get(`/tables/${tableNumber}/bill`),
+  // Resumo de todas as mesas (id/nome/pessoas/rodízio) — usado pelo
+  // TableCheckout (partilhado com o POS) para inicializar/atualizar o
+  // estado do rodízio sem depender da grelha do chamador.
+  overview: () =>
+    api.get('/tables-overview'),
   paymentMethods: () =>
     api.get('/vendus/payment-methods'),
   closeTable: (tableNumber, data) =>

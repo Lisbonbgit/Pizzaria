@@ -24,11 +24,13 @@ import secrets
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pymongo.errors import DuplicateKeyError, BulkWriteError
+from pymongo import ReturnDocument
 from vendus import VendusConfig, VendusClient, VendusError
 from pos.auth import hash_token, verify_token, create_pos_token, decode_pos_token
 from pos.cash import pick_open_session
 from pos.sales import build_pos_sales_rows
 from pos.idempotency import stable_ext_ref
+from pos.cash_math import expected_cash, reconciliation_diff
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -3014,6 +3016,155 @@ async def add_cash_movement(
     if resultado.matched_count == 0:
         raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
     return await db.cash_sessions.find_one({"id": sessao["id"]}, {"_id": 0})
+
+
+class CashCloseRequest(BaseModel):
+    counted_amount: float = 0
+
+
+@api_router.post("/pos/cash/close")
+async def close_cash_session(
+    body: CashCloseRequest,
+    operador: dict = Depends(get_pos_operator),
+):
+    """Fecha a caixa e reconcilia contra o Vendus POR JANELA temporal.
+
+    Passos (§Task 10):
+      1. Exige uma sessão ABERTA (senão 409). Operador vem do token POS.
+      2. Janela = `opened_at` (UTC, convertido para Lisboa) → agora (Lisboa). Lê o
+         Vendus SÓ dessa janela (`app_sales_summary_window`, mesmo `register_id`) —
+         nunca por string de data (uma sessão pode atravessar a meia-noite).
+      3. `cash_sales` = total Vendus do método cujo id == `cash_payment_method_id`
+         (identificado por ID, nunca pela string "Dinheiro"). Se não estiver
+         configurado → 0 + aviso no Z.
+      4. `expected = expected_cash(abertura, cash_sales, movimentos)`;
+         `difference = contado - esperado`.
+      5. Reconcilia o Vendus (verdade fiscal) com as `pos_sales` da sessão. Se
+         divergir, o Z leva o aviso — a reconciliação NUNCA bloqueia o fecho.
+      6. Fecho ATÓMICO (`find_one_and_update` com filtro `status:"open"`) — um
+         duplo-fecho concorrente não corre duas vezes (o 2.º apanha 409).
+
+    Devolve os DADOS do Z (a Task 11 é que os imprime). Se o Vendus estiver
+    indisponível → 502 e a caixa fica aberta (não se fecha às cegas contra a
+    verdade fiscal)."""
+    sessao = await db.cash_sessions.find_one({"status": "open"})
+    if not sessao:
+        raise HTTPException(status_code=409, detail="Não há caixa aberta")
+
+    avisos: list = []
+
+    # Janela: opened_at (UTC) → Lisboa; fim = agora (Lisboa). A conversão explícita
+    # para Lisboa é o que alinha com o `local_time` das FS do Vendus.
+    lisbon = ZoneInfo("Europe/Lisbon")
+    inicio_lisboa = datetime.fromisoformat(sessao["opened_at"]).astimezone(lisbon)
+    fim_lisboa = datetime.now(lisbon)
+
+    # Vendus por janela + o mapa id→título dos métodos de pagamento (para
+    # identificar o dinheiro por ID e para alinhar as pos_sales com o Vendus, que
+    # vem repartido por título). Tudo numa só sessão HTTP.
+    c = _vendus_client()
+    try:
+        vendus = c.app_sales_summary_window(inicio_lisboa.isoformat(), fim_lisboa.isoformat())
+        metodos = c.list_payment_methods()
+    except VendusError as e:
+        raise HTTPException(status_code=502, detail=f"Vendus indisponível para reconciliar: {e}")
+    finally:
+        c.close()
+
+    vendus_by_method = vendus.get("by_method") or {}
+    # Chaves normalizadas a str — o id vem numérico do Vendus e Optional[int] das
+    # definições; comparar como str evita surpresas int/str do JSON.
+    id_to_title = {
+        str(m.get("id")): (str(m.get("title") or "").strip() or str(m.get("id")))
+        for m in (metodos or [])
+    }
+
+    # Dinheiro identificado pelo ID configurado, nunca pela string "Dinheiro".
+    pos_cfg = await _pos_settings_config()
+    cash_method_id = pos_cfg.get("cash_payment_method_id")
+    cash_sales = 0.0
+    if cash_method_id is None:
+        avisos.append("Método de pagamento 'Dinheiro' não está configurado nas definições do POS — vendas em dinheiro contadas como 0.")
+    else:
+        cash_title = id_to_title.get(str(cash_method_id))
+        if not cash_title:
+            avisos.append("Método de 'Dinheiro' configurado não foi encontrado no Vendus — vendas em dinheiro contadas como 0.")
+        else:
+            cash_sales = round(float((vendus_by_method.get(cash_title) or {}).get("total", 0.0) or 0.0), 2)
+
+    movimentos = sessao.get("movements") or []
+    abertura = round(float(sessao.get("opening_amount", 0.0) or 0.0), 2)
+    esperado = expected_cash(abertura, cash_sales, movimentos)
+    contado = round(float(body.counted_amount or 0.0), 2)
+    diferenca = round(contado - esperado, 2)
+
+    # pos_sales da sessão, repartidas por MÉTODO (título, para alinhar com o
+    # Vendus). Cada linha tem `payment_method_id`; traduz-se para título pelo mapa
+    # do Vendus (fallback: o próprio id em texto → sairá em "missing").
+    pos_rows = await db.pos_sales.find({"cash_session_id": sessao["id"]}, {"_id": 0}).to_list(length=None)
+    pos_sales_by_method: dict = {}
+    for r in pos_rows:
+        titulo = r.get("payment_method_title") or id_to_title.get(str(r.get("payment_method_id"))) or str(r.get("payment_method_id"))
+        cur = pos_sales_by_method.setdefault(titulo, {"count": 0, "total": 0.0})
+        cur["count"] += 1
+        cur["total"] = round(cur["total"] + float(r.get("amount", 0.0) or 0.0), 2)
+
+    reconciliacao = reconciliation_diff(vendus_by_method, pos_sales_by_method)
+    if not reconciliacao["ok"]:
+        # NUNCA bloqueia o fecho — só sinaliza. As divergências ficam no Z.
+        avisos.append(
+            "Reconciliação com divergências: "
+            f"Vendus sem par nas vendas POS {reconciliacao['orphans']}; "
+            f"vendas POS sem fatura {reconciliacao['missing']}."
+        )
+
+    fechado_em = datetime.now(timezone.utc).isoformat()
+    # Fecho ATÓMICO: só corre se a sessão ainda estiver aberta. Um duplo-fecho
+    # concorrente falha aqui (matched=None) → 409, sem re-gravar/re-executar.
+    atualizada = await db.cash_sessions.find_one_and_update(
+        {"id": sessao["id"], "status": "open"},
+        {"$set": {
+            "status": "closed",
+            "closed_at": fechado_em,
+            "closed_by": operador["id"],
+            "closed_by_name": operador["name"],
+            "counted_amount": contado,
+            "cash_sales": cash_sales,
+            "expected_cash": esperado,
+            "difference": diferenca,
+            "totals_by_method": vendus_by_method,
+            "reconciliation": reconciliacao,
+        }},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    if atualizada is None:
+        raise HTTPException(status_code=409, detail="Caixa já fechada")
+
+    rest = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
+    restaurant_name = ((rest or {}).get("value") or {}).get("name", "Pizzaria")
+
+    # DADOS do Z (a Task 11 renderiza/imprime). Snapshot completo do fecho.
+    return {
+        "restaurant": restaurant_name,
+        "z_footer_text": pos_cfg.get("z_footer_text", ""),
+        "session_id": sessao["id"],
+        "opened_by": sessao.get("opened_by_name") or sessao.get("opened_by"),
+        "opened_at": sessao.get("opened_at"),
+        "closed_by": operador["name"],
+        "closed_at": fechado_em,
+        "opening_amount": abertura,
+        "movements": movimentos,
+        "cash_sales": cash_sales,
+        "totals_by_method": vendus_by_method,
+        "vendus_total": vendus.get("total", 0.0),
+        "vendus_count": vendus.get("count", 0),
+        "expected_cash": esperado,
+        "counted_amount": contado,
+        "difference": diferenca,
+        "reconciliation": reconciliacao,
+        "warnings": avisos,
+    }
 
 # ==================== POS: DEFINIÇÕES (pos_settings) ====================
 # Definições do POS/Caixa: exigir caixa aberta antes de faturar, o método de

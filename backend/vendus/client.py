@@ -1,8 +1,14 @@
 from __future__ import annotations
 from typing import Any, Optional
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import httpx
 from .config import VendusConfig
 from .errors import VendusRateLimited, VendusUnavailable, VendusHTTPError
+
+# Fuso do restaurante (Portugal continental). O Vendus grava `local_time` na
+# hora local; a caixa é lida/reconciliada por JANELA temporal neste fuso.
+_LISBON = ZoneInfo("Europe/Lisbon")
 
 
 class VendusClient:
@@ -103,7 +109,69 @@ class VendusClient:
         forma de pagamento (Dinheiro, Multibanco, ...), lido das faturas reais do
         Vendus. Fonte de verdade da receita — inclui rodízio e descontos, que não
         ficam no `total` dos pedidos."""
-        docs = self.list_app_invoices(date=date)
+        return self._summarize_docs(self.list_app_invoices(date=date))
+
+    def app_sales_summary_window(self, start_lisbon_iso: str, end_lisbon_iso: str) -> dict:
+        """Como `app_sales_summary`, mas seleciona as FS da caixa da app por
+        JANELA temporal `[start, end]` (Europe/Lisbon), NÃO por string de data.
+        É o que o fecho da caixa precisa: uma sessão pode atravessar a meia-noite,
+        e filtrar por `date.startswith("YYYY-MM-DD")` deixaria de fora as vendas do
+        outro dia do calendário.
+
+        `start_lisbon_iso`/`end_lisbon_iso` são ISO 8601 (o fecho passa o
+        `opened_at` — em UTC — já convertido para Lisboa, e o "agora" em Lisboa).
+        Estratégia: percorre cada data do calendário Lisboa de `start.date()` a
+        `end.date()`, reutiliza o fetch por-dia existente (mesmo `register_id`) e
+        depois mantém só as FS cujo `local_time` (interpretado como Lisboa) cai
+        dentro da janela. Devolve a mesma forma de `app_sales_summary`."""
+        start = self._as_lisbon(start_lisbon_iso)
+        end = self._as_lisbon(end_lisbon_iso)
+
+        # União das FS de cada dia abrangido (dedup por id/número do documento —
+        # cada fetch por-dia já filtra ao seu dia, mas o dedup é defensivo).
+        docs_by_key: dict = {}
+        dia = start.date()
+        ultimo = end.date()
+        while dia <= ultimo:
+            for doc in self.list_app_invoices(date=dia.isoformat()):
+                key = doc.get("id") or doc.get("number") or id(doc)
+                docs_by_key[key] = doc
+            dia += timedelta(days=1)
+
+        na_janela = []
+        for doc in docs_by_key.values():
+            lt = self._parse_local_time(doc.get("local_time"))
+            if lt is not None and start <= lt <= end:
+                na_janela.append(doc)
+        return self._summarize_docs(na_janela)
+
+    @staticmethod
+    def _as_lisbon(iso: str) -> datetime:
+        """ISO 8601 → datetime aware no fuso de Lisboa. Sem tz no texto assume-se
+        já em hora de Lisboa; com tz (ex.: o `opened_at` em UTC) converte-se."""
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_LISBON)
+        return dt.astimezone(_LISBON)
+
+    @staticmethod
+    def _parse_local_time(local_time: Any) -> Optional[datetime]:
+        """`local_time` do Vendus ("YYYY-MM-DD HH:MM:SS", hora de Lisboa) → datetime
+        aware em Lisboa. Devolve None se estiver ausente/malformado (a FS é então
+        ignorada na janela — nunca rebenta o fecho)."""
+        s = str(local_time or "").strip()
+        if len(s) < 19:
+            return None
+        try:
+            naive = datetime.strptime(s[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+        return naive.replace(tzinfo=_LISBON)
+
+    def _summarize_docs(self, docs: list) -> dict:
+        """Resume uma lista de FS já filtradas: total, repartição por forma de
+        pagamento e detalhe por fatura. Partilhado por `app_sales_summary` (por
+        dia) e `app_sales_summary_window` (por janela) — a MESMA forma de saída."""
         by_method: dict = {}
         total = 0.0
         invoices = []

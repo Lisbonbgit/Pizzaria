@@ -139,3 +139,77 @@ def test_list_open_table_docs_filtra_dc_e_since():
     assert "type=DC" in seen["url"]
     assert "view=detailed" in seen["url"]
     assert "since=2026-07-19" in seen["url"]
+
+
+def test_app_sales_summary_window_atravessa_meia_noite():
+    # Sessão aberta 27/07 22:30 Lisboa (=21:30 UTC) e fechada 28/07 01:30 Lisboa.
+    # A janela tem de: (a) percorrer os DOIS dias do calendário Lisboa; (b) manter
+    # a FS de depois da meia-noite (00:30); (c) excluir a FS de ANTES da abertura
+    # (20:00) e a de DEPOIS do fecho (02:00) — tudo por `local_time`, não por data.
+    por_data = {
+        "2026-07-27": [
+            {"id": 1, "number": "FS 1", "type": "FS", "date": "2026-07-27",
+             "local_time": "2026-07-27 22:45:00", "amount_gross": 10.0,
+             "external_reference": "mesa-1-x",
+             "payments": [{"id": 100, "title": "Dinheiro", "amount": 10.0}]},
+            {"id": 2, "number": "FS 2", "type": "FS", "date": "2026-07-27",
+             "local_time": "2026-07-27 20:00:00", "amount_gross": 99.0,   # ANTES da abertura
+             "external_reference": "mesa-2-x",
+             "payments": [{"id": 200, "title": "Multibanco", "amount": 99.0}]},
+        ],
+        "2026-07-28": [
+            {"id": 3, "number": "FS 3", "type": "FS", "date": "2026-07-28",
+             "local_time": "2026-07-28 00:30:00", "amount_gross": 25.0,   # depois da meia-noite
+             "external_reference": "mesa-3-x",
+             "payments": [{"id": 200, "title": "Multibanco", "amount": 25.0}]},
+            {"id": 4, "number": "FS 4", "type": "FS", "date": "2026-07-28",
+             "local_time": "2026-07-28 02:00:00", "amount_gross": 50.0,   # DEPOIS do fecho
+             "external_reference": "mesa-4-x",
+             "payments": [{"id": 100, "title": "Dinheiro", "amount": 50.0}]},
+        ],
+    }
+    datas_pedidas = []
+    registers = []
+
+    def handler(request: httpx.Request):
+        since = request.url.params.get("since")
+        datas_pedidas.append(since)
+        registers.append(request.url.params.get("register_id"))
+        return httpx.Response(200, json=por_data.get(since, []))
+
+    cfg = VendusConfig.load({"VENDUS_API_KEY": "k", "VENDUS_REGISTER_ID": "7", "VENDUS_MODE": "tests"})
+    client = VendusClient(cfg, transport=httpx.MockTransport(handler))
+    out = client.app_sales_summary_window("2026-07-27T21:30:00+00:00", "2026-07-28T01:30:00+01:00")
+
+    assert set(datas_pedidas) == {"2026-07-27", "2026-07-28"}   # percorreu os 2 dias
+    assert registers == ["7", "7"]                              # register preservado
+    assert out["count"] == 2                                    # só FS 1 e FS 3 na janela
+    assert out["total"] == 35.0
+    assert set(out["documents"]) == {"FS 1", "FS 3"}
+    assert out["by_method"]["Dinheiro"] == {"count": 1, "total": 10.0}
+    assert out["by_method"]["Multibanco"] == {"count": 1, "total": 25.0}
+    assert "Multibanco" not in [i["label"] for i in out["invoices"]]  # sanity
+
+
+def test_app_sales_summary_window_janela_no_mesmo_dia():
+    # Sessão inteiramente no mesmo dia: um único fetch, filtra pela hora.
+    docs = [
+        {"id": 1, "number": "FS 1", "type": "FS", "date": "2026-07-28",
+         "local_time": "2026-07-28 12:00:00", "amount_gross": 8.0,
+         "external_reference": "mesa-1-x",
+         "payments": [{"id": 100, "title": "Dinheiro", "amount": 8.0}]},
+        {"id": 2, "number": "FS 2", "type": "FS", "date": "2026-07-28",
+         "local_time": "2026-07-28 09:00:00", "amount_gross": 5.0,   # antes da abertura
+         "external_reference": "mesa-2-x",
+         "payments": [{"id": 100, "title": "Dinheiro", "amount": 5.0}]},
+    ]
+    fetches = []
+
+    def handler(request: httpx.Request):
+        fetches.append(request.url.params.get("since"))
+        return httpx.Response(200, json=docs)
+
+    client = VendusClient(CFG, transport=httpx.MockTransport(handler))
+    out = client.app_sales_summary_window("2026-07-28T10:00:00+01:00", "2026-07-28T15:00:00+01:00")
+    assert fetches == ["2026-07-28"]          # um só dia → um só fetch
+    assert out["count"] == 1 and out["total"] == 8.0

@@ -41,6 +41,7 @@ def create_pos_token(pos_user_id: str, name: str) -> str:
     """
     secret = os.environ["JWT_SECRET"]
     payload = {
+        "typ": "pos",  # marca de tipo — impede que um JWT de admin passe por token POS
         "pos_user_id": pos_user_id,
         "name": name,
         "exp": datetime.now(timezone.utc) + POS_TOKEN_TTL,
@@ -49,10 +50,15 @@ def create_pos_token(pos_user_id: str, name: str) -> str:
 
 
 def decode_pos_token(token: str) -> dict:
-    """Verifica assinatura e validade do token POS e devolve o payload.
+    """Verifica assinatura, validade e TIPO do token POS e devolve o payload.
 
-    Propaga `jwt.ExpiredSignatureError`/`jwt.InvalidTokenError` — quem consome
-    (a dependência `get_pos_operator`) traduz para HTTP 401.
+    O token tem de trazer `typ == "pos"`; caso contrário (p.ex. um JWT de admin,
+    assinado com o mesmo segredo) é recusado com `jwt.InvalidTokenError`. Propaga
+    também `jwt.ExpiredSignatureError` — quem consome (a dependência
+    `get_pos_operator`) traduz ambos para HTTP 401.
     """
     secret = os.environ["JWT_SECRET"]
-    return jwt.decode(token, secret, algorithms=[POS_JWT_ALGORITHM])
+    payload = jwt.decode(token, secret, algorithms=[POS_JWT_ALGORITHM])
+    if payload.get("typ") != "pos":
+        raise jwt.InvalidTokenError("Token não é do tipo POS")
+    return payload

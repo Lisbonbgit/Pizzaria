@@ -37,3 +37,25 @@ def test_pos_token_expirado_rejeitado():
     )
     with pytest.raises(jwt.ExpiredSignatureError):
         decode_pos_token(expirado)
+
+
+def test_admin_token_rejeitado_como_pos():
+    # Segurança: um JWT de admin (typ="admin"), assinado com o MESMO segredo, não
+    # pode passar por token POS — decode_pos_token exige typ="pos".
+    secret = os.environ["JWT_SECRET"]
+    admin_like = jwt.encode(
+        {"user_id": "admin-env", "typ": "admin",
+         "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        secret, algorithm="HS256",
+    )
+    with pytest.raises(jwt.InvalidTokenError):
+        decode_pos_token(admin_like)
+
+
+def test_pos_token_nao_passa_por_admin():
+    # O token POS traz typ="pos"; get_current_user exige typ="admin", logo recusa-o
+    # (impede a escalada de privilégio de operador POS -> admin).
+    t = create_pos_token("u1", "Maicon")
+    payload = jwt.decode(t, os.environ["JWT_SECRET"], algorithms=["HS256"])
+    assert payload["typ"] == "pos"
+    assert payload["typ"] != "admin"

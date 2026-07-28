@@ -451,6 +451,7 @@ def create_token(user_id: str, email: str) -> str:
     payload = {
         "user_id": user_id,
         "email": email,
+        "typ": "admin",  # marca de tipo — distingue de tokens POS (typ="pos")
         "exp": datetime.now(timezone.utc).timestamp() + 86400 * 7  # 7 days
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -463,6 +464,11 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     token = authorization.replace("Bearer ", "")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        # Só tokens de admin dão acesso aqui. Um token POS (typ="pos"), embora
+        # assinado com o mesmo JWT_SECRET, NÃO é aceite como admin — evita a
+        # escalada de privilégio (operador do POS a passar-se por admin).
+        if payload.get("typ") != "admin":
+            raise HTTPException(status_code=401, detail="Token inválido")
         # Return user info from token payload (no database lookup)
         return {
             "id": payload.get("user_id", "admin-env"),
@@ -812,6 +818,8 @@ async def get_me(authorization: Optional[str] = Header(None)):
     token = authorization.replace("Bearer ", "")
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("typ") != "admin":
+            raise HTTPException(status_code=401, detail="Token inválido")
         return AdminUserResponse(
             id=payload.get("user_id", "admin-env"),
             email=payload.get("email", ADMIN_EMAIL),

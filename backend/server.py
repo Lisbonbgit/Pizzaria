@@ -1872,26 +1872,45 @@ async def close_table(table_number: int, req: CloseTableRequest,
 
         client = {"fiscal_id": req.nif} if (req.nif and n == 1) else None
 
-    # Dia (Europe/Lisbon) para consultar os documentos já emitidos na dedup.
-    today_str = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y-%m-%d")
+    # Dias (Europe/Lisbon) a consultar na DEDUP fiscal. Tem de cobrir toda a
+    # sessão de caixa — NÃO só hoje — senão um retry de um fecho a atravessar a
+    # meia-noite (23:59 → 00:0x, a hora a que a pizzaria fecha mesas) não
+    # encontrava a FS de ontem e EMITIA 2ª FS (cobrança dupla). Espelha a janela
+    # midnight-safe da reconciliação (Task 10).
+    _lisbon = ZoneInfo("Europe/Lisbon")
+    _hoje = datetime.now(_lisbon).date()
+    if sess and sess.get("opened_at"):
+        try:
+            _inicio = datetime.fromisoformat(sess["opened_at"]).astimezone(_lisbon).date()
+        except Exception:
+            _inicio = _hoje - timedelta(days=1)
+    else:
+        _inicio = _hoje - timedelta(days=1)   # legado (sem caixa): cobre a viragem do dia
+    dedup_dates = []
+    _d = _inicio
+    while _d <= _hoje:
+        dedup_dates.append(_d.isoformat())
+        _d += timedelta(days=1)
 
     def _emit_all():
         c = _vendus_client()
         docs = []
         try:
             # DEDUP FISCAL (proteção nº1 contra cobrança dupla): antes de emitir,
-            # lê UMA vez os documentos de hoje na caixa da app e indexa-os pela
-            # external_reference. Como a ref é ESTÁVEL, um retry do mesmo fecho cai
-            # aqui — reutiliza-se o documento já emitido em vez de criar 2ª FS.
-            # Se a CONSULTA falhar, segue-se a emitir (não bloquear o fecho); o
-            # retry seguinte (com o Vendus a responder) volta a proteger.
+            # lê os documentos da SESSÃO na caixa da app (todos os `dedup_dates`) e
+            # indexa-os pela external_reference. Como a ref é ESTÁVEL, um retry do
+            # mesmo fecho cai aqui — reutiliza-se o documento já emitido em vez de
+            # criar 2ª FS. Se a CONSULTA falhar, fica a proteção parcial já indexada
+            # e segue-se a emitir (não bloquear o fecho); o retry seguinte protege.
+            by_ref = {}
             try:
-                by_ref = {str(d.get("external_reference")): d
-                          for d in c.list_app_invoices(date=today_str)
-                          if d.get("external_reference")}
+                for _ds in dedup_dates:
+                    for d in c.list_app_invoices(date=_ds):
+                        ref = d.get("external_reference")
+                        if ref:
+                            by_ref[str(ref)] = d
             except VendusError as e:
                 logger.warning(f"dedup fiscal: consulta a documentos falhou, emito na mesma: {e}")
-                by_ref = {}
             for inv in invoices:
                 existente = by_ref.get(inv["ext_ref"])
                 if existente is not None:
@@ -1939,17 +1958,20 @@ async def close_table(table_number: int, req: CloseTableRequest,
     # reconciliação apanha órfãos. O índice único em `vendus_document_id` absorve
     # duplicados de um retry (idempotente).
     if auth.get("kind") == "pos" and sess:
-        rows = build_pos_sales_rows(
-            invoices, docs, req.payment_method_id, sess["id"], pos_user_id,
-            "rodizio" if rodizio_pay is not None else "mesa", table_number,
-        )
-        if rows:
-            try:
+        # TUDO dentro do try: a FS já está emitida, por isso NADA aqui (nem o
+        # build, nem o insert) pode derrubar o fecho com 500 (senão o cliente
+        # julgava que falhou e refaturava = cobrança dupla). Estrutural, não por sorte.
+        try:
+            rows = build_pos_sales_rows(
+                invoices, docs, req.payment_method_id, sess["id"], pos_user_id,
+                "rodizio" if rodizio_pay is not None else "mesa", table_number,
+            )
+            if rows:
                 await db.pos_sales.insert_many(rows, ordered=False)
-            except (BulkWriteError, DuplicateKeyError) as e:
-                logger.warning(f"pos_sales: documento(s) já registado(s), ignorado (idempotente): {e}")
-            except Exception as e:
-                logger.error(f"pos_sales: falha a gravar, ignorado (FS já emitida e válida): {e}")
+        except (BulkWriteError, DuplicateKeyError) as e:
+            logger.warning(f"pos_sales: documento(s) já registado(s), ignorado (idempotente): {e}")
+        except Exception as e:
+            logger.error(f"pos_sales: falha a gravar, ignorado (FS já emitida e válida): {e}")
 
     # Fecho da sessão. Rodízio: contabiliza as pessoas pagas e salda quando o
     # rodízio todo + todos os extras com preço estiverem pagos. À la carte: salda

@@ -2,10 +2,17 @@
 
 O fecho de mesa (`close_table`) tinha refs baseadas no relógio
 (`mesa-N-<timestamp>`), por isso cada RETRY do mesmo fecho gerava uma ref nova e
-o Vendus emitia uma FS nova = cobrança dupla. Aqui a ref deriva SÓ de
-(mesa, sessão de caixa, itens) por hash determinístico: o mesmo fecho dá sempre
-a MESMA ref. Com isso, `close_table` consulta os documentos do dia, encontra o
-que já tem essa ref e reutiliza-o em vez de emitir uma 2ª fatura.
+o Vendus emitia uma FS nova = cobrança dupla. Aqui a ref deriva de
+(mesa, sessão de caixa, CHAVE do fecho) por hash determinístico.
+
+⚠️ A CHAVE tem de ser: (a) ESTÁVEL entre retries do MESMO fecho, mas
+(b) DISTINTA entre fechos diferentes — senão dois fechos genuinamente diferentes
+com os mesmos itens (ex.: a mesma mesa a vender outra Coca na mesma sessão)
+colidiam e o 2º reutilizava a FS do 1º = SUB-FATURAÇÃO. Por isso a chave NÃO é o
+conteúdo dos itens; é a IDENTIDADE do que está a ser faturado:
+  - à la carte / dividir: o conjunto de linhas `(order_id, idx)` faturadas (que
+    ficam por pagar até ao fecho, logo estáveis no retry e distintas por pedido);
+  - rodízio: o estado pago-ANTES + as pessoas/contagens pagas AGORA + os extras.
 
 PURA de propósito: sem I/O, sem relógio — só entrada → saída determinística.
 """
@@ -13,26 +20,24 @@ import hashlib
 import json
 
 
-def stable_ext_ref(table_number, cash_session_id, items) -> str:
+def stable_ext_ref(table_number, cash_session_id, key_obj, rodizio: bool = False) -> str:
     """Referência fiscal determinística para uma fatura.
-
-    Mesma (mesa, sessão, itens) → MESMA ref (idempotente para o retry).
-    Itens diferentes → ref diferente (fecho diferente, documento diferente).
-
-    O hash é sobre o JSON canónico dos `items` (as chaves ordenadas com
-    `sort_keys=True`; `ensure_ascii=False` para acentos não alterarem os bytes).
-    Trunca-se a 10 hex — chega para distinguir fechos sem alongar a ref.
 
     Args:
         table_number: número da mesa fechada.
         cash_session_id: id da sessão de caixa aberta; "legacy" no admin sem caixa.
-        items: lista dos itens dessa fatura (o mesmo `vendus_items`/`items_i`
-            que segue para o Vendus).
+        key_obj: a CHAVE do fecho (identidade), NÃO o conteúdo dos itens — ver o
+            docstring do módulo. Qualquer objeto JSON-serializável determinístico.
+        rodizio: se True, insere o token `rodizio` na ref (para o relatório diário
+            continuar a rotular "Mesa N (rodízio)").
 
     Returns:
-        str: `mesa-{table_number}-{cash_session_id}-{hash10}`.
+        str: `mesa-{table}-[rodizio-]{cash_session_id}-{hash10}`.
+        Mesma chave → MESMA ref (idempotente no retry). Chave diferente → ref
+        diferente (fecho diferente → documento diferente).
     """
     h = hashlib.sha1(
-        json.dumps(items, sort_keys=True, ensure_ascii=False).encode()
+        json.dumps(key_obj, sort_keys=True, ensure_ascii=False, default=str).encode()
     ).hexdigest()[:10]
-    return f"mesa-{table_number}-{cash_session_id}-{h}"
+    meio = "rodizio-" if rodizio else ""
+    return f"mesa-{table_number}-{meio}{cash_session_id}-{h}"

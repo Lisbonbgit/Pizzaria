@@ -1782,8 +1782,16 @@ async def close_table(table_number: int, req: CloseTableRequest,
         lines = extra_lines     # só os extras selecionados ficam pagos como itens
         partial = False
         n = 1
+        # Chave de idempotência do rodízio: estado pago-ANTES (pd) + pessoas pagas
+        # AGORA + extras faturados. Estável no retry (o pago-antes ainda não foi
+        # commitado); distinta do próximo pagamento (o pago-antes muda).
         invoices = [{"items": vendus_items, "amount": total,
-                     "ext_ref": stable_ext_ref(table_number, cash_session_id, vendus_items)}]
+                     "ext_ref": stable_ext_ref(
+                         table_number, cash_session_id,
+                         {"paid_before": pd, "adults": pay_adults, "half": pay_half,
+                          "free": pay_free, "waste": int(req.waste_boxes or 0),
+                          "extras": sorted((l["order_id"], l["idx"]) for l in extra_lines)},
+                         rodizio=True)}]
         client = {"fiscal_id": req.nif} if req.nif else None
         rodizio_pay = {"adults": pay_adults, "children": pay_children, "waste": int(req.waste_boxes or 0)}
     else:
@@ -1834,9 +1842,13 @@ async def close_table(table_number: int, req: CloseTableRequest,
         # pessoa com a sua parte, agrupada por IVA (o resto do arredondamento vai para a
         # última, para as n faturas somarem EXATAMENTE o total).
         invoices = []  # {"items": [...], "amount": float, "ext_ref": str}
+        # Chave de idempotência à la carte/dividir: a IDENTIDADE das linhas
+        # faturadas (order_id, idx) — não o conteúdo. Fica estável no retry (as
+        # linhas só ficam pagas no fim) e distinta de outro fecho (outras linhas).
+        line_ids = sorted((l["order_id"], l["idx"]) for l in lines)
         if n == 1:
             invoices.append({"items": vendus_items, "amount": total,
-                             "ext_ref": stable_ext_ref(table_number, cash_session_id, vendus_items)})
+                             "ext_ref": stable_ext_ref(table_number, cash_session_id, line_ids)})
         else:
             shares_by_tax = {}
             for tax, sub in by_tax.items():
@@ -1851,7 +1863,7 @@ async def close_table(table_number: int, req: CloseTableRequest,
                                         "qty": 1, "gross_price": share, "tax_id": tax})
                         amount_i += share
                 if items_i:
-                    base = stable_ext_ref(table_number, cash_session_id, items_i)
+                    base = stable_ext_ref(table_number, cash_session_id, line_ids)
                     invoices.append({"items": items_i, "amount": round(amount_i, 2),
                                      "ext_ref": f"{base}-{i+1}de{n}"})
 

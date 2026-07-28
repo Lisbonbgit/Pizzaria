@@ -28,6 +28,7 @@ from vendus import VendusConfig, VendusClient, VendusError
 from pos.auth import hash_token, verify_token, create_pos_token, decode_pos_token
 from pos.cash import pick_open_session
 from pos.sales import build_pos_sales_rows
+from pos.idempotency import stable_ext_ref
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1693,7 +1694,12 @@ async def close_table(table_number: int, req: CloseTableRequest,
     if not all_lines and not req.rodizio_tier:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
 
-    ts = datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')
+    # Sessão de caixa para a referência fiscal ESTÁVEL (idempotência): a mesma
+    # (mesa, sessão, itens) gera sempre a MESMA external_reference, por isso um
+    # retry do mesmo fecho é detetado no Vendus e reutiliza o documento em vez de
+    # emitir 2ª FS (cobrança dupla). Sem caixa aberta (admin legado) usa-se
+    # "legacy" — continua determinístico.
+    cash_session_id = sess["id"] if sess else "legacy"
     rodizio_pay = None  # {adults, children, waste} faturado agora (rodízio parcial)
 
     # Desconto GLOBAL (%) sobre toda a fatura; combina com o desconto por item.
@@ -1777,7 +1783,7 @@ async def close_table(table_number: int, req: CloseTableRequest,
         partial = False
         n = 1
         invoices = [{"items": vendus_items, "amount": total,
-                     "ext_ref": f"mesa-{table_number}-rodizio-{ts}"}]
+                     "ext_ref": stable_ext_ref(table_number, cash_session_id, vendus_items)}]
         client = {"fiscal_id": req.nif} if req.nif else None
         rodizio_pay = {"adults": pay_adults, "children": pay_children, "waste": int(req.waste_boxes or 0)}
     else:
@@ -1830,7 +1836,7 @@ async def close_table(table_number: int, req: CloseTableRequest,
         invoices = []  # {"items": [...], "amount": float, "ext_ref": str}
         if n == 1:
             invoices.append({"items": vendus_items, "amount": total,
-                             "ext_ref": f"mesa-{table_number}-{ts}"})
+                             "ext_ref": stable_ext_ref(table_number, cash_session_id, vendus_items)})
         else:
             shares_by_tax = {}
             for tax, sub in by_tax.items():
@@ -1845,21 +1851,47 @@ async def close_table(table_number: int, req: CloseTableRequest,
                                         "qty": 1, "gross_price": share, "tax_id": tax})
                         amount_i += share
                 if items_i:
+                    base = stable_ext_ref(table_number, cash_session_id, items_i)
                     invoices.append({"items": items_i, "amount": round(amount_i, 2),
-                                     "ext_ref": f"mesa-{table_number}-{ts}-{i+1}de{n}"})
+                                     "ext_ref": f"{base}-{i+1}de{n}"})
 
         client = {"fiscal_id": req.nif} if (req.nif and n == 1) else None
+
+    # Dia (Europe/Lisbon) para consultar os documentos já emitidos na dedup.
+    today_str = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y-%m-%d")
 
     def _emit_all():
         c = _vendus_client()
         docs = []
         try:
+            # DEDUP FISCAL (proteção nº1 contra cobrança dupla): antes de emitir,
+            # lê UMA vez os documentos de hoje na caixa da app e indexa-os pela
+            # external_reference. Como a ref é ESTÁVEL, um retry do mesmo fecho cai
+            # aqui — reutiliza-se o documento já emitido em vez de criar 2ª FS.
+            # Se a CONSULTA falhar, segue-se a emitir (não bloquear o fecho); o
+            # retry seguinte (com o Vendus a responder) volta a proteger.
+            try:
+                by_ref = {str(d.get("external_reference")): d
+                          for d in c.list_app_invoices(date=today_str)
+                          if d.get("external_reference")}
+            except VendusError as e:
+                logger.warning(f"dedup fiscal: consulta a documentos falhou, emito na mesma: {e}")
+                by_ref = {}
             for inv in invoices:
-                docs.append(c.create_invoice(
-                    items=inv["items"],
-                    payments=[{"id": req.payment_method_id, "amount": inv["amount"]}],
-                    client=client, external_reference=inv["ext_ref"],
-                    doc_type="FS", output="escpos"))
+                existente = by_ref.get(inv["ext_ref"])
+                if existente is not None:
+                    # Já existe FS com esta ref: REUTILIZA (sem 2ª emissão). Pode
+                    # não trazer o `output` (escpos) — a reimpressão é best-effort.
+                    logger.warning(
+                        f"dedup fiscal: ref {inv['ext_ref']} já emitida "
+                        f"(doc {existente.get('id')}), reutilizada sem nova FS")
+                    docs.append(existente)
+                else:
+                    docs.append(c.create_invoice(
+                        items=inv["items"],
+                        payments=[{"id": req.payment_method_id, "amount": inv["amount"]}],
+                        client=client, external_reference=inv["ext_ref"],
+                        doc_type="FS", output="escpos"))
         finally:
             c.close()
         return docs

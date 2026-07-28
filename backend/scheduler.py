@@ -109,59 +109,7 @@ def generate_html_report(orders: list, stats: dict, vendus: Optional[dict],
                          report_date: str, vendus_error: Optional[str] = None) -> str:
     """Gera o HTML do relatório diário. `vendus` = resumo de vendas faturadas
     (app_sales_summary) — fonte de verdade da receita; None se o Vendus falhou."""
-    
-    # Ordenar pedidos por hora
-    orders_html = ""
-    for order in orders:
-        created_at = order.get("created_at", "")
-        if created_at:
-            try:
-                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                time_str = dt.strftime("%H:%M")
-            except:
-                time_str = "--:--"
-        else:
-            time_str = "--:--"
-        
-        order_number = order.get("order_number", "N/A")
-        table_number = order.get("table_number", "N/A")
-        total = order.get("total", 0)
-        status = order.get("status", "")
-        paid = order.get("paid", False)
-        
-        # Status badge
-        status_labels = {
-            "received": "Recebido",
-            "preparing": "Preparando",
-            "ready": "Pronto",
-            "delivered": "Entregue"
-        }
-        status_text = status_labels.get(status, status.capitalize())
-        paid_text = "Pago" if paid else "Pendente"
-        paid_color = "#22c55e" if paid else "#f59e0b"
-        
-        orders_html += f"""
-        <tr>
-            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: center;">#{order_number}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: center;">Mesa {table_number}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: right; font-weight: 600;">{format_currency(total)}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: center;">{time_str}</td>
-            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: center;">
-                <span style="background-color: {paid_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{paid_text}</span>
-            </td>
-        </tr>
-        """
-    
-    # Se não houver pedidos
-    if not orders:
-        orders_html = """
-        <tr>
-            <td colspan="5" style="padding: 30px; text-align: center; color: #6b7280;">
-                Nenhum pedido registado neste dia.
-            </td>
-        </tr>
-        """
-    
+
     # --- Dados fiscais (Vendus) — receita real faturada pela app ---
     if vendus is not None:
         fiscal_total_str = format_currency(vendus.get("total", 0))
@@ -184,6 +132,22 @@ def generate_html_report(orders: list, stats: dict, vendus: Optional[dict],
     else:
         payments_rows = """
                     <tr><td colspan="3" style="padding: 20px; text-align: center; color: #6b7280;">Sem faturas emitidas neste dia.</td></tr>"""
+
+    # Contas fechadas (uma linha por fatura) — soma bate certo com o total
+    invoices = vendus.get("invoices", []) if vendus is not None else []
+    if invoices:
+        invoices_rows = ""
+        for inv in invoices:
+            invoices_rows += f"""
+                    <tr>
+                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb;">{inv.get('label','')}</td>
+                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: center; color: #6b7280;">{inv.get('time','')}</td>
+                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: center; color: #6b7280;">{inv.get('method','')}</td>
+                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: right; font-weight: 700;">{format_currency(inv.get('amount',0))}</td>
+                    </tr>"""
+    else:
+        invoices_rows = """
+                    <tr><td colspan="4" style="padding: 20px; text-align: center; color: #6b7280;">Sem contas fechadas neste dia.</td></tr>"""
 
     warning_html = ""
     if vendus is None:
@@ -249,24 +213,27 @@ def generate_html_report(orders: list, stats: dict, vendus: Optional[dict],
             </div>
         </div>
 
-        <!-- Orders Table -->
+        <!-- Contas fechadas (faturas) -->
         <div style="background: white; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
-            <h2 style="margin: 0 0 6px; font-size: 18px; color: #374151;">Pedidos do dia (atividade)</h2>
-            <p style="margin: 0 0 16px; font-size: 12px; color: #9ca3af;">Itens lancados na app. No rodizio aparecem a 0,00 EUR — o valor por pessoa esta no total faturado acima.</p>
+            <h2 style="margin: 0 0 6px; font-size: 18px; color: #374151;">Contas fechadas do dia</h2>
+            <p style="margin: 0 0 16px; font-size: 12px; color: #9ca3af;">Cada linha e uma conta faturada (mesa). A soma bate certo com o total faturado.</p>
             <table style="width: 100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background-color: #f9fafb;">
-                        <th style="padding: 12px 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Pedido</th>
-                        <th style="padding: 12px 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Mesa</th>
-                        <th style="padding: 12px 10px; text-align: right; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Valor</th>
+                        <th style="padding: 12px 10px; text-align: left; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Conta</th>
                         <th style="padding: 12px 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Hora</th>
                         <th style="padding: 12px 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Pagamento</th>
+                        <th style="padding: 12px 10px; text-align: right; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Valor</th>
                     </tr>
                 </thead>
-                <tbody>
-                    {orders_html}
+                <tbody>{invoices_rows}
+                    <tr style="background-color: #f0fdf4;">
+                        <td colspan="3" style="padding: 12px 10px; font-weight: 700;">Total</td>
+                        <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #16a34a;">{fiscal_total_str}</td>
+                    </tr>
                 </tbody>
             </table>
+            <p style="margin: 14px 0 0; font-size: 12px; color: #9ca3af;">Foram lancados {stats['total_orders']} itens/pedidos na app (no rodizio muitos vao a 0,00 EUR porque o cliente paga por pessoa, nao por item).</p>
         </div>
         
         <!-- Footer -->

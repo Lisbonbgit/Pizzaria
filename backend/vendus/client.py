@@ -106,10 +106,12 @@ class VendusClient:
         docs = self.list_app_invoices(date=date)
         by_method: dict = {}
         total = 0.0
+        invoices = []
         for d in docs:
             gross = float(d.get("amount_gross") or 0)
             total = round(total + gross, 2)
             pays = d.get("payments") or []
+            method = "Sem pagamento"
             if pays:
                 for p in pays:
                     title = (p.get("title") or "Outro").strip() or "Outro"
@@ -117,16 +119,36 @@ class VendusClient:
                     cur = by_method.setdefault(title, {"count": 0, "total": 0.0})
                     cur["total"] = round(cur["total"] + amt, 2)
                 # 1 fatura = 1 forma de pagamento (contamos o documento uma vez)
-                title0 = (pays[0].get("title") or "Outro").strip() or "Outro"
-                by_method[title0]["count"] += 1
+                method = (pays[0].get("title") or "Outro").strip() or "Outro"
+                by_method[method]["count"] += 1
             else:
                 cur = by_method.setdefault("Sem pagamento", {"count": 0, "total": 0.0})
                 cur["total"] = round(cur["total"] + gross, 2)
                 cur["count"] += 1
+
+            # Rótulo da conta a partir do external_reference: "mesa-N[-rodizio]-ts"
+            ref = str(d.get("external_reference") or "")
+            parts = ref.split("-")
+            if len(parts) >= 2 and parts[0] == "mesa" and parts[1].isdigit():
+                label = f"Mesa {parts[1]}" + (" (rodízio)" if "rodizio" in parts else "")
+            else:
+                label = d.get("number") or "Conta"
+            lt = str(d.get("local_time") or "")
+            hhmm = lt[11:16] if len(lt) >= 16 else ""
+            invoices.append({
+                "label": label,
+                "time": hhmm,
+                "amount": round(gross, 2),
+                "method": method,
+                "number": d.get("number"),
+            })
+
+        invoices.sort(key=lambda x: x["time"])
         return {
             "total": round(total, 2),
             "by_method": by_method,
             "count": len(docs),
+            "invoices": invoices,
             "documents": [d.get("number") for d in docs],
         }
 

@@ -3118,6 +3118,12 @@ async def close_cash_session(
             f"vendas POS sem fatura {reconciliacao['missing']}."
         )
 
+    # Ler dados só-de-leitura ANTES do fecho atómico: nada que possa falhar deve
+    # correr DEPOIS do commit (senão a caixa fica fechada mas o operador não
+    # recebe o Z, e o retry dá 409 "Caixa já fechada").
+    rest = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
+    restaurant_name = ((rest or {}).get("value") or {}).get("name", "Pizzaria")
+
     fechado_em = datetime.now(timezone.utc).isoformat()
     # Fecho ATÓMICO: só corre se a sessão ainda estiver aberta. Um duplo-fecho
     # concorrente falha aqui (matched=None) → 409, sem re-gravar/re-executar.
@@ -3140,9 +3146,6 @@ async def close_cash_session(
     )
     if atualizada is None:
         raise HTTPException(status_code=409, detail="Caixa já fechada")
-
-    rest = await db.settings.find_one({"key": "restaurant"}, {"_id": 0})
-    restaurant_name = ((rest or {}).get("value") or {}).get("name", "Pizzaria")
 
     # DADOS do Z (a Task 11 renderiza/imprime). Snapshot completo do fecho.
     return {

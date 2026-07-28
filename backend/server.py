@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Query, BackgroundTasks, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, UploadFile, File, Query, BackgroundTasks, Header, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -24,7 +24,7 @@ import secrets
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from vendus import VendusConfig, VendusClient, VendusError
-from pos.auth import hash_token, verify_token
+from pos.auth import hash_token, verify_token, create_pos_token, decode_pos_token
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -2705,6 +2705,91 @@ async def valid_device_token(raw: str) -> bool:
         if verify_token(raw, device["token_hash"]):
             return True
     return False
+
+# ==================== POS: LOGIN + SESSÃO + AUTH-DUPLO ====================
+# Login por PIN dos operadores POS: valida o PIN contra os `pos_users` ativos
+# e devolve um token de sessão curto (12h). A identidade do operador vem SEMPRE
+# do token — nunca de um corpo de pedido.
+
+class PosLoginRequest(BaseModel):
+    pin: str
+
+# Rate-limit simples e best-effort do login POS (sem dependências novas):
+# contador em memória por device token (preferido) ou IP do cliente. Não
+# substitui um rate-limit a sério, mas trava força-bruta de PIN num terminal.
+_POS_LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+_POS_LOGIN_WINDOW_S = 60.0
+_POS_LOGIN_MAX = 10
+
+def _pos_login_rate_check(key: str) -> None:
+    agora = datetime.now(timezone.utc).timestamp()
+    janela = [t for t in _POS_LOGIN_ATTEMPTS.get(key, []) if agora - t < _POS_LOGIN_WINDOW_S]
+    if len(janela) >= _POS_LOGIN_MAX:
+        _POS_LOGIN_ATTEMPTS[key] = janela
+        raise HTTPException(status_code=429, detail="Demasiadas tentativas. Aguarde um momento.")
+    janela.append(agora)
+    _POS_LOGIN_ATTEMPTS[key] = janela
+
+@api_router.post("/pos/login")
+async def pos_login(
+    body: PosLoginRequest,
+    request: Request,
+    x_device_token: Optional[str] = Header(None),
+):
+    # Chave do rate-limit: device token se existir, senão o IP do socket
+    # (não é um header falsificável, é o peer TCP).
+    rate_key = x_device_token or (request.client.host if request.client else "desconhecido")
+    _pos_login_rate_check(rate_key)
+
+    # Recolhe TODOS os utilizadores POS ativos cujo PIN bate (bcrypt).
+    # Se houver colisão de PIN (>1), recusamos e obrigamos o gestor a corrigir —
+    # nunca adivinhamos qual operador é (fecha a falha conhecida de PIN duplicado).
+    ativos = await db.pos_users.find({"active": True}, {"_id": 0}).to_list(1000)
+    correspondencias = [
+        u for u in ativos
+        if u.get("pin_hash") and verify_password(body.pin, u["pin_hash"])
+    ]
+
+    if len(correspondencias) == 0:
+        raise HTTPException(status_code=401, detail="PIN inválido")
+    if len(correspondencias) > 1:
+        raise HTTPException(status_code=401, detail="PIN duplicado, contacte o gestor")
+
+    operador = correspondencias[0]
+    token = create_pos_token(operador["id"], operador["name"])
+    return {"token": token, "user": {"id": operador["id"], "name": operador["name"]}}
+
+async def get_pos_operator(x_pos_token: Optional[str] = Header(None)) -> dict:
+    """Dependência dos endpoints só-POS: exige um `X-POS-Token` válido e devolve
+    o operador {id, name}. 401 se faltar, for inválido ou estiver expirado."""
+    if not x_pos_token:
+        raise HTTPException(status_code=401, detail="Token POS não fornecido")
+    try:
+        payload = decode_pos_token(x_pos_token)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Sessão POS expirada")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token POS inválido")
+    return {"id": payload.get("pos_user_id"), "name": payload.get("name")}
+
+async def get_pos_or_admin(
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+) -> dict:
+    """Auth-duplo: aceita o JWT de admin OU um device token POS válido.
+
+    Tenta primeiro o admin (`get_current_user`); se o JWT falhar (HTTPException),
+    cai para o device token. Devolve `{"kind": "admin", "user": ...}` ou
+    `{"kind": "pos"}` para o chamador distinguir. 401 se nenhum for válido.
+    """
+    try:
+        user = await get_current_user(authorization)
+        return {"kind": "admin", "user": user}
+    except HTTPException:
+        pass  # JWT de admin ausente/inválido — tentar device token
+    if x_device_token and await valid_device_token(x_device_token):
+        return {"kind": "pos"}
+    raise HTTPException(status_code=401, detail="Autenticação necessária (admin ou dispositivo POS)")
 
 # ==================== DASHBOARD ROUTES ====================
 

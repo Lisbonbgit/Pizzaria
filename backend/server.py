@@ -1342,12 +1342,13 @@ async def mark_order_paid(order_id: str, payment: Optional[OrderPaymentUpdate] =
 
 
 @api_router.post("/orders/{order_id}/items/{idx}/void")
-async def void_order_item(order_id: str, idx: int, authorization: Optional[str] = Header(None)):
+async def void_order_item(order_id: str, idx: int, authorization: Optional[str] = Header(None),
+                           x_device_token: Optional[str] = Header(None)):
     """Remove um item da conta da mesa SEM faturar (adicionado por engano pelo
     staff ou pelo cliente). Soft-void: marca items.{idx}.removed=True (mantém
     rasto). Um item já faturado não pode ser removido. Devolve um dict simples
     (não o OrderResponse, que era frágil com orders antigas sem todos os campos)."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
@@ -1372,10 +1373,11 @@ class ItemDiscount(BaseModel):
 
 @api_router.post("/orders/{order_id}/items/{idx}/discount")
 async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
-                            authorization: Optional[str] = Header(None)):
+                            authorization: Optional[str] = Header(None),
+                            x_device_token: Optional[str] = Header(None)):
     """Define um desconto (%) num item da mesa. Fica gravado no item e reflete-se
     na conta, na consulta e na fatura (enviado ao Vendus como discount_percentage)."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
     pct = max(0.0, min(100.0, float(body.pct or 0)))
     order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
     if not order:
@@ -1452,9 +1454,10 @@ class CloseTableRequest(BaseModel):
 
 
 @api_router.get("/tables/{table_number}/bill")
-async def get_table_bill(table_number: int, authorization: Optional[str] = Header(None)):
+async def get_table_bill(table_number: int, authorization: Optional[str] = Header(None),
+                          x_device_token: Optional[str] = Header(None)):
     """Conta em aberto da mesa (linhas por faturar, item a item)."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
     lines = await _open_bill_lines(table_number)
     total = round(sum((l.get("total_price", 0) or 0) for l in lines), 2)
     n_orders = len({l["order_id"] for l in lines})
@@ -1463,10 +1466,11 @@ async def get_table_bill(table_number: int, authorization: Optional[str] = Heade
 
 
 @api_router.get("/tables-overview")
-async def tables_overview(authorization: Optional[str] = Header(None)):
+async def tables_overview(authorization: Optional[str] = Header(None),
+                           x_device_token: Optional[str] = Header(None)):
     """Resumo de TODAS as mesas com a respetiva conta em aberto — para a grelha
     de mesas (uma só chamada)."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
     tables = await db.tables.find({"active": True}, {"_id": 0}).sort("number", 1).to_list(300)
     open_orders = await db.orders.find(
         {"paid": False, "status": {"$ne": "cancelled"}}, {"_id": 0}
@@ -1613,9 +1617,10 @@ async def get_table_session(table_number: int):
 
 
 @api_router.get("/vendus/payment-methods")
-async def vendus_payment_methods(authorization: Optional[str] = Header(None)):
+async def vendus_payment_methods(authorization: Optional[str] = Header(None),
+                                  x_device_token: Optional[str] = Header(None)):
     """Métodos de pagamento do Vendus (para o ecrã de fecho)."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
 
     def _fetch():
         c = _vendus_client()
@@ -1632,11 +1637,12 @@ async def vendus_payment_methods(authorization: Optional[str] = Header(None)):
 
 @api_router.post("/tables/{table_number}/close")
 async def close_table(table_number: int, req: CloseTableRequest,
-                      authorization: Optional[str] = Header(None)):
+                      authorization: Optional[str] = Header(None),
+                      x_device_token: Optional[str] = Header(None)):
     """Fecha a mesa: emite a Fatura Simplificada (FS) no Vendus com os itens da
     conta e o pagamento, imprime-a na caixa (ESC/POS do Vendus) e marca os
     pedidos como pagos."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
     all_lines = await _open_bill_lines(table_number)
     if not all_lines and not req.rodizio_tier:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
@@ -1904,10 +1910,11 @@ async def close_table(table_number: int, req: CloseTableRequest,
 
 
 @api_router.post("/tables/{table_number}/free")
-async def free_table(table_number: int, authorization: Optional[str] = Header(None)):
+async def free_table(table_number: int, authorization: Optional[str] = Header(None),
+                      x_device_token: Optional[str] = Header(None)):
     """Liberta a mesa SEM faturar: cancela os pedidos em aberto e fecha a sessão.
     Para quando alguém lê o QR mas não pede, ou o cliente sai sem consumir."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
     orders = await _open_orders_for_table(table_number)
     order_ids = [o["id"] for o in orders]
     cancelled = 0
@@ -1926,11 +1933,12 @@ async def free_table(table_number: int, authorization: Optional[str] = Header(No
 
 
 @api_router.post("/tables/{table_number}/print-consulta")
-async def print_table_consulta(table_number: int, authorization: Optional[str] = Header(None)):
+async def print_table_consulta(table_number: int, authorization: Optional[str] = Header(None),
+                                x_device_token: Optional[str] = Header(None)):
     """Imprime uma CONTA PROVISÓRIA (consulta de mesa) para mostrar ao cliente.
     NÃO é fatura — a fatura só sai no fecho (Vendus). Enfileira um print job tipo
     'cashier' com um snapshot da conta atual; o agente imprime quando ligar."""
-    await get_current_user(authorization)
+    await get_pos_or_admin(authorization, x_device_token)
     orders = await _open_orders_for_table(table_number)
 
     items = []

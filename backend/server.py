@@ -2248,9 +2248,12 @@ class ReprintRequest(BaseModel):
     printer_ids: List[str] = []
 
 @api_router.post("/orders/{order_id}/reprint")
-async def reprint_order(order_id: str, request: Optional[ReprintRequest] = None, authorization: Optional[str] = Header(None)):
+async def reprint_order(order_id: str, request: Optional[ReprintRequest] = None,
+                        authorization: Optional[str] = Header(None),
+                        x_device_token: Optional[str] = Header(None)):
     """Reprint order to specific printers or all active printers"""
-    await get_current_user(authorization)
+    # Auth-duplo: o botão "Cozinha" do checkout é usado também no /pos (device token).
+    await get_pos_or_admin(authorization, x_device_token)
     
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:

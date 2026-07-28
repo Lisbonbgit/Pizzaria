@@ -23,10 +23,11 @@ import base64
 import secrets
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, BulkWriteError
 from vendus import VendusConfig, VendusClient, VendusError
 from pos.auth import hash_token, verify_token, create_pos_token, decode_pos_token
 from pos.cash import pick_open_session
+from pos.sales import build_pos_sales_rows
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -109,6 +110,16 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.error(f"Não foi possível criar o índice único de cash_sessions: {e}")
+
+    # --- Índice único de pos_sales (uma linha por documento fiscal) ---
+    # Cada venda POS = uma FS emitida no Vendus. O índice único em
+    # `vendus_document_id` torna a gravação idempotente: um retry de um fecho já
+    # registado não duplica linhas (o insert_many em close_table absorve os
+    # duplicados). Falha aqui não deve impedir o arranque — fica registada.
+    try:
+        await db.pos_sales.create_index("vendus_document_id", unique=True)
+    except Exception as e:
+        logger.error(f"Não foi possível criar o índice único de pos_sales: {e}")
 
     # --- Scheduler do relatório diário ---
     # Protegido: uma falha/lentidão da BD no arranque não deve impedir a API de servir.
@@ -1652,11 +1663,32 @@ async def vendus_payment_methods(authorization: Optional[str] = Header(None),
 @api_router.post("/tables/{table_number}/close")
 async def close_table(table_number: int, req: CloseTableRequest,
                       authorization: Optional[str] = Header(None),
-                      x_device_token: Optional[str] = Header(None)):
+                      x_device_token: Optional[str] = Header(None),
+                      x_pos_token: Optional[str] = Header(None)):
     """Fecha a mesa: emite a Fatura Simplificada (FS) no Vendus com os itens da
     conta e o pagamento, imprime-a na caixa (ESC/POS do Vendus) e marca os
     pedidos como pagos."""
-    await get_pos_or_admin(authorization, x_device_token)
+    auth = await get_pos_or_admin(authorization, x_device_token)
+
+    # Operador da venda: vem SEMPRE do token POS (nunca do corpo do pedido), para
+    # a responsabilização não ser falsificável (§2.6). No caminho admin legado
+    # (só JWT, sem token POS) fica `None` e não se grava pos_sales.
+    pos_user_id = None
+    if x_pos_token:
+        try:
+            pos_user_id = decode_pos_token(x_pos_token).get("pos_user_id")
+        except Exception:
+            pos_user_id = None
+
+    # Sessão de caixa resolvida no SERVIDOR (nunca do corpo). No caminho POS, se
+    # as definições exigem caixa aberta e não há sessão, recusa ANTES de faturar
+    # — não se emite FS sem caixa aberta. O admin legado (JWT) segue sem caixa.
+    sess = await db.cash_sessions.find_one({"status": "open"})
+    if auth.get("kind") == "pos":
+        pos_cfg = await _pos_settings_config()
+        if pos_cfg.get("require_open_cash", True) and not sess:
+            raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
     all_lines = await _open_bill_lines(table_number)
     if not all_lines and not req.rodizio_tier:
         raise HTTPException(status_code=400, detail="Mesa sem conta em aberto")
@@ -1851,6 +1883,26 @@ async def close_table(table_number: int, req: CloseTableRequest,
                 "paid": True, "status": "delivered",
                 "payment_method": str(req.payment_method_id),
                 "vendus_document_id": docs[0].get("id")}})
+
+    # Regista uma linha de venda POS por documento emitido (fecho Z + reconciliação
+    # da Task 10). SÓ no caminho POS com caixa aberta — o admin legado (JWT) não
+    # movimenta caixa. A sessão foi resolvida no servidor e o operador vem do token
+    # POS: nunca do corpo. A FS JÁ está emitida e válida neste ponto, por isso uma
+    # falha a gravar pos_sales NUNCA pode derrubar o fecho (500) — é registada e a
+    # reconciliação apanha órfãos. O índice único em `vendus_document_id` absorve
+    # duplicados de um retry (idempotente).
+    if auth.get("kind") == "pos" and sess:
+        rows = build_pos_sales_rows(
+            invoices, docs, req.payment_method_id, sess["id"], pos_user_id,
+            "rodizio" if rodizio_pay is not None else "mesa", table_number,
+        )
+        if rows:
+            try:
+                await db.pos_sales.insert_many(rows, ordered=False)
+            except (BulkWriteError, DuplicateKeyError) as e:
+                logger.warning(f"pos_sales: documento(s) já registado(s), ignorado (idempotente): {e}")
+            except Exception as e:
+                logger.error(f"pos_sales: falha a gravar, ignorado (FS já emitida e válida): {e}")
 
     # Fecho da sessão. Rodízio: contabiliza as pessoas pagas e salda quando o
     # rodízio todo + todos os extras com preço estiverem pagos. À la carte: salda

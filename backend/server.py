@@ -1420,18 +1420,74 @@ async def void_order_item(order_id: str, idx: int, authorization: Optional[str] 
     return {"ok": True, "order_id": order_id, "idx": idx, "order_cancelled": cancelled}
 
 
+class ItemEdit(BaseModel):
+    unit_price: Optional[float] = None
+    quantity: Optional[int] = None
+    vendus_tax_id: Optional[str] = None  # INT=13% | NOR=23%
+
+
+@api_router.post("/orders/{order_id}/items/{idx}/edit")
+async def edit_order_item(order_id: str, idx: int, body: ItemEdit,
+                          authorization: Optional[str] = Header(None),
+                          x_device_token: Optional[str] = Header(None)):
+    """Edita preço/quantidade/IVA de um item da mesa (correção de um erro de
+    lançamento ou override do IVA do produto para este item). Grava SÓ os
+    campos presentes no corpo; quando o preço OU a quantidade mudam, recalcula
+    `total_price` (lê o outro valor no item atual, para não o perder). Devolve
+    um dict simples (não o OrderResponse, que era frágil com orders antigas
+    sem todos os campos — mesmo problema do `void_order_item`)."""
+    await get_pos_or_admin(authorization, x_device_token)
+    if body.unit_price is not None and body.unit_price < 0:
+        raise HTTPException(status_code=400, detail="Preço inválido")
+    if body.quantity is not None and body.quantity < 1:
+        raise HTTPException(status_code=400, detail="Quantidade inválida")
+    if body.vendus_tax_id is not None and body.vendus_tax_id not in ("INT", "NOR"):
+        raise HTTPException(status_code=400, detail="IVA inválido")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    items = order.get("items", [])
+    if idx < 0 or idx >= len(items):
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+    item = items[idx]
+    if item.get("paid"):
+        raise HTTPException(status_code=400, detail="Item já faturado — não pode ser editado")
+
+    updates = {}
+    if body.unit_price is not None:
+        updates[f"items.{idx}.unit_price"] = body.unit_price
+    if body.quantity is not None:
+        updates[f"items.{idx}.quantity"] = body.quantity
+    if body.vendus_tax_id is not None:
+        updates[f"items.{idx}.vendus_tax_id"] = body.vendus_tax_id
+    if body.unit_price is not None or body.quantity is not None:
+        new_price = body.unit_price if body.unit_price is not None else item.get("unit_price", 0)
+        new_qty = body.quantity if body.quantity is not None else item.get("quantity", 1)
+        updates[f"items.{idx}.total_price"] = round(float(new_price or 0) * float(new_qty or 0), 2)
+
+    if updates:
+        await db.orders.update_one({"id": order_id}, {"$set": updates})
+
+    resp = {"ok": True, "order_id": order_id, "idx": idx}
+    resp.update({k.rsplit(".", 1)[-1]: v for k, v in updates.items()})
+    return resp
+
+
 class ItemDiscount(BaseModel):
-    pct: float = 0  # 0..100
+    pct: Optional[float] = None     # 0..100
+    amount: Optional[float] = None  # € — mutuamente exclusivo com pct (amount ganha)
 
 
 @api_router.post("/orders/{order_id}/items/{idx}/discount")
 async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
                             authorization: Optional[str] = Header(None),
                             x_device_token: Optional[str] = Header(None)):
-    """Define um desconto (%) num item da mesa. Fica gravado no item e reflete-se
-    na conta, na consulta e na fatura (enviado ao Vendus como discount_percentage)."""
+    """Define um desconto num item da mesa — percentagem (`pct`, 0..100) OU
+    montante em euros (`amount`); são mutuamente exclusivos, dar um limpa o
+    outro. Fica gravado no item e reflete-se na conta, na consulta e na
+    fatura (enviado ao Vendus como discount_percentage ou discount_amount)."""
     await get_pos_or_admin(authorization, x_device_token)
-    pct = max(0.0, min(100.0, float(body.pct or 0)))
     order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
@@ -1440,7 +1496,22 @@ async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
         raise HTTPException(status_code=404, detail="Item não encontrado")
     if items[idx].get("paid"):
         raise HTTPException(status_code=400, detail="Item já faturado")
-    await db.orders.update_one({"id": order_id}, {"$set": {f"items.{idx}.discount_pct": pct}})
+
+    if body.amount is not None:
+        amount = round(max(0.0, float(body.amount or 0)), 2)
+        await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {f"items.{idx}.discount_amount": amount},
+             "$unset": {f"items.{idx}.discount_pct": ""}},
+        )
+        return {"ok": True, "order_id": order_id, "idx": idx, "discount_amount": amount}
+
+    pct = max(0.0, min(100.0, float(body.pct or 0)))
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {f"items.{idx}.discount_pct": pct},
+         "$unset": {f"items.{idx}.discount_amount": ""}},
+    )
     return {"ok": True, "order_id": order_id, "idx": idx, "discount_pct": pct}
 
 # ==================== VENDUS: FECHO DE MESA ====================

@@ -1,0 +1,70 @@
+"""Preço/IVA/desconto por linha (Fase 3, Task 1) — helper puro, sem I/O.
+
+`line_vendus` resolve a linha Vendus de UM item da conta: título (com
+variação, se houver), quantidade, preço bruto, IVA (override do item > IVA
+do produto > default) e desconto (percentagem OU montante — mutuamente
+exclusivos, o montante ganha). Espelha a lógica de `close_table`
+(server.py) mas isolada e sem depender da BD, para poder ser testada aqui e
+reutilizada nos endpoints de edição de linha (Task 1) e no fecho (Task 2).
+"""
+from pos.pricing import line_vendus
+
+
+def test_override_iva_e_preco():
+    it = {"product_name": "Pizza", "quantity": 2, "unit_price": 15.0, "vendus_tax_id": "NOR"}
+    r = line_vendus(it, product_tax_id="INT", default_tax_id="INT")
+    assert r["tax_id"] == "NOR"          # override do item ganha ao IVA do produto
+    assert r["gross_price"] == 15.0 and r["qty"] == 2
+
+
+def test_fallback_iva_produto():
+    it = {"product_name": "Água", "quantity": 1, "unit_price": 1.0}
+    assert line_vendus(it, product_tax_id="INT", default_tax_id="NOR")["tax_id"] == "INT"
+
+
+def test_fallback_iva_default():
+    # Sem override do item nem IVA do produto -> cai no default.
+    it = {"product_name": "Item", "quantity": 1, "unit_price": 1.0}
+    assert line_vendus(it, product_tax_id=None, default_tax_id="NOR")["tax_id"] == "NOR"
+
+
+def test_desconto_pct_vs_amount():
+    a = line_vendus({"product_name": "X", "quantity": 1, "unit_price": 10.0, "discount_pct": 10}, "INT", "INT")
+    assert a["discount_percentage"] == 10 and "discount_amount" not in a
+    b = line_vendus({"product_name": "X", "quantity": 1, "unit_price": 10.0, "discount_amount": 2.5}, "INT", "INT")
+    assert b["discount_amount"] == 2.5 and "discount_percentage" not in b
+
+
+def test_sem_desconto():
+    # Sem discount_pct nem discount_amount -> nenhuma das duas chaves aparece.
+    r = line_vendus({"product_name": "X", "quantity": 1, "unit_price": 10.0}, "INT", "INT")
+    assert "discount_percentage" not in r and "discount_amount" not in r
+
+
+def test_titulo_com_variacao():
+    it = {"product_name": "Pizza", "quantity": 1, "unit_price": 8.5, "variation": {"name": "Familiar"}}
+    r = line_vendus(it, "INT", "INT")
+    assert r["title"] == "Pizza (Familiar)"
+
+
+def test_titulo_sem_variacao():
+    it = {"product_name": "Pizza", "quantity": 1, "unit_price": 8.5}
+    assert line_vendus(it, "INT", "INT")["title"] == "Pizza"
+
+
+def test_amount_ganha_a_pct():
+    # Se ambos estiverem presentes (não devia acontecer, mas a função é pura e
+    # tem de decidir): discount_amount tem precedência sobre discount_pct.
+    it = {"product_name": "X", "quantity": 1, "unit_price": 10.0, "discount_pct": 10, "discount_amount": 2.5}
+    r = line_vendus(it, "INT", "INT")
+    assert r["discount_amount"] == 2.5 and "discount_percentage" not in r
+
+
+def test_gross_price_arredondado():
+    it = {"product_name": "X", "quantity": 1, "unit_price": 1.005}
+    assert line_vendus(it, "INT", "INT")["gross_price"] == 1.0
+
+
+def test_quantity_default_um():
+    it = {"product_name": "X", "unit_price": 5.0}
+    assert line_vendus(it, "INT", "INT")["qty"] == 1

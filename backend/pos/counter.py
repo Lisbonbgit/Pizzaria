@@ -3,12 +3,14 @@
 Um pedido de balcão não tem mesa: o operador escolhe produtos diretamente no
 POS (Fase 2, Task 1) e o pedido segue para a cozinha como qualquer outro
 pedido, mas com `table_number=None` e `source="balcao"`. `build_counter_items`
-monta os itens (título, quantidade, preço, imposto) e o total a partir do
-carrinho e do catálogo de produtos carregado por quem chama; `counter_ext_ref`
-gera a referência externa estável usada pela integração fiscal (idempotência,
-mesmo espírito do `external_reference` do fecho de mesa).
+monta os itens no MESMO formato `OrderItem` usado pelo resto do sistema
+(`product_id`, `product_name`, `quantity`, `unit_price`, `total_price`,
+`vendus_tax_id`) — é o formato que os formatadores ESC/POS da cozinha/caixa e
+o dashboard já sabem ler — a partir do carrinho e do catálogo de produtos
+carregado por quem chama; `counter_ext_ref` gera a referência externa estável
+usada pela integração fiscal (idempotência, mesmo espírito do
+`external_reference` do fecho de mesa).
 """
-from typing import Optional
 
 
 def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NOR") -> dict:
@@ -17,8 +19,16 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
     `products_by_id`: {product_id: {"name", "base_price", "vendus_tax_id"?}}.
     `cart`: [{"product_id", "quantity"}]. Entradas cujo `product_id` não existe
     no catálogo (ex: produto removido entre o carrinho e o envio) são
-    ignoradas em vez de rebentar. `tax_id` usa o do produto quando definido,
-    senão cai no `default_tax` (ex: produto ainda sem `vendus_tax_id`).
+    ignoradas em vez de rebentar.
+
+    Os itens saem no formato `OrderItem` (`product_id`, `product_name`,
+    `quantity`, `unit_price`, `total_price`) para que os talões ESC/POS
+    (cozinha/caixa) e o dashboard os leiam sem tratamento especial. O
+    `vendus_tax_id` é guardado tal como vem do produto (pode ser `None`,
+    quando o produto ainda não tem imposto Vendus definido) — a resolução
+    para o `default_tax` fica para a Task 2 da Fase 2, no momento da
+    faturação, não aqui. `default_tax` é mantido na assinatura por
+    compatibilidade (quem chama já o passa) mas não é usado nesta função.
     """
     items = []
     total = 0.0
@@ -27,15 +37,17 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
         if prod is None:
             continue
         qty = entry.get("quantity", 0)
-        price = prod.get("base_price", 0)
-        tax_id = prod.get("vendus_tax_id") or default_tax
+        unit_price = prod.get("base_price", 0)
+        item_total = round(unit_price * qty, 2)
         items.append({
-            "title": prod.get("name"),
-            "qty": qty,
-            "gross_price": price,
-            "tax_id": tax_id,
+            "product_id": entry.get("product_id"),
+            "product_name": prod.get("name"),
+            "quantity": qty,
+            "unit_price": unit_price,
+            "total_price": item_total,
+            "vendus_tax_id": prod.get("vendus_tax_id"),
         })
-        total += price * qty
+        total += item_total
     return {"items": items, "total": round(total, 2)}
 
 

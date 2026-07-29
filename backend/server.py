@@ -598,9 +598,14 @@ class ESCPOSFormatter:
         data.extend(self.NORMAL_SIZE)
         data.extend(self.BOLD_OFF)
         
-        # Table number - BIG
+        # Table number - BIG (balcão não tem mesa: imprime "BALCAO" em vez de
+        # "MESA: None")
+        table_number = order.get('table_number')
         data.extend(self.DOUBLE_SIZE)
-        data.extend(self._text(f"MESA: {order['table_number']}\n"))
+        if table_number and order.get('source') != 'balcao':
+            data.extend(self._text(f"MESA: {table_number}\n"))
+        else:
+            data.extend(self._text("BALCAO\n"))
         data.extend(self.NORMAL_SIZE)
         
         # Date/time
@@ -698,9 +703,13 @@ class ESCPOSFormatter:
         data.extend(self.NORMAL_SIZE)
         data.extend(self.BOLD_OFF)
         
-        # Table
+        # Table (balcão não tem mesa: imprime "BALCAO" em vez de "MESA: None")
+        table_number = order.get('table_number')
         data.extend(self.BOLD_ON)
-        data.extend(self._text(f"MESA: {order['table_number']}\n"))
+        if table_number and order.get('source') != 'balcao':
+            data.extend(self._text(f"MESA: {table_number}\n"))
+        else:
+            data.extend(self._text("BALCAO\n"))
         data.extend(self.BOLD_OFF)
         
         data.extend(self._line('-'))
@@ -3328,7 +3337,7 @@ async def update_pos_settings(cfg: PosSettingsConfig, authorization: Optional[st
 
 class CounterOrderItem(BaseModel):
     product_id: str
-    quantity: int
+    quantity: int = Field(gt=0)
 
 
 class CounterOrderRequest(BaseModel):

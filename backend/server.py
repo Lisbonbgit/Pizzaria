@@ -33,7 +33,7 @@ from pos.idempotency import stable_ext_ref
 from pos.cash_math import cash_sales_from_vendus, expected_cash, movements_breakdown, reconciliation_diff
 from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
-from pos.app_products import extract_app_products
+from pos.app_products import extract_app_products, is_app_product
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -2239,9 +2239,18 @@ async def import_menu_from_vendus(authorization: Optional[str] = Header(None)):
             cat_map[str(vc.get("id"))] = await _ensure_category(title)
 
     prods_created = prods_updated = 0
+    app_skipped = 0
     for vp in vprods:
         name = (vp.get("title") or "").strip()
         if not name:
+            continue
+        if is_app_product(name):
+            # Produtos "App" (preços de delivery) são geridos SÓ pelo import
+            # dedicado (/admin/pos/import-app-products) na categoria pos_only
+            # "Venda Aplicações". O import geral do menu SALTA-os — senão puxava-os
+            # de volta para a categoria nativa (não-pos_only) e re-expunha os
+            # preços de delivery no menu do cliente por QR.
+            app_skipped += 1
             continue
         ref = vp.get("reference")
         price = float(vp.get("gross_price") or 0)
@@ -2270,7 +2279,8 @@ async def import_menu_from_vendus(authorization: Optional[str] = Header(None)):
             prods_created += 1
 
     return {"categories_created": cats_created,
-            "products_created": prods_created, "products_updated": prods_updated}
+            "products_created": prods_created, "products_updated": prods_updated,
+            "app_products_skipped": app_skipped}
 
 
 class ReprintRequest(BaseModel):

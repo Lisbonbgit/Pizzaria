@@ -3,7 +3,7 @@
 `extract_app_products` alimenta o import de "Venda Aplicações" no catálogo do
 balcão (server.py: POST /admin/pos/import-app-products).
 """
-from pos.app_products import extract_app_products
+from pos.app_products import extract_app_products, is_app_product
 
 
 def test_filtra_so_produtos_com_app_no_titulo():
@@ -47,3 +47,30 @@ def test_produto_sem_preco_ou_referencia_nao_rebenta():
 
 def test_lista_vazia_devolve_lista_vazia():
     assert extract_app_products([]) == []
+
+
+# --- is_app_product: predicado partilhado (o import geral do menu SALTA estes,
+#     para não puxar os preços de delivery de volta ao menu do cliente) ---
+
+def test_is_app_product_reconhece_app_case_insensitive():
+    assert is_app_product("Pizza Calabresa App") is True
+    assert is_app_product("Sumo APP Laranja") is True
+    assert is_app_product("  Água App  ") is True
+
+
+def test_is_app_product_falso_para_normais_e_vazios():
+    assert is_app_product("Pizza Calabresa") is False
+    assert is_app_product("Coca-Cola 33cl") is False
+    assert is_app_product("") is False
+    assert is_app_product(None) is False
+
+
+def test_is_app_product_alinhado_com_extract():
+    # O que o extract inclui é exatamente o que is_app_product marca True.
+    vprods = [
+        {"title": "Pizza Calabresa App", "gross_price": 18.4},
+        {"title": "Pizza Calabresa", "gross_price": 12.5},
+    ]
+    incluidos = {p["name"] for p in extract_app_products(vprods)}
+    marcados = {vp["title"] for vp in vprods if is_app_product(vp["title"])}
+    assert incluidos == marcados == {"Pizza Calabresa App"}

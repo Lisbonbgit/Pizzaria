@@ -8,6 +8,17 @@ duplicada, para os dois imports lerem o Vendus da mesma forma.
 """
 
 
+def is_app_product(title) -> bool:
+    """True se o `title` é de um produto "App" (preço de delivery). Único ponto
+    de verdade para o filtro, partilhado por `extract_app_products` (import de
+    "Venda Aplicações") e pelo import geral do menu (`import_menu_from_vendus`),
+    que os SALTA — senão o import geral puxava-os da categoria pos_only de volta
+    para a categoria nativa e re-expunha os preços de delivery no menu do cliente.
+    """
+    t = (title or "").strip().lower()
+    return bool(t) and "app" in t
+
+
 def extract_app_products(vendus_products: list) -> list:
     """Filtra os produtos cujo `title` contém "app" (case-insensitive) e
     devolve `[{"name", "base_price", "vendus_tax_id", "vendus_reference"}]`.
@@ -19,7 +30,7 @@ def extract_app_products(vendus_products: list) -> list:
     out = []
     for vp in vendus_products:
         title = (vp.get("title") or "").strip()
-        if not title or "app" not in title.lower():
+        if not is_app_product(title):
             continue
         out.append({
             "name": title,

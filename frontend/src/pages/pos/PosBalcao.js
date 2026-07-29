@@ -38,6 +38,7 @@ const PosBalcao = ({ onClose }) => {
   const [loadingCatalog, setLoadingCatalog] = useState(true);
 
   const [cart, setCart] = useState([]); // [{id, name, price, qty}]
+  const [selectedCat, setSelectedCat] = useState(null);
 
   const [printing, setPrinting] = useState(false);
   const [orderId, setOrderId] = useState(null);
@@ -161,6 +162,17 @@ const PosBalcao = ({ onClose }) => {
       .sort((a, b) => (order.has(a.cid) ? order.get(a.cid) : 999) - (order.has(b.cid) ? order.get(b.cid) : 999));
   })();
 
+  // Separador (tab) ativo por omissão: o primeiro grupo com produtos, assim
+  // que o catálogo chega — mesma UX do POS Vendus (separadores no topo, em
+  // vez de secções empilhadas).
+  useEffect(() => {
+    if (selectedCat == null && productGroups.length > 0) {
+      setSelectedCat(productGroups[0].cid);
+    }
+  }, [productGroups, selectedCat]);
+
+  const activeGroup = productGroups.find((g) => g.cid === selectedCat) || productGroups[0] || null;
+
   // Só pode sair antes de imprimir, ou depois de a venda estar concluída
   // (documento emitido) — nunca a meio, com um pedido já na cozinha e sem
   // fatura.
@@ -203,13 +215,30 @@ const PosBalcao = ({ onClose }) => {
           ) : productGroups.length === 0 ? (
             <p className="py-12 text-center text-sm text-muted-foreground">Sem produtos disponíveis.</p>
           ) : (
-            productGroups.map((g) => (
-              <section key={g.cid} className="mb-6">
-                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                  {g.name}
-                </h2>
+            <>
+              {/* Separadores por categoria (estilo POS Vendus) — um clique troca
+                  o grupo visível; a grelha mostra só a categoria ativa. */}
+              <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {productGroups.map((g) => (
+                  <button
+                    key={g.cid}
+                    type="button"
+                    onClick={() => setSelectedCat(g.cid)}
+                    className={[
+                      'shrink-0 whitespace-nowrap rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors touch-manipulation',
+                      g.cid === selectedCat
+                        ? 'bg-[#5a1a1a] text-white shadow-sm'
+                        : 'bg-muted text-muted-foreground hover:bg-muted/70',
+                    ].join(' ')}
+                  >
+                    {g.name}
+                  </button>
+                ))}
+              </div>
+
+              {activeGroup && (
                 <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
-                  {g.items.map((p) => (
+                  {activeGroup.items.map((p) => (
                     <button
                       key={p.id}
                       type="button"
@@ -227,8 +256,8 @@ const PosBalcao = ({ onClose }) => {
                     </button>
                   ))}
                 </div>
-              </section>
-            ))
+              )}
+            </>
           )}
         </div>
 

@@ -33,6 +33,7 @@ from pos.idempotency import stable_ext_ref
 from pos.cash_math import cash_sales_from_vendus, expected_cash, movements_breakdown, reconciliation_diff
 from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
+from pos.app_products import extract_app_products
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -3872,6 +3873,71 @@ async def checkout_counter_order(
         })
 
     return {"doc_number": doc.get("number"), "total": total}
+
+
+@api_router.post("/admin/pos/import-app-products")
+async def import_app_products(authorization: Optional[str] = Header(None)):
+    """Importa os produtos "App" do Vendus (preços de entrega/delivery, ex.:
+    "Pizza Calabresa App") para uma categoria própria "Venda Aplicações",
+    para ficarem vendáveis no balcão. Upsert idempotente por
+    `vendus_reference` (ou nome, se sem referência) — reutiliza a MESMA
+    extração de preço/IVA que `import_menu_from_vendus`
+    (`pos.app_products.extract_app_products`). Nunca mexe em produtos que não
+    sejam "App"."""
+    await get_current_user(authorization)
+
+    def _fetch():
+        c = _vendus_client()
+        try:
+            return c.list_products(per_page=500)
+        finally:
+            c.close()
+    try:
+        vprods = await asyncio.to_thread(_fetch)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Vendus indisponível: {e}")
+
+    # Garante a categoria "Venda Aplicações", ativa (reativa-a se já existir
+    # mas estivesse desativada) — mesmo mecanismo de `_ensure_category` do
+    # `import_menu_from_vendus`, mas por nome fixo em vez de vindo do Vendus.
+    existing_cats = await db.categories.find({}, {"_id": 0}).to_list(500)
+    by_name = {c["name"].strip().lower(): c for c in existing_cats}
+    cat_key = "venda aplicações"
+    if cat_key in by_name:
+        app_cat_id = by_name[cat_key]["id"]
+        if not by_name[cat_key].get("active", True):
+            await db.categories.update_one({"id": app_cat_id}, {"$set": {"active": True}})
+    else:
+        app_cat_id = str(uuid.uuid4())
+        await db.categories.insert_one({
+            "id": app_cat_id, "name": "Venda Aplicações", "order": len(existing_cats),
+            "active": True, "available_days": [],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    imported = 0
+    for ap in extract_app_products(vprods):
+        ref = ap["vendus_reference"]
+        query = {"vendus_reference": ref} if ref else {"name": ap["name"]}
+        existing = await db.products.find_one(query, {"_id": 0})
+        if existing:
+            await db.products.update_one({"id": existing["id"]}, {"$set": {
+                "name": ap["name"], "base_price": ap["base_price"],
+                "category_id": app_cat_id, "vendus_tax_id": ap["vendus_tax_id"],
+                "vendus_reference": ref, "available": True, "rodizio_only": False,
+            }})
+        else:
+            await db.products.insert_one({
+                "id": str(uuid.uuid4()), "name": ap["name"], "description": "",
+                "category_id": app_cat_id, "base_price": ap["base_price"], "image_url": None,
+                "variations": [], "extras": [], "complement_groups": [],
+                "preference_options": None, "available": True, "featured": False,
+                "rodizio_only": False, "vendus_tax_id": ap["vendus_tax_id"], "vendus_reference": ref,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        imported += 1
+
+    return {"imported": imported, "category_id": app_cat_id}
 
 # ==================== DASHBOARD ROUTES ====================
 

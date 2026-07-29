@@ -253,7 +253,7 @@ const PosFecharCaixa = ({ operator, onCancel, onClosed }) => {
               {movimentos.map((m, i) => (
                 <div key={i} className="flex items-center justify-between text-sm">
                   <span className="text-white/85">
-                    {m.type === 'reforco' ? 'Reforço' : 'Sangria'}
+                    {m.type === 'reforco' ? 'Entrada de Dinheiro' : 'Saída de Dinheiro'}
                     {m.reason ? ` · ${m.reason}` : ''}
                   </span>
                   <span className={`tabular-nums font-medium ${m.type === 'reforco' ? 'text-emerald-300' : 'text-amber-300'}`}>

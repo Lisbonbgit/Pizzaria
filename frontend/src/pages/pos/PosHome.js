@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Banknote, Loader2, LogOut, RefreshCw, Store, Users, Wallet } from 'lucide-react';
+import {
+  ArrowDownCircle, ArrowUpCircle, ChevronDown, Info, Loader2, LogOut, RefreshCw,
+  Store, Users, Vault, Wallet,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,6 +10,10 @@ import { Label } from '@/components/ui/label';
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { posAPI, posCheckout } from '@/lib/api';
 import TableCheckout from '@/pages/checkout/TableCheckout';
 
@@ -30,7 +37,7 @@ const formatHora = (iso) => {
 // Home do POS: grelha de mesas (com refresh periódico via posCheckout.overview())
 // + cartão "Balcão" (Fase 2, Task 4: abre `PosBalcao`, ecrã cheio, montado
 // pelo PosApp via `onBalcao`) + cabeçalho com o operador, o estado da caixa
-// e os botões Fechar Caixa / Sair.
+// e os botões menu Caixa / Sair.
 //
 // Espelha o layout/cores da grelha de AdminOrders.js (cartão por mesa, cor
 // "ocupada" vs "livre", total/pessoas/pedidos quando ocupada), reskinado
@@ -46,9 +53,11 @@ const formatHora = (iso) => {
 // aqui é aberto com `api={posCheckout}` para que o fecho vá pelo device+PIN
 // token (não o JWT admin) e o backend ligue a venda à sessão de caixa.
 //
-// Sangria/Reforço (Task 7, opcional): dialog simples (tipo + valor + motivo)
-// sobre `posAPI.cashMovement` — não altera a grelha de mesas, por isso não
-// mexe em `tables`/`load`.
+// Menu "Caixa" (Task 7, estilo Vendus): dropdown no cabeçalho com Estado da
+// Caixa, Entrada/Saída de Dinheiro (dialog partilhado, tipo interno continua
+// sangria/reforco — só o rótulo muda), Abrir Gaveta (posAPI.openDrawer) e
+// Fechar Caixa. Não altera a grelha de mesas, por isso não mexe em
+// `tables`/`load`.
 const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onLogout }) => {
   const [tables, setTables] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -59,6 +68,10 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
   const [movValor, setMovValor] = useState('');
   const [movMotivo, setMovMotivo] = useState('');
   const [movSubmitting, setMovSubmitting] = useState(false);
+  const [estadoOpen, setEstadoOpen] = useState(false);
+  const [estadoLoading, setEstadoLoading] = useState(false);
+  const [estadoSessao, setEstadoSessao] = useState(null);
+  const [drawerSubmitting, setDrawerSubmitting] = useState(false);
 
   const load = useCallback(async (silent = false) => {
     if (silent) setRefreshing(true);
@@ -80,8 +93,10 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
     return () => clearInterval(id);
   }, [load]);
 
-  const abrirMovDialog = useCallback(() => {
-    setMovType('sangria');
+  // `type` é sempre passado pelo item do menu Caixa (reforco = Entrada,
+  // sangria = Saída) — o dialog só pede o valor/motivo, o tipo já vem escolhido.
+  const abrirMovDialog = useCallback((type) => {
+    setMovType(type);
     setMovValor('');
     setMovMotivo('');
     setMovDialogOpen(true);
@@ -96,7 +111,7 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
     setMovSubmitting(true);
     try {
       await posAPI.cashMovement(movType, valor, movMotivo.trim() || undefined);
-      toast.success(movType === 'reforco' ? 'Reforço registado' : 'Sangria registada');
+      toast.success(movType === 'reforco' ? 'Entrada registada' : 'Saída registada');
       setMovDialogOpen(false);
     } catch (err) {
       console.error('Erro ao registar movimento de caixa:', err);
@@ -106,8 +121,39 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
     }
   }, [movType, movValor, movMotivo]);
 
+  // Estado da Caixa: reconsulta `posAPI.cashCurrent()` para mostrar dados
+  // frescos (aberta por / desde / fundo) em vez de confiar só na prop
+  // `session`, que só é atualizada pelo componente-pai (PosApp).
+  const abrirEstadoCaixa = useCallback(async () => {
+    setEstadoOpen(true);
+    setEstadoLoading(true);
+    try {
+      const r = await posAPI.cashCurrent();
+      setEstadoSessao(r.data || null);
+    } catch (err) {
+      console.error('Erro ao obter o estado da caixa:', err);
+      setEstadoSessao(session || null);
+    } finally {
+      setEstadoLoading(false);
+    }
+  }, [session]);
+
+  const abrirGaveta = useCallback(async () => {
+    setDrawerSubmitting(true);
+    try {
+      await posAPI.openDrawer();
+      toast.success('Gaveta aberta');
+    } catch (err) {
+      console.error('Erro ao abrir a gaveta:', err);
+      toast.error(err.response?.data?.detail || 'Não foi possível abrir a gaveta');
+    } finally {
+      setDrawerSubmitting(false);
+    }
+  }, []);
+
   const occupiedCount = tables.filter((t) => t.occupied).length;
   const selectedTable = tables.find((t) => t.number === selectedTableNum) || null;
+  const movLabel = movType === 'reforco' ? 'Entrada de Dinheiro' : 'Saída de Dinheiro';
 
   return (
     <div className="min-h-screen flex flex-col bg-[#5a1a1a] text-white">
@@ -134,21 +180,44 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
             <RefreshCw className={`h-4 w-4 sm:mr-1.5 ${refreshing ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">Atualizar</span>
           </Button>
-          <Button
-            variant="outline"
-            onClick={abrirMovDialog}
-            className="h-11 border-white/30 bg-transparent px-3 text-white hover:bg-white/10 hover:text-white"
-          >
-            <Banknote className="h-4 w-4 sm:mr-1.5" />
-            <span className="hidden sm:inline">Sangria/Reforço</span>
-          </Button>
-          <Button
-            onClick={onFecharCaixa}
-            className="h-11 bg-white px-4 font-semibold text-[#5a1a1a] hover:bg-white/90"
-          >
-            <Wallet className="h-4 w-4 mr-1.5" />
-            Fechar Caixa
-          </Button>
+          {/* Menu "Caixa" (estilo Vendus): Estado / Entrada / Saída / Abrir Gaveta / Fechar */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="h-11 border-white/30 bg-transparent px-3 text-white hover:bg-white/10 hover:text-white"
+              >
+                <Wallet className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">Caixa</span>
+                <ChevronDown className="h-4 w-4 ml-1" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-60">
+              <DropdownMenuItem onSelect={abrirEstadoCaixa}>
+                <Info className="h-4 w-4" />
+                Estado da Caixa
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => abrirMovDialog('reforco')}>
+                <ArrowDownCircle className="h-4 w-4" />
+                Entrada de Dinheiro
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => abrirMovDialog('sangria')}>
+                <ArrowUpCircle className="h-4 w-4" />
+                Saída de Dinheiro
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={abrirGaveta} disabled={drawerSubmitting}>
+                <Vault className="h-4 w-4" />
+                Abrir Gaveta
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onFecharCaixa}>
+                <Wallet className="h-4 w-4" />
+                Fechar Caixa
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Button
             variant="outline"
             onClick={onLogout}
@@ -278,33 +347,15 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
         onChanged={() => load(true)}
       />
 
-      {/* Sangria/Reforço (Task 7, opcional) — dialog simples sobre posAPI.cashMovement. */}
+      {/* Entrada/Saída de Dinheiro (menu Caixa) — dialog partilhado sobre
+          posAPI.cashMovement; o tipo já vem escolhido pelo item do menu
+          (abrirMovDialog), aqui só se pede valor + motivo. */}
       <Dialog open={movDialogOpen} onOpenChange={(open) => !movSubmitting && setMovDialogOpen(open)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Movimento de Caixa</DialogTitle>
+            <DialogTitle>{movLabel}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant={movType === 'sangria' ? 'default' : 'outline'}
-                onClick={() => setMovType('sangria')}
-                disabled={movSubmitting}
-                className="flex-1"
-              >
-                Sangria
-              </Button>
-              <Button
-                type="button"
-                variant={movType === 'reforco' ? 'default' : 'outline'}
-                onClick={() => setMovType('reforco')}
-                disabled={movSubmitting}
-                className="flex-1"
-              >
-                Reforço
-              </Button>
-            </div>
             <div className="space-y-2">
               <Label htmlFor="mov-valor">Valor</Label>
               <div className="relative">
@@ -339,6 +390,45 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
             <Button onClick={registarMovimento} disabled={movSubmitting}>
               {movSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
               Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Estado da Caixa (menu Caixa) — consulta posAPI.cashCurrent() ao abrir. */}
+      <Dialog open={estadoOpen} onOpenChange={setEstadoOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Info className="h-5 w-5" />
+              Estado da Caixa
+            </DialogTitle>
+          </DialogHeader>
+          {estadoLoading ? (
+            <div className="flex items-center justify-center py-6">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : estadoSessao ? (
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Aberta por</span>
+                <span className="font-medium">{estadoSessao.opened_by_name || '—'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Desde</span>
+                <span className="font-medium">{formatHora(estadoSessao.opened_at) || '—'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Fundo de abertura</span>
+                <span className="font-medium">{eur(estadoSessao.opening_amount)}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="py-4 text-center text-sm text-muted-foreground">Caixa fechada.</p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEstadoOpen(false)}>
+              Fechar
             </Button>
           </DialogFooter>
         </DialogContent>

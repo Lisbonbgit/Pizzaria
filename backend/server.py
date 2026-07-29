@@ -3083,6 +3083,34 @@ async def add_cash_movement(
     return await db.cash_sessions.find_one({"id": sessao["id"]}, {"_id": 0})
 
 
+@api_router.post("/pos/cash/drawer")
+async def open_cash_drawer(
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+):
+    """Abre a gaveta do dinheiro (menu Caixa, "Abrir Gaveta"): enfileira o comando
+    ESC/POS padrão de pulso ("kick") na impressora da CAIXA, pelo mesmo mecanismo
+    `print_jobs` + `escpos_direct_b64` + `printer_type="cashier"` usado pelas
+    faturas (`close_table`) e pelo talão Z (`close_cash_session`) — o app-ponte
+    apanha o job e pulsa a gaveta ligada a essa impressora."""
+    await get_pos_or_admin(authorization, x_device_token)
+    kick_bytes = b"\x1b\x70\x00\x19\xfa"  # ESC p 0 25 250 — pulso padrão da gaveta
+    await db.print_jobs.insert_one({
+        "id": str(uuid.uuid4()),
+        "order_id": None,
+        "escpos_direct_b64": base64.b64encode(kick_bytes).decode("ascii"),
+        "printer_id": None,
+        "printer_name": "Caixa",
+        "printer_type": "cashier",
+        "status": "pending",
+        "attempts": 0,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True}
+
+
 class CashCloseRequest(BaseModel):
     counted_amount: float = 0
 

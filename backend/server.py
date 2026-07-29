@@ -32,6 +32,7 @@ from pos.sales import build_pos_sales_rows
 from pos.idempotency import stable_ext_ref
 from pos.cash_math import expected_cash, reconciliation_diff
 from pos.z_report import build_z_escpos
+from pos.counter import build_counter_items
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -361,8 +362,8 @@ class OrderPaymentUpdate(BaseModel):
 class OrderResponse(BaseModel):
     id: str
     order_number: int
-    table_id: str
-    table_number: int
+    table_id: Optional[str] = None  # None nos pedidos de balcão (sem mesa)
+    table_number: Optional[int] = None  # idem
     items: List[dict]
     notes: Optional[str]
     total: float
@@ -1234,30 +1235,14 @@ async def get_next_order_number():
     })
     return count + 1
 
-@api_router.post("/orders", response_model=OrderResponse)
-async def create_order(order: OrderCreate):
-    order_number = await get_next_order_number()
-    order_id = str(uuid.uuid4())
-    
-    order_doc = {
-        "id": order_id,
-        "order_number": order_number,
-        "table_id": order.table_id,
-        "table_number": order.table_number,
-        "items": [item.model_dump() for item in order.items],
-        "notes": order.notes,
-        "total": order.total,
-        "status": "received",
-        "paid": False,
-        "print_status": "pending",
-        "source": order.source or "client",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.orders.insert_one(order_doc)
-    
+
+async def _enqueue_order_prints(order_id: str):
+    """Cria os print jobs (cozinha + caixa) de um pedido — extraído de
+    `create_order` para ser reutilizado também pelos pedidos de balcão
+    (POS, Fase 2 Task 1). Comportamento inalterado."""
     # Create print jobs for all active printers
     active_printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
-    
+
     if active_printers:
         for printer in active_printers:
             print_job_id = str(uuid.uuid4())
@@ -1274,7 +1259,7 @@ async def create_order(order: OrderCreate):
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
             await db.print_jobs.insert_one(print_job)
-        
+
         # Log print jobs created
         logger.info(f"Order {order_id}: Created {len(active_printers)} print jobs for printers: {[p['name'] for p in active_printers]}")
     else:
@@ -1296,7 +1281,31 @@ async def create_order(order: OrderCreate):
             }
             await db.print_jobs.insert_one(print_job)
         logger.info(f"Order {order_id}: sem impressoras registadas — criados jobs cozinha + caixa")
+
+
+@api_router.post("/orders", response_model=OrderResponse)
+async def create_order(order: OrderCreate):
+    order_number = await get_next_order_number()
+    order_id = str(uuid.uuid4())
     
+    order_doc = {
+        "id": order_id,
+        "order_number": order_number,
+        "table_id": order.table_id,
+        "table_number": order.table_number,
+        "items": [item.model_dump() for item in order.items],
+        "notes": order.notes,
+        "total": order.total,
+        "status": "received",
+        "paid": False,
+        "print_status": "pending",
+        "source": order.source or "client",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.orders.insert_one(order_doc)
+
+    await _enqueue_order_prints(order_id)
+
     return OrderResponse(**order_doc)
 
 @api_router.get("/orders", response_model=List[OrderResponse])
@@ -3309,6 +3318,82 @@ async def update_pos_settings(cfg: PosSettingsConfig, authorization: Optional[st
         {"key": "pos"}, {"$set": {"key": "pos", "value": value}}, upsert=True
     )
     return value
+
+# ==================== POS: BALCÃO (pedidos sem mesa) ====================
+# Pedido de balcão (Fase 2, Task 1): o operador escolhe produtos diretamente
+# no POS, sem passar por uma mesa (`table_number=None`, `table_id=None`). O
+# pedido fica "received" e imprime na cozinha pelo MESMO mecanismo de
+# `create_order` (`_enqueue_order_prints`, extraído dali).
+
+
+class CounterOrderItem(BaseModel):
+    product_id: str
+    quantity: int
+
+
+class CounterOrderRequest(BaseModel):
+    items: List[CounterOrderItem]
+
+
+@api_router.post("/pos/counter/order")
+async def create_counter_order(
+    body: CounterOrderRequest,
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+    x_pos_token: Optional[str] = Header(None),
+):
+    """Cria um pedido de balcão (sem mesa). Auth-duplo (admin JWT ou device
+    token POS) para entrar; o OPERADOR responsável vem sempre do token POS
+    (`X-POS-Token`), nunca do corpo — mesma responsabilização não-falsificável
+    do resto do POS (§2.6)."""
+    auth = await get_pos_or_admin(authorization, x_device_token)
+    operador = await get_pos_operator(x_pos_token)
+
+    # Sessão de caixa resolvida no SERVIDOR (nunca do corpo) — mesmo mecanismo
+    # de `close_table`: sem sessão aberta e definições a exigir caixa, recusa
+    # ANTES de criar o pedido.
+    sess = await db.cash_sessions.find_one({"status": "open"})
+    if auth.get("kind") == "pos":
+        pos_cfg = await _pos_settings_config()
+        if pos_cfg.get("require_open_cash", True) and not sess:
+            raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
+    # Carrega só os produtos do carrinho (evita puxar o catálogo inteiro).
+    product_ids = [i.product_id for i in body.items]
+    prods = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(1000)
+    products_by_id = {p["id"]: p for p in prods}
+
+    cart = [{"product_id": i.product_id, "quantity": i.quantity} for i in body.items]
+    built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
+
+    order_number = await get_next_order_number()
+    order_id = str(uuid.uuid4())
+    order_doc = {
+        "id": order_id,
+        "order_number": order_number,
+        "table_id": None,
+        "table_number": None,
+        "items": built["items"],
+        "notes": None,
+        "total": built["total"],
+        "status": "received",
+        "paid": False,
+        "print_status": "pending",
+        "source": "balcao",
+        "pos_user_id": operador["id"],
+        "cash_session_id": sess["id"] if sess else "legacy",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.orders.insert_one(order_doc)
+
+    await _enqueue_order_prints(order_id)
+
+    return {
+        "order_id": order_id,
+        "order_number": order_number,
+        "items": built["items"],
+        "total": built["total"],
+    }
 
 # ==================== DASHBOARD ROUTES ====================
 

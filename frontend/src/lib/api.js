@@ -255,8 +255,14 @@ export const posAPI = {
     posApi.post('/pos/cash/movement', { type, amount, reason }),
   cashClose: (counted_amount) =>
     posApi.post('/pos/cash/close', { counted_amount }),
+  // Pré-visualização do dinheiro esperado no caixa (Fase 4b), para o ecrã de
+  // Fechar Caixa mostrar antes do operador contar a gaveta.
+  cashExpected: () =>
+    posApi.get('/pos/cash/expected'),
   cashZ: (id) =>
     posApi.get(`/pos/cash/${id}/z`),
+  openDrawer: () =>
+    posApi.post('/pos/cash/drawer'),
   // Lista pública (device token) dos utilizadores POS ativos, {id, name} —
   // p/ a tela de bloqueio/descanso mostrar avatares sem JWT de admin.
   usersPublic: () =>

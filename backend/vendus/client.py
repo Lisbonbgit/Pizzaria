@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import httpx
 from .config import VendusConfig
-from .errors import VendusRateLimited, VendusUnavailable, VendusHTTPError
+from .errors import VendusError, VendusRateLimited, VendusUnavailable, VendusHTTPError
 
 # Fuso do restaurante (Portugal continental). O Vendus grava `local_time` na
 # hora local; a caixa é lida/reconciliada por JANELA temporal neste fuso.
@@ -15,12 +15,13 @@ class VendusClient:
     """Cliente HTTP para a API Vendus (v1.1). Basic auth com a API key
     como username (password vazia). `transport` injetável para testes."""
 
-    def __init__(self, config: VendusConfig, transport: Optional[httpx.BaseTransport] = None):
+    def __init__(self, config: VendusConfig, transport: Optional[httpx.BaseTransport] = None,
+                 timeout: float = 30.0):
         self._cfg = config
         self._http = httpx.Client(
             base_url=config.base_url,
             auth=(config.api_key, ""),
-            timeout=30.0,
+            timeout=timeout,
             transport=transport,
         )
 
@@ -246,3 +247,36 @@ class VendusClient:
         if output:
             body["output"] = output
         return self._request("POST", "documents/", json=body)
+
+    # ---- Registador: movimentos de caixa (abrir/fechar/entrada/saída) ----
+    def register_movement(self, operation: str, mtype: str = "NU", amount: float = 0,
+                          obs: Optional[str] = None, output: Optional[str] = None) -> dict:
+        """Movimento de caixa no registador Vendus: `operation` é
+        'open'/'close'/'in'/'out', `mtype` a forma ('NU' = numerário). NÃO usa
+        `_request` — este endpoint REJEITA o campo `mode` (403) que `_request`
+        injeta sempre em todos os POSTs. Chamada crua via `self._http` (mesmo
+        cliente httpx, já com base_url + auth). `output='escpos'` em 'close'
+        devolve o talão Z já em ESC/POS (base64) no campo 'output' da resposta."""
+        if self._cfg.register_id is None:
+            raise VendusError("register_id não configurado")
+        body: dict = {"operation": operation, "type": mtype, "amount": round(float(amount), 2)}
+        if obs:
+            body["obs"] = obs
+        if output:
+            body["output"] = output
+        resp = self._http.request("POST", f"registers/{self._cfg.register_id}/movements/", json=body)
+        if resp.status_code >= 400:
+            raise VendusHTTPError(resp.status_code, resp.text)
+        return resp.json() if resp.content else {}
+
+    def register_status(self) -> Optional[str]:
+        """Estado atual do registador Vendus ('open'/'close'). Usado antes de
+        abrir a caixa da app para não tentar reabrir um registador já aberto
+        (ex.: reaberto manualmente na app do Vendus)."""
+        if self._cfg.register_id is None:
+            raise VendusError("register_id não configurado")
+        resp = self._http.request("GET", f"registers/{self._cfg.register_id}/")
+        if resp.status_code >= 400:
+            raise VendusHTTPError(resp.status_code, resp.text)
+        data = resp.json() if resp.content else {}
+        return (data or {}).get("status")

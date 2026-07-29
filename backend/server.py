@@ -1448,8 +1448,8 @@ async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
 VENDUS_DEFAULT_TAX_ID = os.environ.get("VENDUS_DEFAULT_TAX_ID", "NOR")
 
 
-def _vendus_client() -> VendusClient:
-    return VendusClient(VendusConfig.load(os.environ))
+def _vendus_client(timeout: float = 30.0) -> VendusClient:
+    return VendusClient(VendusConfig.load(os.environ), timeout=timeout)
 
 
 async def _open_orders_for_table(table_number: int) -> list:
@@ -3000,31 +3000,49 @@ async def get_pos_or_admin(
 # bloquear nem desfazer essa operação: qualquer erro do Vendus fica só em
 # `logger.warning`. São chamadas síncronas (httpx) e por isso correm em
 # thread (`asyncio.to_thread`); cada helper cria o seu PRÓPRIO
-# `VendusClient` (não partilhado entre threads) e fecha-o sempre no fim.
+# `VendusClient` (não partilhado entre threads) e fecha-o sempre no fim, com
+# um TIMEOUT CURTO (bem abaixo do default de 30s usado na emissão de FS) para
+# que uma falha/lentidão do Vendus nunca prenda a operação da app por muito
+# tempo.
+
+_VENDUS_MIRROR_TIMEOUT = 6.0
+
+
+def _vendus_safe_close(c: VendusClient) -> None:
+    """Fecha o cliente Vendus sem deixar propagar exceção — o `close()` é só
+    limpeza de recursos HTTP e nunca deve rebentar uma operação best-effort."""
+    try:
+        c.close()
+    except Exception as e:
+        logger.warning(f"Vendus: falha (ignorada) a fechar o cliente ({e})")
+
 
 def _vendus_cash_open_sync(opening_amount: float) -> None:
-    """Abre o registador Vendus a espelhar a abertura da caixa da app — só se
-    ainda estiver fechado (evita reabrir um registador já aberto, ex.:
-    reposto manualmente na app do Vendus)."""
+    """Abre o registador Vendus a espelhar a abertura da caixa da app — a
+    menos que já esteja positivamente aberto (evita reabrir um registador já
+    aberto, ex.: reposto manualmente na app do Vendus). Reabrir por defeito
+    quando o estado não é claramente 'open' é mais robusto do que exigir
+    'close': um registador preso a meio ou com estado inesperado não deve
+    ficar fechado e bloquear a emissão de FS."""
     try:
-        c = _vendus_client()
+        c = _vendus_client(timeout=_VENDUS_MIRROR_TIMEOUT)
     except Exception as e:
         logger.warning(f"Vendus: não foi possível sincronizar a abertura da caixa ({e})")
         return
     try:
-        if c.register_status() == "close":
+        if c.register_status() != "open":
             c.register_movement("open", "NU", opening_amount)
     except Exception as e:
         logger.warning(f"Vendus: falha a abrir o registador ({e})")
     finally:
-        c.close()
+        _vendus_safe_close(c)
 
 
 def _vendus_cash_movement_sync(operation: str, amount: float, obs: Optional[str]) -> None:
     """Espelha uma sangria/reforço da app como movimento 'out'/'in' no
     registador Vendus."""
     try:
-        c = _vendus_client()
+        c = _vendus_client(timeout=_VENDUS_MIRROR_TIMEOUT)
     except Exception as e:
         logger.warning(f"Vendus: não foi possível sincronizar o movimento de caixa ({e})")
         return
@@ -3033,7 +3051,7 @@ def _vendus_cash_movement_sync(operation: str, amount: float, obs: Optional[str]
     except Exception as e:
         logger.warning(f"Vendus: falha a registar o movimento de caixa ({e})")
     finally:
-        c.close()
+        _vendus_safe_close(c)
 
 
 def _vendus_cash_close_sync(counted_amount: float) -> Optional[dict]:
@@ -3041,7 +3059,7 @@ def _vendus_cash_close_sync(counted_amount: float) -> Optional[dict]:
     talão Z já em ESC/POS. Devolve a resposta do Vendus (pode ter 'output' em
     base64) ou None se falhar — NUNCA lança (best-effort)."""
     try:
-        c = _vendus_client()
+        c = _vendus_client(timeout=_VENDUS_MIRROR_TIMEOUT)
     except Exception as e:
         logger.warning(f"Vendus: não foi possível sincronizar o fecho da caixa ({e})")
         return None
@@ -3051,7 +3069,7 @@ def _vendus_cash_close_sync(counted_amount: float) -> Optional[dict]:
         logger.warning(f"Vendus: falha a fechar o registador ({e})")
         return None
     finally:
-        c.close()
+        _vendus_safe_close(c)
 
 
 class CashOpenRequest(BaseModel):

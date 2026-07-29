@@ -12,6 +12,19 @@ def _client(handler):
     return VendusClient(CFG, transport=httpx.MockTransport(handler))
 
 
+def test_timeout_default_e_configuravel():
+    # Sem `timeout` explícito mantém o default atual (30s) — usado na emissão
+    # de FS. Passar `timeout` (ex.: as chamadas espelho da caixa) fica com um
+    # bound curto e não com o default.
+    padrao = VendusClient(CFG, transport=httpx.MockTransport(lambda r: httpx.Response(200)))
+    assert padrao._http.timeout == httpx.Timeout(30.0)
+
+    curto = VendusClient(
+        CFG, transport=httpx.MockTransport(lambda r: httpx.Response(200)), timeout=6.0
+    )
+    assert curto._http.timeout == httpx.Timeout(6.0)
+
+
 def test_basic_auth_e_mode_no_post():
     captured = {}
 

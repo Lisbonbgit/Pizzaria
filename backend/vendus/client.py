@@ -15,12 +15,13 @@ class VendusClient:
     """Cliente HTTP para a API Vendus (v1.1). Basic auth com a API key
     como username (password vazia). `transport` injetável para testes."""
 
-    def __init__(self, config: VendusConfig, transport: Optional[httpx.BaseTransport] = None):
+    def __init__(self, config: VendusConfig, transport: Optional[httpx.BaseTransport] = None,
+                 timeout: float = 30.0):
         self._cfg = config
         self._http = httpx.Client(
             base_url=config.base_url,
             auth=(config.api_key, ""),
-            timeout=30.0,
+            timeout=timeout,
             transport=transport,
         )
 

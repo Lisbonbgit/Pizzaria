@@ -255,6 +255,10 @@ export const posAPI = {
     posApi.post('/pos/cash/movement', { type, amount, reason }),
   cashClose: (counted_amount) =>
     posApi.post('/pos/cash/close', { counted_amount }),
+  // Pré-visualização do dinheiro esperado no caixa (Fase 4b), para o ecrã de
+  // Fechar Caixa mostrar antes do operador contar a gaveta.
+  cashExpected: () =>
+    posApi.get('/pos/cash/expected'),
   cashZ: (id) =>
     posApi.get(`/pos/cash/${id}/z`),
   openDrawer: () =>

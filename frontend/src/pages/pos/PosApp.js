@@ -26,6 +26,11 @@ const PosApp = () => {
   // undefined = ainda por resolver (1ª chamada em curso); null = caixa
   // fechada; objeto = sessão aberta.
   const [session, setSession] = useState(undefined);
+  // Resumo do fecho anterior (closed_by_name/closed_at/counted_amount) — vem
+  // sempre junto de cashCurrent (Fase 4b), mesmo sem sessão aberta; passado a
+  // PosAbrirCaixa para mostrar "Último fecho: ...". `null` se nunca houve
+  // nenhum fecho.
+  const [lastClose, setLastClose] = useState(null);
   const [caixaLoading, setCaixaLoading] = useState(false);
   const [caixaError, setCaixaError] = useState(false);
   // Controla o fluxo "Fechar Caixa" (Task 7) — ecrã cheio, substitui a Home
@@ -62,7 +67,12 @@ const PosApp = () => {
     setCaixaError(false);
     try {
       const res = await posAPI.cashCurrent();
-      setSession(res.data || null);
+      const data = res.data || null;
+      // Fase 4b: cashCurrent deixou de poder devolver `null` liso (carrega
+      // sempre `last_close`) — "há sessão aberta?" tem de checar `status`,
+      // nunca a verdade do payload inteiro.
+      setSession(data && data.status === 'open' ? data : null);
+      setLastClose(data?.last_close ?? null);
     } catch (err) {
       console.error('Erro ao verificar o estado da caixa:', err);
       setCaixaError(true);
@@ -158,7 +168,7 @@ const PosApp = () => {
       </div>
     );
   } else if (!session) {
-    content = <PosAbrirCaixa operator={user} onAberta={refreshCaixa} />;
+    content = <PosAbrirCaixa operator={user} onAberta={refreshCaixa} lastClose={lastClose} />;
   } else if (showFecharCaixa) {
     // Fluxo "Fechar Caixa" (Task 7) — substitui a Home enquanto ativo.
     // `onClosed` é chamado a partir do ecrã do Z ("Terminar"): reresolve o

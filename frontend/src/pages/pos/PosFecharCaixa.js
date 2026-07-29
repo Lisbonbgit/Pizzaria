@@ -32,6 +32,12 @@ const PosFecharCaixa = ({ operator, onCancel, onClosed }) => {
   const [submitting, setSubmitting] = useState(false);
   const [zData, setZData] = useState(null);
   const [finishing, setFinishing] = useState(false);
+  // Pré-visualização do esperado (Fase 4b) — carregada ao entrar em
+  // 'contagem', para o operador comparar com o que vai contar na gaveta.
+  // `null` enquanto carrega ou se a chamada falhar (best-effort: não bloqueia
+  // a contagem, só não mostra a linha).
+  const [expected, setExpected] = useState(null);
+  const [expectedLoading, setExpectedLoading] = useState(false);
 
   // Verifica mesas abertas assim que o fluxo arranca. Se a chamada falhar
   // (rede), não bloqueia o fecho — avisa e segue para a contagem.
@@ -55,6 +61,30 @@ const PosFecharCaixa = ({ operator, onCancel, onClosed }) => {
       active = false;
     };
   }, []);
+
+  // Pré-visualização do esperado: pedida assim que se chega ao ecrã de
+  // contagem (quer venha direto, quer depois do aviso de mesas abertas).
+  // `GET /pos/cash/expected` é best-effort no backend (nunca 500 por causa do
+  // Vendus); aqui, uma falha de rede/token também não bloqueia a contagem —
+  // só não mostra a linha do esperado.
+  useEffect(() => {
+    if (step !== 'contagem') return undefined;
+    let active = true;
+    setExpectedLoading(true);
+    (async () => {
+      try {
+        const r = await posAPI.cashExpected();
+        if (active) setExpected(r.data);
+      } catch (err) {
+        console.error('Erro ao obter o valor esperado no caixa:', err);
+      } finally {
+        if (active) setExpectedLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [step]);
 
   const confirmarFecho = useCallback(async () => {
     const valor = Number(montante);
@@ -133,7 +163,20 @@ const PosFecharCaixa = ({ operator, onCancel, onClosed }) => {
       <div className="min-h-screen flex flex-col items-center justify-center bg-[#5a1a1a] p-6 text-white">
         <Wallet className="h-14 w-14 text-white/70 mb-4" />
         <h1 className="text-2xl font-bold mb-1">Contagem de Caixa</h1>
-        {operator?.name && <p className="text-white/70 mb-8">Operador: {operator.name}</p>}
+        {operator?.name && <p className="text-white/70 mb-2">Operador: {operator.name}</p>}
+
+        {expectedLoading ? (
+          <p className="text-white/50 text-xs mb-6">A calcular o valor esperado...</p>
+        ) : expected ? (
+          <p className="text-white/70 text-sm mb-6 text-center">
+            Valor esperado no caixa: <span className="font-semibold">{eur(expected.expected_cash)}</span>
+            {expected.vendus_ok === false && (
+              <span className="block text-white/40 text-xs mt-0.5">(sem ligação ao Vendus — estimativa)</span>
+            )}
+          </p>
+        ) : (
+          <div className="mb-6" />
+        )}
 
         <div className="w-full max-w-xs space-y-2 mb-8">
           <Label htmlFor="montante-contado" className="text-white/80">

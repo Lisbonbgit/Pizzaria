@@ -129,7 +129,13 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
     setEstadoLoading(true);
     try {
       const r = await posAPI.cashCurrent();
-      setEstadoSessao(r.data || null);
+      // Fase 4b: cashCurrent deixou de poder devolver `null` liso (carrega
+      // sempre `last_close`, mesmo sem sessão aberta) — "há caixa aberta?"
+      // tem de checar `status`, nunca a verdade do payload inteiro (sem
+      // isto, um fecho concorrente entre terminais mostrava campos vazios
+      // em vez de "Caixa fechada").
+      const data = r.data || null;
+      setEstadoSessao(data && data.status === 'open' ? data : null);
     } catch (err) {
       console.error('Erro ao obter o estado da caixa:', err);
       setEstadoSessao(session || null);

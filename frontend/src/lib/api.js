@@ -256,7 +256,11 @@ export const posAPI = {
   cashClose: (counted_amount) =>
     posApi.post('/pos/cash/close', { counted_amount }),
   cashZ: (id) =>
-    posApi.get(`/pos/cash/${id}/z`)
+    posApi.get(`/pos/cash/${id}/z`),
+  // Lista pública (device token) dos utilizadores POS ativos, {id, name} —
+  // p/ a tela de bloqueio/descanso mostrar avatares sem JWT de admin.
+  usersPublic: () =>
+    posApi.get('/pos/users-public')
 };
 
 // POS - Checkout / mesas (mesmos caminhos do checkoutAPI/tablesAPI admin, mas via posApi)

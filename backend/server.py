@@ -446,6 +446,12 @@ class PosUserResponse(BaseModel):
     active: bool
     created_at: str
 
+class PosUserPublic(BaseModel):
+    """Versão pública (tela de bloqueio do POS) — só {id, name}, sem
+    `pin_hash` nem `active`/`created_at`."""
+    id: str
+    name: str
+
 # ==================== POS DEVICE TOKEN MODELS ====================
 # Tokens de dispositivo (terminais POS) — servem para o auth-duplo dos
 # terminais (tarefa futura). Só existe o hash (bcrypt, via pos/auth.py) em
@@ -2832,6 +2838,21 @@ async def delete_pos_user(user_id: str, authorization: Optional[str] = Header(No
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Utilizador POS não encontrado")
     return {"message": "Utilizador POS eliminado"}
+
+@api_router.get("/pos/users-public", response_model=List[PosUserPublic])
+async def list_pos_users_public(
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+):
+    """Lista pública (auth-duplo) dos utilizadores POS ativos — só `{id, name}`,
+    nunca `pin_hash`. Usada pela tela de bloqueio/descanso do POS para mostrar
+    os avatares/nomes sem precisar do JWT de admin (basta o device token)."""
+    await get_pos_or_admin(authorization, x_device_token)
+
+    users = await db.pos_users.find(
+        {"active": True}, {"_id": 0, "id": 1, "name": 1}
+    ).sort("name", 1).to_list(1000)
+    return [PosUserPublic(**u) for u in users]
 
 # ==================== POS: DISPOSITIVOS (pos_devices) ====================
 # Tokens de dispositivo para os terminais POS (auth-duplo, tarefa futura).

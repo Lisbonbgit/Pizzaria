@@ -94,3 +94,16 @@ def test_ext_ref_estavel():
 - **Fiscal:** idempotência via `balcao-{order_id}` + dedup; `pos_sales` kind=balcao ligado à caixa → o Z passa a incluir o balcão (completa a gaveta). ✅
 - **Reuso:** `_enqueue_order_prints`, `build_pos_sales_rows`, dedup do `close_table`, `posCheckout.paymentMethods`. Sem tocar em mesas/QR.
 - **Fase 3 (fora):** diálogo de produto (qtd/preço/IVA/desconto) + faturação estilo Vendus.
+
+---
+
+## Extra (pedido 2026-07-29): Bloqueio por inatividade + tela de descanso
+
+### Task 5: Backend — listar utilizadores do POS para a tela de bloqueio
+`GET /api/pos/users-public` (auth `get_pos_or_admin`, device token) → `[{id, name}]` dos `pos_users` ativos (SÓ nome, sem hash). Para a tela de descanso mostrar os avatares/nomes sem precisar do JWT de admin.
+
+### Task 6: Frontend — auto-lock 2 min + tela de descanso + escolher utilizador→PIN
+- **Timer de inatividade (2 min):** no `/pos` (PosApp), a cada interação (click/touch/teclado) reinicia um timer de 120s; ao expirar → estado "bloqueado" (não faz logout do device; guarda a sessão/estado da caixa, só tapa com a tela).
+- **Tela de descanso:** ecrã cheio com **relógio grande** (HH:MM:SS a atualizar) + a lista de utilizadores (`GET /pos/users-public`) como **avatares com nome** (como a foto do Vendus).
+- **Desbloquear:** clicar num utilizador → ecrã de **PIN** (o `PosLogin` atual, mas já com o utilizador escolhido) → `posAPI.login(pin)` valida; se o PIN for do utilizador certo, desbloqueia e volta ao mesmo sítio. (O login passa a ser **escolher utilizador → PIN**, em vez de só PIN.)
+- Aplica-se tanto ao arranque (primeiro login) como ao re-desbloqueio após inatividade.

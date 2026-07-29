@@ -240,3 +240,79 @@ def test_list_app_invoices_outro_404_propaga():
 
     with pytest.raises(VendusHTTPError):
         _client(handler).list_app_invoices(date="2026-07-29")
+
+
+def _client_com_register(handler):
+    cfg = VendusConfig.load({"VENDUS_API_KEY": "k", "VENDUS_REGISTER_ID": "7", "VENDUS_MODE": "tests"})
+    return VendusClient(cfg, transport=httpx.MockTransport(handler))
+
+
+def test_register_movement_monta_body_sem_mode_e_faz_chamada_crua():
+    # O endpoint de movimentos REJEITA `mode` (403) — `register_movement` tem
+    # de ir por fora do `_request` (que injeta `mode` sempre).
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(201, json={"id": 1, "status": "open"})
+
+    out = _client_com_register(handler).register_movement("open", "NU", 50.0)
+    assert seen["method"] == "POST"
+    assert "registers/7/movements/" in seen["url"]
+    assert seen["body"] == {"operation": "open", "type": "NU", "amount": 50.0}
+    assert "mode" not in seen["body"]
+    assert out == {"id": 1, "status": "open"}
+
+
+def test_register_movement_com_obs_e_output_no_body():
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(201, json={"id": 2})
+
+    _client_com_register(handler).register_movement(
+        "out", "NU", 10.5, obs="sangria depósito", output="escpos"
+    )
+    assert seen["body"]["operation"] == "out"
+    assert seen["body"]["obs"] == "sangria depósito"
+    assert seen["body"]["output"] == "escpos"
+    assert "mode" not in seen["body"]
+
+
+def test_register_movement_close_com_output_devolve_escpos_base64():
+    # 201 no fecho, com `output` (base64 do talão Z do Vendus) na resposta.
+    def handler(request: httpx.Request):
+        body = json.loads(request.content.decode())
+        assert body["operation"] == "close"
+        assert body["output"] == "escpos"
+        return httpx.Response(201, json={"id": 3, "status": "close", "output": "Gxeb...base64..."})
+
+    out = _client_com_register(handler).register_movement("close", "NU", 235.0, output="escpos")
+    assert out["status"] == "close"
+    assert out["output"] == "Gxeb...base64..."
+
+
+def test_register_movement_erro_http_levanta():
+    def handler(request):
+        return httpx.Response(403, text="mode not allowed")
+
+    with pytest.raises(VendusHTTPError):
+        _client_com_register(handler).register_movement("open", "NU", 50.0)
+
+
+def test_register_movement_sem_register_id_levanta_vendus_error():
+    from vendus.errors import VendusError
+    with pytest.raises(VendusError):
+        _client(handler=lambda request: httpx.Response(200)).register_movement("open", "NU", 0)
+
+
+def test_register_status_le_status_do_registador():
+    def handler(request: httpx.Request):
+        assert request.method == "GET"
+        assert "registers/7/" in str(request.url)
+        return httpx.Response(200, json={"id": 7, "status": "close"})
+
+    assert _client_com_register(handler).register_status() == "close"

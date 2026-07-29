@@ -2992,6 +2992,67 @@ async def get_pos_or_admin(
 # + tratamento de DuplicateKeyError no insert — a abertura é idempotente,
 # nunca cria uma segunda sessão aberta (pick_open_session em pos/cash.py).
 
+# ---- Sincronização best-effort da caixa da app <-> registador Vendus -----
+# (Fase 4.) Espelha abrir/fechar/entrada/saída da caixa da app no registador
+# Vendus e, no fecho, pede o talão Z REAL do Vendus (ESC/POS) para imprimir na
+# caixa. A caixa da app é SEMPRE a fonte de verdade — estas chamadas correm
+# DEPOIS da operação da app já ter sido decidida/commitada e NUNCA podem
+# bloquear nem desfazer essa operação: qualquer erro do Vendus fica só em
+# `logger.warning`. São chamadas síncronas (httpx) e por isso correm em
+# thread (`asyncio.to_thread`); cada helper cria o seu PRÓPRIO
+# `VendusClient` (não partilhado entre threads) e fecha-o sempre no fim.
+
+def _vendus_cash_open_sync(opening_amount: float) -> None:
+    """Abre o registador Vendus a espelhar a abertura da caixa da app — só se
+    ainda estiver fechado (evita reabrir um registador já aberto, ex.:
+    reposto manualmente na app do Vendus)."""
+    try:
+        c = _vendus_client()
+    except Exception as e:
+        logger.warning(f"Vendus: não foi possível sincronizar a abertura da caixa ({e})")
+        return
+    try:
+        if c.register_status() == "close":
+            c.register_movement("open", "NU", opening_amount)
+    except Exception as e:
+        logger.warning(f"Vendus: falha a abrir o registador ({e})")
+    finally:
+        c.close()
+
+
+def _vendus_cash_movement_sync(operation: str, amount: float, obs: Optional[str]) -> None:
+    """Espelha uma sangria/reforço da app como movimento 'out'/'in' no
+    registador Vendus."""
+    try:
+        c = _vendus_client()
+    except Exception as e:
+        logger.warning(f"Vendus: não foi possível sincronizar o movimento de caixa ({e})")
+        return
+    try:
+        c.register_movement(operation, "NU", amount, obs=obs)
+    except Exception as e:
+        logger.warning(f"Vendus: falha a registar o movimento de caixa ({e})")
+    finally:
+        c.close()
+
+
+def _vendus_cash_close_sync(counted_amount: float) -> Optional[dict]:
+    """Fecha o registador Vendus a espelhar o fecho da caixa da app e pede o
+    talão Z já em ESC/POS. Devolve a resposta do Vendus (pode ter 'output' em
+    base64) ou None se falhar — NUNCA lança (best-effort)."""
+    try:
+        c = _vendus_client()
+    except Exception as e:
+        logger.warning(f"Vendus: não foi possível sincronizar o fecho da caixa ({e})")
+        return None
+    try:
+        return c.register_movement("close", "NU", counted_amount, output="escpos")
+    except Exception as e:
+        logger.warning(f"Vendus: falha a fechar o registador ({e})")
+        return None
+    finally:
+        c.close()
+
 
 class CashOpenRequest(BaseModel):
     opening_amount: float = 0
@@ -3025,10 +3086,15 @@ async def open_cash_session(
         # Copia para o insert: o motor acrescenta "_id" ao dict passado, e
         # queremos devolver `nova_sessao` limpo (sem _id) quando não há conflito.
         await db.cash_sessions.insert_one(dict(nova_sessao))
-        return nova_sessao
+        sessao_final = nova_sessao
     except DuplicateKeyError:
         existente = await db.cash_sessions.find_one({"status": "open"}, {"_id": 0})
-        return pick_open_session(existente, nova_sessao)
+        sessao_final = pick_open_session(existente, nova_sessao)
+
+    # Espelho best-effort no Vendus — NUNCA bloqueia/falha a abertura da app,
+    # que já está decidida e commitada acima (ver `_vendus_cash_open_sync`).
+    await asyncio.to_thread(_vendus_cash_open_sync, sessao_final["opening_amount"])
+    return sessao_final
 
 
 @api_router.get("/pos/cash/current")
@@ -3080,6 +3146,16 @@ async def add_cash_movement(
     )
     if resultado.matched_count == 0:
         raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
+    # Espelho best-effort no Vendus: sangria -> "out", reforço -> "in". Só
+    # corre depois do movimento da app já estar gravado (nunca bloqueia/falha
+    # o registo da app — ver `_vendus_cash_movement_sync`).
+    await asyncio.to_thread(
+        _vendus_cash_movement_sync,
+        "out" if body.type == "sangria" else "in",
+        movimento["amount"],
+        body.reason,
+    )
     return await db.cash_sessions.find_one({"id": sessao["id"]}, {"_id": 0})
 
 
@@ -3240,6 +3316,13 @@ async def close_cash_session(
     if atualizada is None:
         raise HTTPException(status_code=409, detail="Caixa já fechada")
 
+    # Espelho best-effort no Vendus: fecha o registador Vendus (mirror) e pede
+    # o talão Z REAL do Vendus em ESC/POS. A caixa da app já fechou
+    # ATOMICAMENTE acima — isto NUNCA bloqueia nem desfaz esse fecho (ver
+    # `_vendus_cash_close_sync`, que nunca lança).
+    vendus_resp = await asyncio.to_thread(_vendus_cash_close_sync, contado)
+    vendus_closed = vendus_resp is not None
+
     # DADOS do Z (a Task 11 renderiza/imprime). Snapshot completo do fecho.
     z_data = {
         "restaurant": restaurant_name,
@@ -3260,6 +3343,7 @@ async def close_cash_session(
         "difference": diferenca,
         "reconciliation": reconciliacao,
         "warnings": avisos,
+        "vendus_closed": vendus_closed,
     }
 
     # Imprime o talão Z na CAIXA — mesmo mecanismo (`print_jobs` +
@@ -3285,6 +3369,27 @@ async def close_cash_session(
         })
     except Exception as e:
         logger.error(f"Falha a enfileirar impressão do Z (fecho já commitado, sessão {sessao['id']}): {e}")
+
+    # Imprime o talão Z REAL do Vendus, se a sincronização acima teve sucesso e
+    # devolveu o ESC/POS — job de impressão SEPARADO do Z da app, mesma
+    # impressora da CAIXA. Best-effort: uma falha aqui também é só registada.
+    if vendus_resp and vendus_resp.get("output"):
+        try:
+            await db.print_jobs.insert_one({
+                "id": str(uuid.uuid4()),
+                "order_id": None,
+                "escpos_direct_b64": vendus_resp["output"],
+                "printer_id": None,
+                "printer_name": "Caixa",
+                "printer_type": "cashier",
+                "status": "pending",
+                "attempts": 0,
+                "error": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.error(f"Falha a enfileirar impressão do Z do Vendus (sessão {sessao['id']}): {e}")
 
     return z_data
 

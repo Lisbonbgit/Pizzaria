@@ -34,6 +34,20 @@ def test_ext_ref_estavel():
     assert counter_ext_ref("abc") == "balcao-abc"
 
 
+def test_ext_ref_idempotente_entre_pedido_e_faturacao():
+    # A referência externa é a CHAVE de idempotência fiscal do balcão: a mesma
+    # que o pedido usa (Task 1) tem de ser a mesma que a faturação recalcula
+    # (Task 2), senão o dedup no Vendus não encontrava a FS de um retry e
+    # emitia uma 2ª = cobrança dupla. Deriva SÓ do order_id (estável, único),
+    # sem relógio nem sessão — mesmo pedido → mesma ref, sempre.
+    order_id = "5f1c9b2a-0000-4a11-9c33-abcdef012345"
+    ref_no_pedido = counter_ext_ref(order_id)          # calculada ao criar o pedido
+    ref_na_faturacao = counter_ext_ref(order_id)        # recalculada no checkout
+    assert ref_no_pedido == ref_na_faturacao
+    # Pedidos DISTINTOS → refs distintas (nunca reutilizar a FS de outro pedido).
+    assert counter_ext_ref("pedido-a") != counter_ext_ref("pedido-b")
+
+
 def test_ignora_product_id_inexistente():
     # Entrada do carrinho cujo produto já não existe no catálogo é ignorada,
     # em vez de rebentar (ex: produto removido entre o carrinho e o envio).

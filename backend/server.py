@@ -32,7 +32,7 @@ from pos.sales import build_pos_sales_rows
 from pos.idempotency import stable_ext_ref
 from pos.cash_math import expected_cash, reconciliation_diff
 from pos.z_report import build_z_escpos
-from pos.counter import build_counter_items
+from pos.counter import build_counter_items, counter_ext_ref
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -3403,6 +3403,193 @@ async def create_counter_order(
         "items": built["items"],
         "total": built["total"],
     }
+
+
+class CounterCheckoutRequest(BaseModel):
+    order_id: str
+    payment_method_id: int
+    nif: Optional[str] = None
+
+
+@api_router.post("/pos/counter/checkout")
+async def checkout_counter_order(
+    body: CounterCheckoutRequest,
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+    x_pos_token: Optional[str] = Header(None),
+):
+    """Fatura um pedido de balcão: emite UMA Fatura Simplificada (FS) no Vendus
+    com os itens do pedido, regista a venda POS (fecho Z + reconciliação),
+    imprime o recibo (ESC/POS do Vendus) na caixa e marca o pedido pago.
+
+    FISCAL-CRÍTICO — nunca emite uma 2ª FS para o mesmo pedido. Três camadas
+    combinam-se para o garantir:
+      1. `paid`-guard: pedido já pago → devolve o documento guardado, sem emitir.
+      2. ext_ref ESTÁVEL (`balcao-{order_id}`) + dedup no Vendus antes de emitir:
+         cobre a janela entre a emissão e o `paid=True` (crash/retry) — um retry
+         encontra a FS já emitida e reutiliza-a.
+      3. índice único em `pos_sales.vendus_document_id`: absorve retries do
+         registo da venda.
+
+    Auth-duplo para entrar (admin JWT ou device token POS); o OPERADOR vem
+    SEMPRE do token POS (`get_pos_operator`), nunca do corpo — responsabilização
+    não-falsificável (§2.6). A sessão de caixa é resolvida no SERVIDOR."""
+    auth = await get_pos_or_admin(authorization, x_device_token)
+    operador = await get_pos_operator(x_pos_token)
+    pos_user_id = operador["id"]
+
+    # Sessão de caixa resolvida no SERVIDOR (nunca do corpo). Sem sessão aberta e
+    # definições a exigir caixa, recusa ANTES de faturar — não se emite FS sem
+    # caixa aberta (mesmo mecanismo de `close_table`/`create_counter_order`).
+    sess = await db.cash_sessions.find_one({"status": "open"})
+    if auth.get("kind") == "pos":
+        pos_cfg = await _pos_settings_config()
+        if pos_cfg.get("require_open_cash", True) and not sess:
+            raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
+    # Carrega o pedido de balcão (só balcão; mesas/QR fecham por `close_table`).
+    order = await db.orders.find_one({"id": body.order_id, "source": "balcao"}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido de balcão não encontrado")
+
+    # PAID-GUARD (proteção nº1): pedido já pago → devolve o documento guardado,
+    # IDEMPOTENTE, sem re-emitir. É o caso comum de um duplo-clique/refresh depois
+    # de faturar com sucesso.
+    if order.get("paid"):
+        return {
+            "doc_number": order.get("vendus_document_number"),
+            "total": round(float(order.get("total", 0) or 0), 2),
+            "already_paid": True,
+        }
+
+    # Itens Vendus a partir dos itens do pedido (formato OrderItem gravado na
+    # Task 1). `tax_id` = imposto do item ou o default; título com a variação
+    # entre parênteses, tal como `close_table`.
+    total = round(float(order.get("total", 0) or 0), 2)
+    vendus_items = []
+    for l in order.get("items", []):
+        qty = l.get("quantity", 1) or 1
+        unit = round(float(l.get("unit_price", 0) or 0), 2)
+        tax = l.get("vendus_tax_id") or VENDUS_DEFAULT_TAX_ID
+        title = l.get("product_name", "Item")
+        var = l.get("variation") or {}
+        if isinstance(var, dict) and var.get("name"):
+            title = f"{title} ({var['name']})"
+        vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
+    if not vendus_items or total <= 0:
+        raise HTTPException(status_code=400, detail="Pedido sem itens para faturar")
+
+    ext_ref = counter_ext_ref(body.order_id)
+    client = {"fiscal_id": body.nif} if body.nif else None
+
+    # Janela de dedup (Europe/Lisbon): cobre toda a sessão de caixa — não só hoje
+    # — para um retry a atravessar a meia-noite ainda encontrar a FS de ontem
+    # (midnight-safe, espelha `close_table` e a reconciliação).
+    _lisbon = ZoneInfo("Europe/Lisbon")
+    _hoje = datetime.now(_lisbon).date()
+    if sess and sess.get("opened_at"):
+        try:
+            _inicio = datetime.fromisoformat(sess["opened_at"]).astimezone(_lisbon).date()
+        except Exception:
+            _inicio = _hoje - timedelta(days=1)
+    else:
+        _inicio = _hoje - timedelta(days=1)   # legado (sem caixa): cobre a viragem do dia
+    dedup_dates = []
+    _d = _inicio
+    while _d <= _hoje:
+        dedup_dates.append(_d.isoformat())
+        _d += timedelta(days=1)
+
+    def _emit():
+        c = _vendus_client()
+        try:
+            # DEDUP FISCAL (proteção nº2): antes de emitir, procura no Vendus um
+            # documento com esta external_reference ESTÁVEL. Se existir, um retry
+            # do mesmo checkout cai aqui e reutiliza-o, sem 2ª FS. Se a CONSULTA
+            # falhar, segue-se a emitir (não bloquear o balcão); o retry protege.
+            existente = None
+            try:
+                for _ds in dedup_dates:
+                    for d in c.list_app_invoices(date=_ds):
+                        if str(d.get("external_reference") or "") == ext_ref:
+                            existente = d
+                            break
+                    if existente is not None:
+                        break
+            except VendusError as e:
+                logger.warning(f"dedup fiscal balcão: consulta falhou, emito na mesma: {e}")
+            if existente is not None:
+                logger.warning(
+                    f"dedup fiscal balcão: ref {ext_ref} já emitida "
+                    f"(doc {existente.get('id')}), reutilizada sem nova FS")
+                return existente
+            return c.create_invoice(
+                items=vendus_items,
+                payments=[{"id": body.payment_method_id, "amount": total}],
+                client=client, external_reference=ext_ref,
+                doc_type="FS", output="escpos")
+        finally:
+            c.close()
+
+    try:
+        doc = await asyncio.to_thread(_emit)
+    except VendusError as e:
+        raise HTTPException(status_code=502, detail=f"Erro ao faturar no Vendus: {e}")
+    if not doc:
+        raise HTTPException(status_code=502, detail="Vendus não devolveu documento")
+
+    # Marca o pedido pago com o documento (id + número, para a reconsulta
+    # idempotente do paid-guard devolver o número sem chamar o Vendus).
+    await db.orders.update_one({"id": body.order_id}, {"$set": {
+        "paid": True, "status": "delivered",
+        "payment_method": str(body.payment_method_id),
+        "vendus_document_id": doc.get("id"),
+        "vendus_document_number": doc.get("number"),
+    }})
+
+    # Regista a venda POS (fecho Z + reconciliação). SÓ com caixa aberta. A FS JÁ
+    # está emitida e válida neste ponto, por isso uma falha aqui NUNCA pode
+    # derrubar o checkout (500) — senão o cliente refaturava = cobrança dupla. O
+    # índice único em `vendus_document_id` absorve duplicados de um retry
+    # (proteção nº3).
+    if sess:
+        try:
+            rows = build_pos_sales_rows(
+                [{"amount": total}], [doc], body.payment_method_id,
+                sess["id"], pos_user_id, "balcao", None,
+            )
+            if rows:
+                await db.pos_sales.insert_many(rows, ordered=False)
+        except (BulkWriteError, DuplicateKeyError) as e:
+            logger.warning(f"pos_sales balcão: documento já registado, ignorado (idempotente): {e}")
+        except Exception as e:
+            logger.error(f"pos_sales balcão: falha a gravar, ignorado (FS já emitida e válida): {e}")
+
+    # Imprime o recibo (ESC/POS certificado do Vendus, com corte) na CAIXA. Um
+    # documento reutilizado no dedup pode não trazer `output` — impressão
+    # best-effort, como em `close_table`.
+    escpos_b64 = doc.get("output")
+    if escpos_b64:
+        try:
+            raw = base64.b64decode(escpos_b64) + b"\n\n\n\x1d\x56\x00"
+            escpos_b64 = base64.b64encode(raw).decode("ascii")
+        except Exception:
+            pass
+        await db.print_jobs.insert_one({
+            "id": str(uuid.uuid4()),
+            "order_id": None,
+            "escpos_direct_b64": escpos_b64,
+            "printer_id": None,
+            "printer_name": "Caixa",
+            "printer_type": "cashier",
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    return {"doc_number": doc.get("number"), "total": total}
 
 # ==================== DASHBOARD ROUTES ====================
 

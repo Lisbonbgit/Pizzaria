@@ -279,6 +279,25 @@ export const posCheckout = {
     posApi.post(`/tables/${tableNumber}/free`)
 };
 
+// POS - Balcão (pedido sem mesa: criar + faturar + catálogo p/ picker) via posApi
+export const posCounter = {
+  createOrder: (items) =>
+    posApi.post('/pos/counter/order', { items }),
+  checkout: (orderId, paymentMethodId, nif) =>
+    posApi.post('/pos/counter/checkout', {
+      order_id: orderId,
+      payment_method_id: paymentMethodId,
+      nif: nif || undefined
+    }),
+  // Catálogo (GET /products e /categories são públicos no backend — sem
+  // dependência de auth, tal como o menu do cliente por QR — por isso
+  // funcionam via posApi sem exigir device token/JWT).
+  products: () =>
+    posApi.get('/products', { params: { available_only: true } }),
+  categories: () =>
+    posApi.get('/categories', { params: { active_only: true } })
+};
+
 // Admin - Gestão do POS (utilizadores, definições, device tokens) via api (JWT admin)
 export const adminPosAPI = {
   listUsers: () =>

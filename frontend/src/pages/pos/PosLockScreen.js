@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { format } from 'date-fns';
 import { Loader2, RotateCcw, UserCircle } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -19,23 +19,32 @@ const PosLockScreen = ({ onUnlock }) => {
   const [usersError, setUsersError] = useState(false);
   const [pickedUser, setPickedUser] = useState(null);
   const [now, setNow] = useState(() => new Date());
+  const isMountedRef = useRef(true);
 
   const loadUsers = useCallback(async () => {
     setLoadingUsers(true);
     setUsersError(false);
     try {
       const res = await posAPI.usersPublic();
+      if (!isMountedRef.current) return;
       setUsers(res.data || []);
     } catch (err) {
       console.error('Erro ao carregar utilizadores POS:', err);
+      if (!isMountedRef.current) return;
       setUsersError(true);
     } finally {
-      setLoadingUsers(false);
+      if (isMountedRef.current) {
+        setLoadingUsers(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    isMountedRef.current = true;
     loadUsers();
+    return () => {
+      isMountedRef.current = false;
+    };
   }, [loadUsers]);
 
   // Relógio grande, a atualizar segundo a segundo.
@@ -51,14 +60,14 @@ const PosLockScreen = ({ onUnlock }) => {
 
   if (pickedUser) {
     return (
-      <div className="fixed inset-0 z-50">
+      <div className="fixed inset-0 z-[100]">
         <PosLogin user={pickedUser} onBack={() => setPickedUser(null)} onSuccess={handleSuccess} />
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#5a1a1a] flex flex-col items-center justify-center p-6 text-white">
+    <div className="fixed inset-0 z-[100] overflow-y-auto bg-[#5a1a1a] flex flex-col items-center justify-center p-6 text-white">
       <div className="text-6xl md:text-7xl font-bold tabular-nums tracking-wide mb-2">
         {format(now, 'HH:mm:ss')}
       </div>

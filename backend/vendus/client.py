@@ -98,7 +98,15 @@ class VendusClient:
         params: dict = {"since": date, "view": "detailed", "per_page": per_page}
         if self._cfg.register_id is not None:
             params["register_id"] = self._cfg.register_id
-        docs = self._request("GET", "documents/", params=params) or []
+        try:
+            docs = self._request("GET", "documents/", params=params) or []
+        except VendusHTTPError as e:
+            # O Vendus devolve 404 "No data" (código A001) quando NÃO há documentos
+            # para o filtro (um dia/caixa sem vendas). Isso é ZERO vendas, não um
+            # erro — não pode rebentar o fecho de caixa nem o relatório diário.
+            if e.status_code == 404 and ("A001" in e.body or "No data" in e.body):
+                return []
+            raise
         return [
             d for d in docs
             if str(d.get("date", "")).startswith(date) and d.get("type") != "RG"

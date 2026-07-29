@@ -33,6 +33,7 @@ from pos.idempotency import stable_ext_ref
 from pos.cash_math import expected_cash, reconciliation_diff
 from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
+from pos.pricing import line_vendus, combine_global
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1552,6 +1553,8 @@ async def _open_bill_lines(table_number: int) -> list:
                 "total_price": net,          # já com o desconto do item aplicado
                 "gross_total": gross,        # antes do desconto
                 "discount_pct": dpct,
+                "discount_amount": it.get("discount_amount"),  # desconto em € (override), se houver
+                "vendus_tax_id": it.get("vendus_tax_id"),      # IVA override da linha, se houver
                 "variation": it.get("variation"),
                 "source": src,
             })
@@ -1800,10 +1803,9 @@ async def close_table(table_number: int, req: CloseTableRequest,
     cash_session_id = sess["id"] if sess else "legacy"
     rodizio_pay = None  # {adults, children, waste} faturado agora (rodízio parcial)
 
-    # Desconto GLOBAL (%) sobre toda a fatura; combina com o desconto por item.
+    # Desconto GLOBAL (%) sobre toda a fatura; combina-se com o desconto próprio
+    # de cada linha (pos.pricing.combine_global), aplicando-se SEMPRE por cima.
     g_disc = max(0.0, min(100.0, float(req.global_discount_pct or 0)))
-    def _eff_disc(item_pct):
-        return round(100.0 * (1 - (1 - (float(item_pct or 0)) / 100.0) * (1 - g_disc / 100.0)), 4)
 
     if req.rodizio_tier:
         # ---- RODÍZIO: fatura por pessoa (adultos/crianças) — pode ser PARCIAL
@@ -1849,27 +1851,26 @@ async def close_table(table_number: int, req: CloseTableRequest,
         vendus_items = []
         total = 0.0
 
-        def _add(title, qty, gross, tax, item_pct=0):
-            eff = _eff_disc(item_pct)
-            li = {"title": title, "qty": qty, "gross_price": gross, "tax_id": tax}
-            if eff > 0:
-                li["discount_percentage"] = eff
+        # Item SINTÉTICO do rodízio (adulto/criança/taxa): não é linha da conta,
+        # não tem override de IVA nem desconto próprio — só o desconto GLOBAL se
+        # aplica (combine_global sobre uma linha sem desconto próprio).
+        def _add(title, qty, gross, tax):
+            li, net = combine_global(
+                {"title": title, "qty": qty, "gross_price": gross, "tax_id": tax}, g_disc)
             vendus_items.append(li)
-            return round(gross * qty * (1 - eff / 100.0), 2)
+            return net
 
         if pay_adults > 0:
             total += _add(f"{tier['name']} (adulto)", pay_adults, price, rtax)
         if pay_half > 0:
             total += _add(f"{tier['name']} (criança)", pay_half, half, rtax)
         for l in extra_lines:
-            qty = l.get("quantity", 1) or 1
-            unit = round(float(l.get("unit_price", 0) or 0), 2)
-            tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
-            title = l.get("product_name", "Item")
-            var = l.get("variation") or {}
-            if isinstance(var, dict) and var.get("name"):
-                title = f"{title} ({var['name']})"
-            total += _add(title, qty, unit, tax, l.get("discount_pct", 0))
+            # Extra à la carte: line_vendus resolve título/qtd/preço/IVA (com os
+            # overrides do item) e combine_global aplica o desconto global por cima.
+            li, net = combine_global(
+                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID), g_disc)
+            vendus_items.append(li)
+            total += net
         if req.waste_boxes and req.waste_boxes > 0:
             wfee = round(float(cfg.get("waste_fee", 5.0)), 2)
             total += _add("Taxa de desperdício", req.waste_boxes, wfee, cfg.get("waste_fee_tax_id", "INT"))
@@ -1916,19 +1917,14 @@ async def close_table(table_number: int, req: CloseTableRequest,
         by_tax = {}
         total = 0.0
         for l in lines:
-            qty = l.get("quantity", 1) or 1
-            unit = round(float(l.get("unit_price", 0) or 0), 2)
-            tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
-            title = l.get("product_name", "Item")
-            var = l.get("variation") or {}
-            if isinstance(var, dict) and var.get("name"):
-                title = f"{title} ({var['name']})"
-            eff = _eff_disc(l.get("discount_pct", 0))          # desconto do item + global
-            li = {"title": title, "qty": qty, "gross_price": unit, "tax_id": tax}
-            if eff > 0:
-                li["discount_percentage"] = eff
+            # line_vendus resolve título/qtd/preço/IVA da linha (com os overrides
+            # do item: vendus_tax_id, desconto em €); combine_global funde o
+            # desconto da linha com o desconto GLOBAL num único discount_percentage
+            # e devolve o líquido EXATO que o Vendus calcula (sem desvio).
+            li, amt = combine_global(
+                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID), g_disc)
+            tax = li["tax_id"]                                  # IVA efetivo (override incluído)
             vendus_items.append(li)
-            amt = round(unit * qty * (1 - eff / 100.0), 2)     # valor líquido da linha
             by_tax[tax] = round(by_tax.get(tax, 0.0) + amt, 2)
             total += amt
         total = round(total, 2)

@@ -213,3 +213,30 @@ def test_app_sales_summary_window_janela_no_mesmo_dia():
     out = client.app_sales_summary_window("2026-07-28T10:00:00+01:00", "2026-07-28T15:00:00+01:00")
     assert fetches == ["2026-07-28"]          # um só dia → um só fetch
     assert out["count"] == 1 and out["total"] == 8.0
+
+
+def test_list_app_invoices_404_no_data_devolve_vazio():
+    # O Vendus 404 "No data" (A001) num dia/caixa sem vendas NÃO é erro: []
+    def handler(request):
+        return httpx.Response(404, json={"errors": [{"code": "A001", "message": "No data"}]})
+
+    assert _client(handler).list_app_invoices(date="2026-07-29") == []
+
+
+def test_window_com_dia_sem_dados_nao_rebenta():
+    # Uma sessão cujo dia não tem vendas: o fecho tem de reconciliar com 0, não 502.
+    def handler(request):
+        return httpx.Response(404, json={"errors": [{"code": "A001", "message": "No data"}]})
+
+    out = _client(handler).app_sales_summary_window(
+        "2026-07-29T10:00:00+01:00", "2026-07-29T23:00:00+01:00")
+    assert out["count"] == 0 and out["total"] == 0.0
+
+
+def test_list_app_invoices_outro_404_propaga():
+    # Um 404 que NÃO seja "No data" continua a ser erro (não engolir tudo).
+    def handler(request):
+        return httpx.Response(404, json={"errors": [{"code": "X999", "message": "Nope"}]})
+
+    with pytest.raises(VendusHTTPError):
+        _client(handler).list_app_invoices(date="2026-07-29")

@@ -123,8 +123,14 @@ const PosApp = () => {
   // cima sem desmontar nada disto — mantém a caixa/mesa como estavam.
   let content;
 
-  // Ainda a resolver a 1ª chamada a cashCurrent, ou um refresh a meio.
-  if (caixaLoading || session === undefined) {
+  // Ainda a resolver a 1ª chamada a cashCurrent (arranque). Uma vez resolvida
+  // uma sessão, um `refreshCaixa()` seguinte (ex.: ao desbloquear) NÃO deve
+  // voltar a mostrar este loader de ecrã inteiro — isso desmontaria o ecrã
+  // montado por baixo (PosHome/PosBalcao/TableCheckout) e perderia estado em
+  // curso (ex.: pedido de balcão impresso mas por faturar). `caixaLoading`
+  // durante um refresh em fundo passa a dar só um indicador subtil (ver
+  // abaixo), nunca troca o `content`.
+  if (session === undefined) {
     content = (
       <div className="min-h-screen flex items-center justify-center bg-[#5a1a1a]">
         <Loader2 className="h-10 w-10 animate-spin text-white" />
@@ -194,6 +200,11 @@ const PosApp = () => {
   return (
     <>
       {content}
+      {caixaLoading && session !== undefined && (
+        <div className="fixed top-3 right-3 z-40 rounded-full bg-black/60 p-2 pointer-events-none">
+          <Loader2 className="h-4 w-4 animate-spin text-white" />
+        </div>
+      )}
       {locked && (
         <PosLockScreen
           onUnlock={(loggedInUser) => {

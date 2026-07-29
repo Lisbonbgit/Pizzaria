@@ -60,14 +60,14 @@ const PosLockScreen = ({ onUnlock }) => {
 
   if (pickedUser) {
     return (
-      <div className="fixed inset-0 z-[100]">
+      <div className="fixed inset-0 z-[100] pointer-events-auto">
         <PosLogin user={pickedUser} onBack={() => setPickedUser(null)} onSuccess={handleSuccess} />
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-[100] overflow-y-auto bg-[#5a1a1a] flex flex-col items-center justify-center p-6 text-white">
+    <div className="fixed inset-0 z-[100] pointer-events-auto overflow-y-auto bg-[#5a1a1a] flex flex-col items-center justify-center p-6 text-white">
       <div className="text-6xl md:text-7xl font-bold tabular-nums tracking-wide mb-2">
         {format(now, 'HH:mm:ss')}
       </div>

@@ -3389,12 +3389,24 @@ async def create_counter_order(
             raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
 
     # Carrega só os produtos do carrinho (evita puxar o catálogo inteiro).
+    # Descarta produtos rodizio_only (só entram em conta no rodízio, nunca à
+    # peça no balcão) ou indisponíveis — defesa contra cache do frontend
+    # desatualizada ou um pedido manual/malicioso; `build_counter_items` já
+    # ignora entradas do carrinho sem produto correspondente em
+    # `products_by_id`, por isso basta não os incluir aqui.
     product_ids = [i.product_id for i in body.items]
     prods = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(1000)
-    products_by_id = {p["id"]: p for p in prods}
+    products_by_id = {
+        p["id"]: p
+        for p in prods
+        if not p.get("rodizio_only", False) and p.get("available", True)
+    }
 
     cart = [{"product_id": i.product_id, "quantity": i.quantity} for i in body.items]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
+
+    if not built["items"]:
+        raise HTTPException(status_code=400, detail="Nada para faturar")
 
     order_number = await get_next_order_number()
     order_id = str(uuid.uuid4())

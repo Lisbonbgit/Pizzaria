@@ -226,12 +226,14 @@ class CategoryCreate(BaseModel):
     order: int = 0
     active: bool = True
     available_days: List[int] = []  # 0=Seg..6=Dom; vazio = todos os dias
+    pos_only: bool = False  # só no balcão/POS (staff); escondida do menu do cliente
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = None
     order: Optional[int] = None
     active: Optional[bool] = None
     available_days: Optional[List[int]] = None
+    pos_only: Optional[bool] = None
 
 class CategoryResponse(BaseModel):
     id: str
@@ -239,6 +241,7 @@ class CategoryResponse(BaseModel):
     order: int
     active: bool
     available_days: List[int] = []
+    pos_only: bool = False
     created_at: str
 
 class VariationCreate(BaseModel):
@@ -889,6 +892,7 @@ async def create_category(category: CategoryCreate, authorization: Optional[str]
         "order": category.order,
         "active": category.active,
         "available_days": category.available_days,
+        "pos_only": category.pos_only,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.categories.insert_one(cat_doc)
@@ -3905,13 +3909,15 @@ async def import_app_products(authorization: Optional[str] = Header(None)):
     cat_key = "venda aplicações"
     if cat_key in by_name:
         app_cat_id = by_name[cat_key]["id"]
-        if not by_name[cat_key].get("active", True):
-            await db.categories.update_one({"id": app_cat_id}, {"$set": {"active": True}})
+        # Garante ativa E pos_only (staff-only): estes são preços de delivery,
+        # NUNCA podem aparecer no menu do cliente por QR (só no balcão/POS).
+        await db.categories.update_one(
+            {"id": app_cat_id}, {"$set": {"active": True, "pos_only": True}})
     else:
         app_cat_id = str(uuid.uuid4())
         await db.categories.insert_one({
             "id": app_cat_id, "name": "Venda Aplicações", "order": len(existing_cats),
-            "active": True, "available_days": [],
+            "active": True, "available_days": [], "pos_only": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
 

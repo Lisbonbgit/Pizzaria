@@ -394,7 +394,11 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   };
 
   // Produtos para "Adicionar produto" agrupados por categoria (para o seletor com pesquisa)
-  const availableProducts = products.filter((p) => p.available !== false);
+  // Categorias pos_only (ex.: "Venda Aplicações" = preços de delivery) são só do
+  // balcão/POS. Uma conta de mesa é dine-in → nunca oferece preços de delivery.
+  const posOnlyCatIds = new Set(categories.filter((c) => c.pos_only).map((c) => c.id));
+  const availableProducts = products.filter(
+    (p) => p.available !== false && !posOnlyCatIds.has(p.category_id));
   const catName = (id) => categories.find((c) => c.id === id)?.name || 'Outros';
   const productGroups = (() => {
     const byCat = new Map();

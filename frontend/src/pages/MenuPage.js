@@ -124,8 +124,16 @@ const MenuPage = () => {
         settingsAPI.getRestaurantPublic()
       ]);
       
-      setCategories(catsRes.data);
-      setProducts(prodsRes.data);
+      // Categorias pos_only (ex.: "Venda Aplicações" = preços de delivery) são
+      // só do balcão/POS (staff) — nunca aparecem no menu do cliente por QR.
+      // Escondemos a categoria E os seus produtos (o endpoint de produtos não
+      // filtra por categoria, por isso filtramos aqui também).
+      const posOnlyIds = new Set(catsRes.data.filter((c) => c.pos_only).map((c) => c.id));
+      const visibleCats = catsRes.data.filter((c) => !c.pos_only);
+      const visibleProds = prodsRes.data.filter((p) => !posOnlyIds.has(p.category_id));
+
+      setCategories(visibleCats);
+      setProducts(visibleProds);
       setRestaurantName(settingsRes.data.name || 'Pizzaria');
       
       if (settingsRes.data.cover_image) {
@@ -137,8 +145,8 @@ const MenuPage = () => {
         }
       }
       
-      if (catsRes.data.length > 0) {
-        setActiveCategory(catsRes.data[0].id);
+      if (visibleCats.length > 0) {
+        setActiveCategory(visibleCats[0].id);
       }
       rodizioAPI.public().then((r) => setRodizioCfg(r.data)).catch(() => {});
     } catch (err) {

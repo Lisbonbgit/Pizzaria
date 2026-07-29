@@ -105,6 +105,8 @@ export const productsAPI = {
   },
   importVendus: () =>
     api.post('/menu/import-vendus'),
+  importAppProducts: () =>
+    api.post('/admin/pos/import-app-products'),
   seedIvaDefaults: () =>
     api.post('/products/iva-defaults'),
   reorder: (items) =>

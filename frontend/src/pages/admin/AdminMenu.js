@@ -105,6 +105,21 @@ const AdminMenu = () => {
     }
   };
 
+  const [importingApp, setImportingApp] = useState(false);
+  const handleImportAppProducts = async () => {
+    setImportingApp(true);
+    try {
+      const r = await productsAPI.importAppProducts();
+      const d = r.data;
+      toast.success(`Produtos App: ${d.imported} importados para "Venda Aplicações"`);
+      loadData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao importar produtos App');
+    } finally {
+      setImportingApp(false);
+    }
+  };
+
   const [seedingIva, setSeedingIva] = useState(false);
   const handleSeedIva = async () => {
     if (!window.confirm('Acertar o IVA em falta? Bebidas → 23% (NOR), restante comida → 13% (INT). Só mexe nos produtos SEM IVA definido.')) return;
@@ -402,6 +417,10 @@ const AdminMenu = () => {
               <Button variant="outline" onClick={handleImportVendus} disabled={importing}>
                 {importing ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
                 Importar do Vendus
+              </Button>
+              <Button variant="outline" onClick={handleImportAppProducts} disabled={importingApp}>
+                {importingApp ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Plus className="h-4 w-4 mr-2" />}
+                Importar produtos App (delivery)
               </Button>
               <Button onClick={() => openProductModal()} data-testid="add-product-btn">
                 <Plus className="h-4 w-4 mr-2" />

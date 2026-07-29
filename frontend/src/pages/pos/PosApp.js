@@ -6,6 +6,7 @@ import PosLogin from '@/pages/pos/PosLogin';
 import PosAbrirCaixa from '@/pages/pos/PosAbrirCaixa';
 import PosHome from '@/pages/pos/PosHome';
 import PosFecharCaixa from '@/pages/pos/PosFecharCaixa';
+import PosBalcao from '@/pages/pos/PosBalcao';
 import { posAPI } from '@/lib/api';
 
 // Shell da janela do POS (`/pos`, fora do ProtectedRoute admin).
@@ -24,6 +25,9 @@ const PosApp = () => {
   // Controla o fluxo "Fechar Caixa" (Task 7) — ecrã cheio, substitui a Home
   // enquanto ativo.
   const [showFecharCaixa, setShowFecharCaixa] = useState(false);
+  // Controla o fluxo "Balcão" (Fase 2, Task 4) — ecrã cheio, substitui a
+  // Home enquanto ativo, mesmo mecanismo do Fechar Caixa acima.
+  const [showBalcao, setShowBalcao] = useState(false);
 
   const deviceToken = localStorage.getItem('pos_device_token');
   const posToken = localStorage.getItem('pos_token');
@@ -38,6 +42,7 @@ const PosApp = () => {
     setSession(undefined);
     setCaixaError(false);
     setShowFecharCaixa(false);
+    setShowBalcao(false);
   }, []);
 
   // Re-resolve a sessão de caixa atual. Chamado no arranque (após login) e
@@ -135,6 +140,14 @@ const PosApp = () => {
     );
   }
 
+  // Fluxo "Balcão" (Fase 2, Task 4) — substitui a Home enquanto ativo, tal
+  // como o Fechar Caixa acima. `onClose` volta à Home (o próprio PosBalcao
+  // desliga o botão de voltar enquanto um pedido está impresso mas por
+  // faturar).
+  if (showBalcao) {
+    return <PosBalcao onClose={() => setShowBalcao(false)} />;
+  }
+
   // Caixa aberta — Home real do POS (Task 5), com o checkout de mesa (Task 6,
   // `TableCheckout` partilhado com o admin via `posCheckout`) já ligado.
   return (
@@ -142,6 +155,7 @@ const PosApp = () => {
       session={session}
       operator={user}
       onFecharCaixa={() => setShowFecharCaixa(true)}
+      onBalcao={() => setShowBalcao(true)}
       refreshCaixa={refreshCaixa}
       onLogout={logout}
     />

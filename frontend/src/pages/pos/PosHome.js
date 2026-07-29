@@ -28,8 +28,9 @@ const formatHora = (iso) => {
 };
 
 // Home do POS: grelha de mesas (com refresh periódico via posCheckout.overview())
-// + cartão "Balcão" (placeholder "Brevemente", Fase 2) + cabeçalho com o
-// operador, o estado da caixa e os botões Fechar Caixa / Sair.
+// + cartão "Balcão" (Fase 2, Task 4: abre `PosBalcao`, ecrã cheio, montado
+// pelo PosApp via `onBalcao`) + cabeçalho com o operador, o estado da caixa
+// e os botões Fechar Caixa / Sair.
 //
 // Espelha o layout/cores da grelha de AdminOrders.js (cartão por mesa, cor
 // "ocupada" vs "livre", total/pessoas/pedidos quando ocupada), reskinado
@@ -48,7 +49,7 @@ const formatHora = (iso) => {
 // Sangria/Reforço (Task 7, opcional): dialog simples (tipo + valor + motivo)
 // sobre `posAPI.cashMovement` — não altera a grelha de mesas, por isso não
 // mexe em `tables`/`load`.
-const PosHome = ({ session, operator, onFecharCaixa, refreshCaixa, onLogout }) => {
+const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onLogout }) => {
   const [tables, setTables] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -248,17 +249,20 @@ const PosHome = ({ session, operator, onFecharCaixa, refreshCaixa, onLogout }) =
                 );
               })}
 
-              {/* Balcão — Fase 2, ainda por implementar */}
-              <div
-                aria-disabled="true"
-                className="relative flex aspect-square cursor-not-allowed select-none flex-col justify-between rounded-xl border border-dashed border-white/20 bg-white/[0.03] p-4 text-white/40"
+              {/* Balcão — Fase 2, Task 4: venda sem mesa (PosBalcao, ecrã cheio) */}
+              <button
+                type="button"
+                onClick={onBalcao}
+                aria-label="Balcão, nova venda sem mesa"
+                className="group relative flex aspect-square touch-manipulation flex-col justify-between overflow-hidden rounded-xl border border-amber-300/60 bg-white p-4 text-left text-[#5a1a1a] transition-all hover:shadow-lg active:scale-[0.98]"
               >
+                <span className="absolute inset-x-0 top-0 h-1.5 bg-amber-400" />
                 <div>
-                  <Store className="mb-1 h-5 w-5 opacity-60" />
+                  <Store className="mb-1 h-5 w-5 opacity-70" />
                   <p className="text-lg font-bold leading-tight">Balcão</p>
                 </div>
-                <p className="text-xs uppercase tracking-wide">Brevemente</p>
-              </div>
+                <p className="text-xs uppercase tracking-wide text-[#5a1a1a]/60">Nova venda</p>
+              </button>
             </div>
           </>
         )}

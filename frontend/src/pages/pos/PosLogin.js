@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { Loader2 } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { posAPI } from '@/lib/api';
 
@@ -8,9 +8,13 @@ const PIN_LENGTH = 4;
 // Teclado numérico: 1-9, "limpar" (C), 0, OK.
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'limpar', '0', 'OK'];
 
-// Ecrã de login do POS por PIN (teclado numérico, ecrã cheio, tablet).
+// Ecrã de PIN do POS (teclado numérico, ecrã cheio, tablet).
+// Recebe o utilizador já escolhido na tela de bloqueio/arranque (Task 6,
+// `PosLockScreen`) — mostra o nome dele e confirma que o PIN introduzido é
+// mesmo o dele (`user.id` == `res.data.user.id`); se não bater certo, avisa
+// e mantém-se no mesmo ecrã (sem tocar no token nem em `onSuccess`).
 // Ao 4º dígito submete automaticamente; o botão OK serve de alternativa manual.
-const PosLogin = ({ onLogin }) => {
+const PosLogin = ({ user, onSuccess, onBack }) => {
   const [pin, setPin] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -18,10 +22,15 @@ const PosLogin = ({ onLogin }) => {
     setLoading(true);
     try {
       const res = await posAPI.login(candidatePin);
+      if (user && res.data?.user?.id !== user.id) {
+        toast.error('PIN não corresponde a este utilizador');
+        setPin('');
+        return;
+      }
       localStorage.setItem('pos_token', res.data.token);
-      onLogin(res.data.user);
-      // Sem setPin('') aqui: em sucesso o PosApp deixa de renderizar este
-      // ecrã (passa a ter posToken+user), por isso não há estado local para limpar.
+      onSuccess(res.data.user);
+      // Sem setPin('') aqui: em sucesso este ecrã deixa de ser mostrado
+      // (a tela de bloqueio desmonta-o), por isso não há estado local para limpar.
     } catch (err) {
       console.error('Erro no login do POS:', err);
       toast.error('PIN inválido');
@@ -29,7 +38,7 @@ const PosLogin = ({ onLogin }) => {
     } finally {
       setLoading(false);
     }
-  }, [onLogin]);
+  }, [onSuccess, user]);
 
   const handleDigit = (digit) => {
     if (loading) return;
@@ -60,8 +69,21 @@ const PosLogin = ({ onLogin }) => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#5a1a1a] p-6 text-white">
-      <h1 className="text-2xl font-bold mb-2">POS</h1>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-[#5a1a1a] p-6 text-white relative">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          disabled={loading}
+          aria-label="Voltar"
+          className="absolute top-6 left-6 flex items-center gap-1 text-white/70 hover:text-white disabled:opacity-40 touch-manipulation"
+        >
+          <ArrowLeft className="h-5 w-5" />
+          Voltar
+        </button>
+      )}
+
+      <h1 className="text-2xl font-bold mb-2">{user?.name || 'POS'}</h1>
       <p className="text-white/70 mb-8">Introduz o teu PIN</p>
 
       <div className="flex gap-4 mb-10" aria-label={`PIN: ${pin.length} de ${PIN_LENGTH} dígitos`}>

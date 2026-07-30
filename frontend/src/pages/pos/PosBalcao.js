@@ -72,6 +72,7 @@ const PosBalcao = ({ onClose }) => {
   const [nif, setNif] = useState('');
   const [cashReceived, setCashReceived] = useState('');
   const [checkingOut, setCheckingOut] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [docNumber, setDocNumber] = useState(null);
 
   // Catálogo + métodos de pagamento — uma vez, no arranque.
@@ -217,6 +218,39 @@ const PosBalcao = ({ onClose }) => {
     setDocNumber(null);
   };
 
+  // Cancela o pedido já enviado à cozinha mas ainda não faturado (cliente
+  // desistiu / erro). `leave=true` sai para a Home a seguir; senão fica no
+  // balcão pronto para a próxima venda.
+  const cancelSale = async (leave) => {
+    if (!orderId) { if (leave) onClose(); return; }
+    setCancelling(true);
+    try {
+      await posCounter.cancelOrder(orderId);
+      toast.success('Venda cancelada');
+      if (leave) onClose(); else novaVenda();
+    } catch (err) {
+      console.error('Erro ao cancelar venda de balcão:', err);
+      toast.error(err.response?.data?.detail || 'Erro ao cancelar a venda');
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  // Botão Voltar: se há um pedido por faturar, confirma o cancelamento antes de
+  // sair (não deixa um pedido na cozinha sem documento). Antes de imprimir, ou
+  // já faturado, sai direto.
+  const handleBack = () => {
+    if (printed && docNumber == null) {
+      const ok = window.confirm(
+        `Tens o pedido nº ${orderNumber} por faturar. Sair vai CANCELAR este pedido `
+        + `(sem fatura). Continuar?`);
+      if (!ok) return;
+      cancelSale(true);
+    } else {
+      onClose();
+    }
+  };
+
   // Produtos visíveis no picker: exclui rodízio-only e indisponíveis,
   // agrupados por categoria (mesma lógica do "Adicionar produto" do
   // TableCheckout).
@@ -258,12 +292,12 @@ const PosBalcao = ({ onClose }) => {
         <Button
           variant="outline"
           size="icon"
-          onClick={onClose}
-          disabled={!canLeave}
-          title={canLeave ? 'Voltar' : 'Termina a faturação para sair'}
+          onClick={handleBack}
+          disabled={cancelling}
+          title={canLeave ? 'Voltar' : 'Sair (cancela o pedido por faturar)'}
           className="h-11 w-11 shrink-0 border-white/30 bg-transparent text-white hover:bg-white/10 hover:text-white"
         >
-          <ArrowLeft className="h-5 w-5" />
+          {cancelling ? <Loader2 className="h-5 w-5 animate-spin" /> : <ArrowLeft className="h-5 w-5" />}
         </Button>
         <div className="min-w-0">
           <h1 className="text-xl font-bold leading-tight">POS · Balcão</h1>
@@ -467,6 +501,18 @@ const PosBalcao = ({ onClose }) => {
                 >
                   {checkingOut ? <Loader2 className="h-5 w-5 animate-spin" /> : <Receipt className="h-5 w-5" />}
                   Emitir Documento
+                </Button>
+
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    if (window.confirm(`Cancelar o pedido nº ${orderNumber} sem faturar?`)) cancelSale(false);
+                  }}
+                  disabled={cancelling || checkingOut}
+                  className="h-10 w-full text-sm text-white/60 hover:bg-white/10 hover:text-white"
+                >
+                  {cancelling ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                  Cancelar venda
                 </Button>
               </>
             )}

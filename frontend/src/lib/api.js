@@ -239,6 +239,9 @@ export const checkoutAPI = {
     api.post(`/tables/${tableNumber}/print-consulta`),
   freeTable: (tableNumber) =>
     api.post(`/tables/${tableNumber}/free`),
+  // Gerir rodízio da mesa (tier + nº de pessoas) — adicionar/corrigir.
+  setRodizio: (tableNumber, body) =>
+    api.post(`/tables/${tableNumber}/rodizio`, body),
   removeItem: (orderId, idx) =>
     api.post(`/orders/${orderId}/items/${idx}/void`),
   // Desconto por item: corpo { pct } (%) OU { amount } (€) — mutuamente exclusivos.
@@ -296,7 +299,10 @@ export const posCheckout = {
   printConsulta: (tableNumber) =>
     posApi.post(`/tables/${tableNumber}/print-consulta`),
   freeTable: (tableNumber) =>
-    posApi.post(`/tables/${tableNumber}/free`)
+    posApi.post(`/tables/${tableNumber}/free`),
+  // Gerir rodízio da mesa (tier + nº de pessoas) — adicionar/corrigir.
+  setRodizio: (tableNumber, body) =>
+    posApi.post(`/tables/${tableNumber}/rodizio`, body)
 };
 
 // POS - Balcão (pedido sem mesa: criar + faturar + catálogo p/ picker) via posApi
@@ -309,6 +315,9 @@ export const posCounter = {
       payment_method_id: paymentMethodId,
       nif: nif || undefined
     }),
+  // Cancela um pedido de balcão não faturado (para poder sair sem deixar pendente).
+  cancelOrder: (orderId) =>
+    posApi.post(`/pos/counter/${orderId}/cancel`),
   // Catálogo (GET /products e /categories são públicos no backend — sem
   // dependência de auth, tal como o menu do cliente por QR — por isso
   // funcionam via posApi sem exigir device token/JWT).

@@ -1727,6 +1727,74 @@ async def open_table_session(table_number: int, req: OpenTableRequest):
     return session
 
 
+class SetRodizioRequest(BaseModel):
+    tier: str = "none"      # none | simples | completo
+    adults: int = 0
+    children: int = 0
+
+
+@api_router.post("/tables/{table_number}/rodizio")
+async def set_table_rodizio(
+    table_number: int, req: SetRodizioRequest,
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+):
+    """Staff define/ajusta o rodízio de uma mesa: nível (`tier`) e nº de pessoas
+    (adultos/crianças). É a FONTE DE VERDADE que o `close_table` usa para saber
+    quantas pessoas há para faturar — o fecho LIMITA o que fatura ao que está na
+    sessão, por isso ADICIONAR um rodízio ou CORRIGIR uma contagem errada
+    (colocar mais pessoas) passa por aqui. Cria a sessão se a mesa ainda não
+    tiver uma aberta (staff a iniciar a mesa). Auth-duplo (admin JWT ou device
+    token POS). Números são ABSOLUTOS (o total da mesa), não incrementos."""
+    await get_pos_or_admin(authorization, x_device_token)
+    tier = req.tier if req.tier in ("none", "simples", "completo") else "none"
+    adults = max(0, int(req.adults or 0))
+    children = max(0, int(req.children or 0))
+
+    if tier != "none":
+        cfg = await _rodizio_config()
+        if tier not in (cfg.get("tiers") or {}):
+            raise HTTPException(status_code=400, detail="Nível de rodízio inválido")
+        if adults + children < 1:
+            raise HTTPException(status_code=400, detail="Indica pelo menos 1 pessoa no rodízio")
+
+    rp = {"adults": adults, "children": children}
+    people = max(1, adults + children)
+
+    s = await _open_session(table_number)
+    if s:
+        # Não deixar reduzir abaixo do que já foi FATURADO (rodizio_paid) — senão
+        # o fecho parcial ficaria inconsistente.
+        pd = s.get("rodizio_paid") or {}
+        if tier != "none" and (adults < int(pd.get("adults", 0) or 0)
+                               or children < int(pd.get("children", 0) or 0)):
+            raise HTTPException(
+                status_code=400,
+                detail="Já foi faturado mais do que este número; não pode reduzir")
+        updates = {"rodizio": tier, "rodizio_people": rp}
+        if tier != "none":
+            updates["people"] = people   # à la carte (none) mantém o `people` atual
+        await db.table_sessions.update_one({"id": s["id"]}, {"$set": updates})
+        s.update(updates)
+        s.pop("_id", None)
+        return s
+
+    session = {
+        "id": str(uuid.uuid4()),
+        "table_number": table_number,
+        "people": people,
+        "rodizio": tier,
+        "rodizio_people": rp,
+        "rodizio_paid": {"adults": 0, "children": 0, "waste": 0},
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "status": "open",
+        "closed_at": None,
+    }
+    await db.table_sessions.insert_one(session)
+    session.pop("_id", None)
+    return session
+
+
 @api_router.get("/tables/{table_number}/session")
 async def get_table_session(table_number: int):
     """PÚBLICO — estado da mesa para o cliente: aberta?, nº de pessoas, conta atual."""
@@ -3793,6 +3861,27 @@ async def create_counter_order(
         "items": built["items"],
         "total": built["total"],
     }
+
+
+@api_router.post("/pos/counter/{order_id}/cancel")
+async def cancel_counter_order(
+    order_id: str,
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+):
+    """Cancela um pedido de balcão ainda NÃO faturado (cliente desistiu, erro do
+    operador) — marca `status=cancelled` para o operador poder sair do balcão
+    sem deixar um pedido pendente sem documento fiscal. Um pedido JÁ pago NÃO
+    pode ser cancelado (tem FS emitida). Auth-duplo (admin JWT ou device token
+    POS)."""
+    await get_pos_or_admin(authorization, x_device_token)
+    order = await db.orders.find_one({"id": order_id, "source": "balcao"}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido de balcão não encontrado")
+    if order.get("paid"):
+        raise HTTPException(status_code=400, detail="Pedido já faturado — não pode ser cancelado")
+    await db.orders.update_one({"id": order_id}, {"$set": {"status": "cancelled"}})
+    return {"ok": True, "order_id": order_id, "cancelled": True}
 
 
 class CounterCheckoutRequest(BaseModel):

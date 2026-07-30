@@ -496,7 +496,7 @@ const PosBalcao = ({ onClose }) => {
 
                 <Button
                   onClick={emitirDocumento}
-                  disabled={checkingOut || !paymentId}
+                  disabled={checkingOut || cancelling || !paymentId}
                   className="h-14 w-full bg-white text-base font-semibold text-[#5a1a1a] hover:bg-white/90"
                 >
                   {checkingOut ? <Loader2 className="h-5 w-5 animate-spin" /> : <Receipt className="h-5 w-5" />}

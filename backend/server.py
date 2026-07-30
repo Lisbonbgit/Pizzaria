@@ -3931,6 +3931,12 @@ async def checkout_counter_order(
     if not order:
         raise HTTPException(status_code=404, detail="Pedido de balcão não encontrado")
 
+    # CANCELADO-GUARD: um pedido cancelado (operador desistiu) NUNCA pode ser
+    # faturado — fecha a janela de corrida entre "Cancelar venda" e "Emitir
+    # Documento" (o cancel só marca status, não `paid`).
+    if order.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Pedido cancelado — não pode ser faturado")
+
     # PAID-GUARD (proteção nº1): pedido já pago → devolve o documento guardado,
     # IDEMPOTENTE, sem re-emitir. É o caso comum de um duplo-clique/refresh depois
     # de faturar com sucesso.

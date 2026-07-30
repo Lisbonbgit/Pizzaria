@@ -472,6 +472,10 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
               const rp = t.rodizio_people || {}; const paid = t.rodizio_paid || {};
               setRodAdults(Math.max(0, (rp.adults || 0) - (paid.adults || 0)));
               setRodChildren(Math.max(0, (rp.children || 0) - (paid.children || 0)));
+              // Mantém `rodPaid` fresco — o diálogo "Gerir rodízio" pré-preenche o
+              // TOTAL como (a-pagar + já-pago); sem isto, após um fecho parcial o
+              // total do diálogo vinha errado e podia sub-faturar pessoas.
+              setRodPaid({ adults: paid.adults || 0, children: paid.children || 0 });
             }
           } catch { /* ignore */ }
         }

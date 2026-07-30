@@ -34,6 +34,7 @@ from pos.cash_math import cash_sales_from_vendus, expected_cash, movements_break
 from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
 from pos.app_products import extract_app_products, is_app_product
+from pos.pricing import line_vendus, combine_global
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1425,18 +1426,74 @@ async def void_order_item(order_id: str, idx: int, authorization: Optional[str] 
     return {"ok": True, "order_id": order_id, "idx": idx, "order_cancelled": cancelled}
 
 
+class ItemEdit(BaseModel):
+    unit_price: Optional[float] = None
+    quantity: Optional[int] = None
+    vendus_tax_id: Optional[str] = None  # INT=13% | NOR=23%
+
+
+@api_router.post("/orders/{order_id}/items/{idx}/edit")
+async def edit_order_item(order_id: str, idx: int, body: ItemEdit,
+                          authorization: Optional[str] = Header(None),
+                          x_device_token: Optional[str] = Header(None)):
+    """Edita preço/quantidade/IVA de um item da mesa (correção de um erro de
+    lançamento ou override do IVA do produto para este item). Grava SÓ os
+    campos presentes no corpo; quando o preço OU a quantidade mudam, recalcula
+    `total_price` (lê o outro valor no item atual, para não o perder). Devolve
+    um dict simples (não o OrderResponse, que era frágil com orders antigas
+    sem todos os campos — mesmo problema do `void_order_item`)."""
+    await get_pos_or_admin(authorization, x_device_token)
+    if body.unit_price is not None and body.unit_price < 0:
+        raise HTTPException(status_code=400, detail="Preço inválido")
+    if body.quantity is not None and body.quantity < 1:
+        raise HTTPException(status_code=400, detail="Quantidade inválida")
+    if body.vendus_tax_id is not None and body.vendus_tax_id not in ("INT", "NOR"):
+        raise HTTPException(status_code=400, detail="IVA inválido")
+
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    items = order.get("items", [])
+    if idx < 0 or idx >= len(items):
+        raise HTTPException(status_code=404, detail="Item não encontrado")
+    item = items[idx]
+    if item.get("paid"):
+        raise HTTPException(status_code=400, detail="Item já faturado — não pode ser editado")
+
+    updates = {}
+    if body.unit_price is not None:
+        updates[f"items.{idx}.unit_price"] = body.unit_price
+    if body.quantity is not None:
+        updates[f"items.{idx}.quantity"] = body.quantity
+    if body.vendus_tax_id is not None:
+        updates[f"items.{idx}.vendus_tax_id"] = body.vendus_tax_id
+    if body.unit_price is not None or body.quantity is not None:
+        new_price = body.unit_price if body.unit_price is not None else item.get("unit_price", 0)
+        new_qty = body.quantity if body.quantity is not None else item.get("quantity", 1)
+        updates[f"items.{idx}.total_price"] = round(float(new_price or 0) * float(new_qty or 0), 2)
+
+    if updates:
+        await db.orders.update_one({"id": order_id}, {"$set": updates})
+
+    resp = {"ok": True, "order_id": order_id, "idx": idx}
+    resp.update({k.rsplit(".", 1)[-1]: v for k, v in updates.items()})
+    return resp
+
+
 class ItemDiscount(BaseModel):
-    pct: float = 0  # 0..100
+    pct: Optional[float] = None     # 0..100
+    amount: Optional[float] = None  # € — mutuamente exclusivo com pct (amount ganha)
 
 
 @api_router.post("/orders/{order_id}/items/{idx}/discount")
 async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
                             authorization: Optional[str] = Header(None),
                             x_device_token: Optional[str] = Header(None)):
-    """Define um desconto (%) num item da mesa. Fica gravado no item e reflete-se
-    na conta, na consulta e na fatura (enviado ao Vendus como discount_percentage)."""
+    """Define um desconto num item da mesa — percentagem (`pct`, 0..100) OU
+    montante em euros (`amount`); são mutuamente exclusivos, dar um limpa o
+    outro. Fica gravado no item e reflete-se na conta, na consulta e na
+    fatura (enviado ao Vendus como discount_percentage ou discount_amount)."""
     await get_pos_or_admin(authorization, x_device_token)
-    pct = max(0.0, min(100.0, float(body.pct or 0)))
     order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
@@ -1445,7 +1502,22 @@ async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
         raise HTTPException(status_code=404, detail="Item não encontrado")
     if items[idx].get("paid"):
         raise HTTPException(status_code=400, detail="Item já faturado")
-    await db.orders.update_one({"id": order_id}, {"$set": {f"items.{idx}.discount_pct": pct}})
+
+    if body.amount is not None:
+        amount = round(max(0.0, float(body.amount or 0)), 2)
+        await db.orders.update_one(
+            {"id": order_id},
+            {"$set": {f"items.{idx}.discount_amount": amount},
+             "$unset": {f"items.{idx}.discount_pct": ""}},
+        )
+        return {"ok": True, "order_id": order_id, "idx": idx, "discount_amount": amount}
+
+    pct = max(0.0, min(100.0, float(body.pct or 0)))
+    await db.orders.update_one(
+        {"id": order_id},
+        {"$set": {f"items.{idx}.discount_pct": pct},
+         "$unset": {f"items.{idx}.discount_amount": ""}},
+    )
     return {"ok": True, "order_id": order_id, "idx": idx, "discount_pct": pct}
 
 # ==================== VENDUS: FECHO DE MESA ====================
@@ -1486,6 +1558,8 @@ async def _open_bill_lines(table_number: int) -> list:
                 "total_price": net,          # já com o desconto do item aplicado
                 "gross_total": gross,        # antes do desconto
                 "discount_pct": dpct,
+                "discount_amount": it.get("discount_amount"),  # desconto em € (override), se houver
+                "vendus_tax_id": it.get("vendus_tax_id"),      # IVA override da linha, se houver
                 "variation": it.get("variation"),
                 "source": src,
             })
@@ -1734,10 +1808,9 @@ async def close_table(table_number: int, req: CloseTableRequest,
     cash_session_id = sess["id"] if sess else "legacy"
     rodizio_pay = None  # {adults, children, waste} faturado agora (rodízio parcial)
 
-    # Desconto GLOBAL (%) sobre toda a fatura; combina com o desconto por item.
+    # Desconto GLOBAL (%) sobre toda a fatura; combina-se com o desconto próprio
+    # de cada linha (pos.pricing.combine_global), aplicando-se SEMPRE por cima.
     g_disc = max(0.0, min(100.0, float(req.global_discount_pct or 0)))
-    def _eff_disc(item_pct):
-        return round(100.0 * (1 - (1 - (float(item_pct or 0)) / 100.0) * (1 - g_disc / 100.0)), 4)
 
     if req.rodizio_tier:
         # ---- RODÍZIO: fatura por pessoa (adultos/crianças) — pode ser PARCIAL
@@ -1783,27 +1856,26 @@ async def close_table(table_number: int, req: CloseTableRequest,
         vendus_items = []
         total = 0.0
 
-        def _add(title, qty, gross, tax, item_pct=0):
-            eff = _eff_disc(item_pct)
-            li = {"title": title, "qty": qty, "gross_price": gross, "tax_id": tax}
-            if eff > 0:
-                li["discount_percentage"] = eff
+        # Item SINTÉTICO do rodízio (adulto/criança/taxa): não é linha da conta,
+        # não tem override de IVA nem desconto próprio — só o desconto GLOBAL se
+        # aplica (combine_global sobre uma linha sem desconto próprio).
+        def _add(title, qty, gross, tax):
+            li, net = combine_global(
+                {"title": title, "qty": qty, "gross_price": gross, "tax_id": tax}, g_disc)
             vendus_items.append(li)
-            return round(gross * qty * (1 - eff / 100.0), 2)
+            return net
 
         if pay_adults > 0:
             total += _add(f"{tier['name']} (adulto)", pay_adults, price, rtax)
         if pay_half > 0:
             total += _add(f"{tier['name']} (criança)", pay_half, half, rtax)
         for l in extra_lines:
-            qty = l.get("quantity", 1) or 1
-            unit = round(float(l.get("unit_price", 0) or 0), 2)
-            tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
-            title = l.get("product_name", "Item")
-            var = l.get("variation") or {}
-            if isinstance(var, dict) and var.get("name"):
-                title = f"{title} ({var['name']})"
-            total += _add(title, qty, unit, tax, l.get("discount_pct", 0))
+            # Extra à la carte: line_vendus resolve título/qtd/preço/IVA (com os
+            # overrides do item) e combine_global aplica o desconto global por cima.
+            li, net = combine_global(
+                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID), g_disc)
+            vendus_items.append(li)
+            total += net
         if req.waste_boxes and req.waste_boxes > 0:
             wfee = round(float(cfg.get("waste_fee", 5.0)), 2)
             total += _add("Taxa de desperdício", req.waste_boxes, wfee, cfg.get("waste_fee_tax_id", "INT"))
@@ -1850,19 +1922,14 @@ async def close_table(table_number: int, req: CloseTableRequest,
         by_tax = {}
         total = 0.0
         for l in lines:
-            qty = l.get("quantity", 1) or 1
-            unit = round(float(l.get("unit_price", 0) or 0), 2)
-            tax = tax_by_prod.get(l.get("product_id"), VENDUS_DEFAULT_TAX_ID)
-            title = l.get("product_name", "Item")
-            var = l.get("variation") or {}
-            if isinstance(var, dict) and var.get("name"):
-                title = f"{title} ({var['name']})"
-            eff = _eff_disc(l.get("discount_pct", 0))          # desconto do item + global
-            li = {"title": title, "qty": qty, "gross_price": unit, "tax_id": tax}
-            if eff > 0:
-                li["discount_percentage"] = eff
+            # line_vendus resolve título/qtd/preço/IVA da linha (com os overrides
+            # do item: vendus_tax_id, desconto em €); combine_global funde o
+            # desconto da linha com o desconto GLOBAL num único discount_percentage
+            # e devolve o líquido EXATO que o Vendus calcula (sem desvio).
+            li, amt = combine_global(
+                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID), g_disc)
+            tax = li["tax_id"]                                  # IVA efetivo (override incluído)
             vendus_items.append(li)
-            amt = round(unit * qty * (1 - eff / 100.0), 2)     # valor líquido da linha
             by_tax[tax] = round(by_tax.get(tax, 0.0) + amt, 2)
             total += amt
         total = round(total, 2)

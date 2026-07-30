@@ -241,8 +241,12 @@ export const checkoutAPI = {
     api.post(`/tables/${tableNumber}/free`),
   removeItem: (orderId, idx) =>
     api.post(`/orders/${orderId}/items/${idx}/void`),
-  setItemDiscount: (orderId, idx, pct) =>
-    api.post(`/orders/${orderId}/items/${idx}/discount`, { pct })
+  // Desconto por item: corpo { pct } (%) OU { amount } (€) — mutuamente exclusivos.
+  setItemDiscount: (orderId, idx, body) =>
+    api.post(`/orders/${orderId}/items/${idx}/discount`, body),
+  // Edita preço/quantidade/IVA de um item (diálogo do produto, Fase 3).
+  editItem: (orderId, idx, data) =>
+    api.post(`/orders/${orderId}/items/${idx}/edit`, data)
 };
 
 // POS - Autenticação e Caixa (via posApi: device + token PIN, sem Authorization)
@@ -281,8 +285,12 @@ export const posCheckout = {
     posApi.get(`/tables/${tableNumber}/bill`),
   closeTable: (tableNumber, data) =>
     posApi.post(`/tables/${tableNumber}/close`, data),
-  setItemDiscount: (orderId, idx, pct) =>
-    posApi.post(`/orders/${orderId}/items/${idx}/discount`, { pct }),
+  // Desconto por item: corpo { pct } (%) OU { amount } (€) — mutuamente exclusivos.
+  setItemDiscount: (orderId, idx, body) =>
+    posApi.post(`/orders/${orderId}/items/${idx}/discount`, body),
+  // Edita preço/quantidade/IVA de um item (diálogo do produto, Fase 3).
+  editItem: (orderId, idx, data) =>
+    posApi.post(`/orders/${orderId}/items/${idx}/edit`, data),
   removeItem: (orderId, idx) =>
     posApi.post(`/orders/${orderId}/items/${idx}/void`),
   printConsulta: (tableNumber) =>

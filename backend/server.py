@@ -3694,6 +3694,12 @@ async def update_pos_settings(cfg: PosSettingsConfig, authorization: Optional[st
 class CounterOrderItem(BaseModel):
     product_id: str
     quantity: int = Field(gt=0)
+    # Overrides opcionais do staff (diálogo do produto no balcão). Sem eles, usa-se
+    # o preço/IVA do produto e sem desconto — comportamento de venda rápida.
+    unit_price: Optional[float] = None       # override do preço unitário
+    vendus_tax_id: Optional[str] = None      # override do IVA: INT (13%) | NOR (23%)
+    discount_pct: Optional[float] = None     # desconto % (0..100)
+    discount_amount: Optional[float] = None  # desconto € (mutuamente exclusivo com pct)
 
 
 class CounterOrderRequest(BaseModel):
@@ -3737,7 +3743,23 @@ async def create_counter_order(
         if not p.get("rodizio_only", False) and p.get("available", True)
     }
 
-    cart = [{"product_id": i.product_id, "quantity": i.quantity} for i in body.items]
+    # Valida os overrides do staff (diálogo do produto): preço/desconto não
+    # negativos, IVA só INT/NOR (classes usadas nas FS), percentagem 0..100.
+    for i in body.items:
+        if i.unit_price is not None and i.unit_price < 0:
+            raise HTTPException(status_code=400, detail="Preço inválido")
+        if i.vendus_tax_id is not None and i.vendus_tax_id not in ("INT", "NOR"):
+            raise HTTPException(status_code=400, detail="IVA inválido")
+        if i.discount_pct is not None and not (0 <= i.discount_pct <= 100):
+            raise HTTPException(status_code=400, detail="Desconto % inválido")
+        if i.discount_amount is not None and i.discount_amount < 0:
+            raise HTTPException(status_code=400, detail="Desconto € inválido")
+
+    cart = [{
+        "product_id": i.product_id, "quantity": i.quantity,
+        "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
+        "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
+    } for i in body.items]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
 
     if not built["items"]:
@@ -3833,17 +3855,20 @@ async def checkout_counter_order(
     # Itens Vendus a partir dos itens do pedido (formato OrderItem gravado na
     # Task 1). `tax_id` = imposto do item ou o default; título com a variação
     # entre parênteses, tal como `close_table`.
-    total = round(float(order.get("total", 0) or 0), 2)
+    # Linhas Vendus a partir dos itens do pedido, com os overrides do staff
+    # (preço/IVA/desconto do diálogo do balcão) resolvidos pelos MESMOS helpers
+    # da mesa — o IVA e o desconto por linha chegam à FS real; o desconto vai
+    # como `discount_percentage` (nunca o campo `discount`, que dá 403). Não há
+    # desconto GLOBAL no balcão (0). O total pago é a soma dos líquidos das
+    # linhas (bate com o `order.total` gravado por `build_counter_items`).
     vendus_items = []
+    total = 0.0
     for l in order.get("items", []):
-        qty = l.get("quantity", 1) or 1
-        unit = round(float(l.get("unit_price", 0) or 0), 2)
-        tax = l.get("vendus_tax_id") or VENDUS_DEFAULT_TAX_ID
-        title = l.get("product_name", "Item")
-        var = l.get("variation") or {}
-        if isinstance(var, dict) and var.get("name"):
-            title = f"{title} ({var['name']})"
-        vendus_items.append({"title": title, "qty": qty, "gross_price": unit, "tax_id": tax})
+        li = line_vendus(l, None, VENDUS_DEFAULT_TAX_ID)
+        out, liquido = combine_global(li, 0)
+        vendus_items.append(out)
+        total += liquido
+    total = round(total, 2)
     if not vendus_items or total <= 0:
         raise HTTPException(status_code=400, detail="Pedido sem itens para faturar")
 

@@ -37,17 +37,41 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
         if prod is None:
             continue
         qty = entry.get("quantity", 0)
-        unit_price = prod.get("base_price", 0)
-        item_total = round(unit_price * qty, 2)
-        items.append({
+        # Overrides do staff (diálogo do produto), com fallback ao produto:
+        #   - preço unitário: `unit_price` do carrinho, senão `base_price`;
+        #   - IVA: `vendus_tax_id` do carrinho, senão o do produto (pode ser None,
+        #     resolvido para o default na faturação, não aqui — mesma regra de antes).
+        up = entry.get("unit_price")
+        unit_price = round(float(up if up is not None else prod.get("base_price", 0) or 0), 2)
+        tax = entry.get("vendus_tax_id") or prod.get("vendus_tax_id")
+        gross = round(unit_price * qty, 2)
+        # Desconto por linha: € tem precedência sobre % (mutuamente exclusivos),
+        # tal como na mesa (`line_vendus`/`set_item_discount`). `total_price`
+        # continua a ser o BRUTO (unit×qty) — a resolução do líquido para a FS
+        # fica em `line_vendus`/`combine_global`, e o `total` do pedido é o líquido.
+        dpct = float(entry.get("discount_pct") or 0)
+        damt = float(entry.get("discount_amount") or 0)
+        item = {
             "product_id": entry.get("product_id"),
             "product_name": prod.get("name"),
             "quantity": qty,
             "unit_price": unit_price,
-            "total_price": item_total,
-            "vendus_tax_id": prod.get("vendus_tax_id"),
-        })
-        total += item_total
+            "total_price": gross,
+            "vendus_tax_id": tax,
+        }
+        # € tem PRECEDÊNCIA sobre % (mutuamente exclusivos) — quando ambos vêm,
+        # só o € conta, igual a `line_vendus`/`combine_global`. O líquido do item
+        # (o que entra no `total` do pedido/pagamento) usa a mesma regra.
+        if damt:
+            item["discount_amount"] = round(damt, 2)
+            net = round(max(0.0, gross - damt), 2)
+        elif dpct:
+            item["discount_pct"] = dpct
+            net = round(max(0.0, gross * (1 - dpct / 100.0)), 2)
+        else:
+            net = gross
+        items.append(item)
+        total += net
     return {"items": items, "total": round(total, 2)}
 
 

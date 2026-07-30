@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  ArrowLeft, CheckCircle2, Loader2, Minus, Plus, Printer, Receipt,
+  ArrowLeft, CheckCircle2, Loader2, Minus, Plus, Printer, Receipt, Pencil,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -8,9 +8,21 @@ import { Input } from '@/components/ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
 import { posCounter, posCheckout } from '@/lib/api';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
+
+// Líquido de uma linha do carrinho (bruto − desconto; € tem precedência sobre %).
+const lineGross = (c) => Math.round((Number(c.unitPrice) || 0) * c.qty * 100) / 100;
+const lineNet = (c) => {
+  const gross = lineGross(c);
+  const dv = Number(String(c.discVal).replace(',', '.')) || 0;
+  const net = c.discKind === 'eur' ? gross - dv : gross * (1 - Math.min(100, dv) / 100);
+  return Math.max(0, Math.round(net * 100) / 100);
+};
 
 // Ecrã cheio do Balcão (Fase 2, Task 4) — venda sem mesa. Montado pelo
 // PosApp por cima da Home (mesmo mecanismo do PosFecharCaixa: um booleano
@@ -37,8 +49,19 @@ const PosBalcao = ({ onClose }) => {
   const [methods, setMethods] = useState([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
 
-  const [cart, setCart] = useState([]); // [{id, name, price, qty}]
+  // Carrinho: [{id, name, qty, unitPrice, tax, taxTouched, discKind, discVal}]
+  const [cart, setCart] = useState([]);
   const [selectedCat, setSelectedCat] = useState(null);
+
+  // Diálogo do produto (editar qtd/preço/IVA/desconto de uma linha do carrinho,
+  // antes de "Imprimir Pedido").
+  const [editIdx, setEditIdx] = useState(null);
+  const [edQty, setEdQty] = useState('1');
+  const [edPrice, setEdPrice] = useState('');
+  const [edTax, setEdTax] = useState('NOR');
+  const [edTaxTouched, setEdTaxTouched] = useState(false);
+  const [edDiscKind, setEdDiscKind] = useState('pct'); // 'pct' | 'eur'
+  const [edDiscVal, setEdDiscVal] = useState('');
 
   const [printing, setPrinting] = useState(false);
   const [orderId, setOrderId] = useState(null);
@@ -81,7 +104,12 @@ const PosBalcao = ({ onClose }) => {
         next[idx] = { ...next[idx], qty: next[idx].qty + 1 };
         return next;
       }
-      return [...prev, { id: p.id, name: p.name, price: Number(p.base_price) || 0, qty: 1 }];
+      return [...prev, {
+        id: p.id, name: p.name, qty: 1,
+        unitPrice: Number(p.base_price) || 0,
+        tax: p.vendus_tax_id === 'INT' ? 'INT' : 'NOR',
+        taxTouched: false, discKind: 'pct', discVal: '',
+      }];
     });
   }, [printed]);
 
@@ -92,14 +120,58 @@ const PosBalcao = ({ onClose }) => {
       .filter((c) => c.qty > 0));
   }, [printed]);
 
-  const cartTotal = Math.round(cart.reduce((s, c) => s + c.price * c.qty, 0) * 100) / 100;
+  const cartTotal = Math.round(cart.reduce((s, c) => s + lineNet(c), 0) * 100) / 100;
   const total = printed ? (orderTotal ?? cartTotal) : cartTotal;
+
+  // Abre o diálogo do produto para a linha `idx` do carrinho (só antes de imprimir).
+  const openEdit = (idx) => {
+    const c = cart[idx];
+    if (!c || printed) return;
+    setEdQty(String(c.qty));
+    setEdPrice(String(c.unitPrice));
+    setEdTax(c.tax);
+    setEdTaxTouched(false);
+    setEdDiscKind(c.discKind || 'pct');
+    setEdDiscVal(c.discVal || '');
+    setEditIdx(idx);
+  };
+
+  const saveEdit = () => {
+    const q = Math.max(1, parseInt(edQty, 10) || 1);
+    const price = Math.max(0, Number(String(edPrice).replace(',', '.')) || 0);
+    setCart((prev) => prev.map((c, i) => (i === editIdx ? {
+      ...c, qty: q, unitPrice: price,
+      tax: edTax, taxTouched: c.taxTouched || edTaxTouched,
+      discKind: edDiscKind, discVal: edDiscVal,
+    } : c)));
+    setEditIdx(null);
+  };
+
+  // Subtotal previsto no diálogo (bruto − desconto).
+  const edSubtotal = (() => {
+    const q = Math.max(1, parseInt(edQty, 10) || 1);
+    const price = Math.max(0, Number(String(edPrice).replace(',', '.')) || 0);
+    const dv = Math.max(0, Number(String(edDiscVal).replace(',', '.')) || 0);
+    const gross = Math.round(price * q * 100) / 100;
+    const net = edDiscKind === 'eur' ? gross - dv : gross * (1 - Math.min(100, dv) / 100);
+    return Math.max(0, Math.round(net * 100) / 100);
+  })();
 
   const imprimirPedido = async () => {
     if (!cart.length) return;
     setPrinting(true);
     try {
-      const items = cart.map((c) => ({ product_id: c.id, quantity: c.qty }));
+      const items = cart.map((c) => {
+        const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
+        // IVA só vai se o staff o mudou (senão o backend usa o do produto).
+        if (c.taxTouched) it.vendus_tax_id = c.tax;
+        const dv = Number(String(c.discVal).replace(',', '.')) || 0;
+        if (dv > 0) {
+          if (c.discKind === 'eur') it.discount_amount = dv;
+          else it.discount_pct = dv;
+        }
+        return it;
+      });
       const r = await posCounter.createOrder(items);
       setOrderId(r.data.order_id);
       setOrderNumber(r.data.order_number);
@@ -135,6 +207,7 @@ const PosBalcao = ({ onClose }) => {
 
   const novaVenda = () => {
     setCart([]);
+    setEditIdx(null);
     setOrderId(null);
     setOrderNumber(null);
     setOrderTotal(null);
@@ -270,34 +343,57 @@ const PosBalcao = ({ onClose }) => {
             {cart.length === 0 ? (
               <p className="py-8 text-center text-sm text-white/50">Carrinho vazio. Toca num produto para adicionar.</p>
             ) : (
-              cart.map((c) => (
-                <div
-                  key={c.id}
-                  className="grid grid-cols-[1fr_5.5rem_5rem] items-center gap-2 border-b border-white/5 px-4 py-3"
-                >
-                  <span className="truncate">{c.name}</span>
-                  <span className="flex items-center justify-center gap-1">
-                    <Button
-                      variant="outline" size="icon"
-                      className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
-                      onClick={() => changeQty(c.id, -1)} disabled={printed}
-                      aria-label={`Diminuir ${c.name}`}
-                    >
-                      <Minus className="h-3.5 w-3.5" />
-                    </Button>
-                    <span className="w-5 text-center tabular-nums">{c.qty}</span>
-                    <Button
-                      variant="outline" size="icon"
-                      className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
-                      onClick={() => changeQty(c.id, 1)} disabled={printed}
-                      aria-label={`Aumentar ${c.name}`}
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                    </Button>
-                  </span>
-                  <span className="text-right tabular-nums">{eur(c.price * c.qty)}</span>
-                </div>
-              ))
+              cart.map((c, i) => {
+                const dv = Number(String(c.discVal).replace(',', '.')) || 0;
+                return (
+                  <div
+                    key={c.id}
+                    onClick={() => openEdit(i)}
+                    title={printed ? undefined : 'Tocar para editar (qtd/preço/IVA/desconto)'}
+                    className={`grid grid-cols-[1fr_5.5rem_5rem] items-center gap-2 border-b border-white/5 px-4 py-3 ${printed ? '' : 'cursor-pointer hover:bg-white/5'}`}
+                  >
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1.5">
+                        <span className="truncate">{c.name}</span>
+                        {!printed && <Pencil className="h-3 w-3 shrink-0 text-white/30" />}
+                      </span>
+                      <span className="mt-0.5 flex items-center gap-1.5 text-white/40">
+                        <span className="text-[11px] tabular-nums">{eur(c.unitPrice)}/un</span>
+                        {dv > 0 && (
+                          <span className="rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[10px] text-emerald-200">
+                            −{c.discKind === 'eur' ? eur(dv) : `${dv}%`}
+                          </span>
+                        )}
+                        {c.taxTouched && (
+                          <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] text-white/50">
+                            {c.tax === 'INT' ? '13%' : '23%'}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+                    <span className="flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      <Button
+                        variant="outline" size="icon"
+                        className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
+                        onClick={() => changeQty(c.id, -1)} disabled={printed}
+                        aria-label={`Diminuir ${c.name}`}
+                      >
+                        <Minus className="h-3.5 w-3.5" />
+                      </Button>
+                      <span className="w-5 text-center tabular-nums">{c.qty}</span>
+                      <Button
+                        variant="outline" size="icon"
+                        className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
+                        onClick={() => changeQty(c.id, 1)} disabled={printed}
+                        aria-label={`Aumentar ${c.name}`}
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </Button>
+                    </span>
+                    <span className="text-right tabular-nums">{eur(lineNet(c))}</span>
+                  </div>
+                );
+              })
             )}
           </div>
 
@@ -393,6 +489,69 @@ const PosBalcao = ({ onClose }) => {
           </div>
         </div>
       </main>
+
+      {/* Diálogo do produto — editar qtd/preço/IVA/desconto de uma linha (antes de imprimir) */}
+      <Dialog open={editIdx != null} onOpenChange={(v) => !v && setEditIdx(null)}>
+        <DialogContent className="max-w-sm text-foreground">
+          <DialogHeader>
+            <DialogTitle className="pr-6 text-lg">
+              {editIdx != null && cart[editIdx] ? cart[editIdx].name : 'Produto'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Quantidade</label>
+                <Input type="number" inputMode="numeric" min={1} step="1"
+                  value={edQty} onChange={(e) => setEdQty(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Preço unitário</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">€</span>
+                  <Input type="number" inputMode="decimal" min={0} step="0.10" className="pl-7 text-right"
+                    value={edPrice} onChange={(e) => setEdPrice(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">IVA</label>
+              <Select value={edTax} onValueChange={(v) => { setEdTax(v); setEdTaxTouched(true); }}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="INT">Intermédia — 13% (comida, águas)</SelectItem>
+                  <SelectItem value="NOR">Normal — 23% (refrigerantes, bebidas)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Desconto</label>
+              <div className="flex gap-2">
+                <div className="flex shrink-0 overflow-hidden rounded-md border">
+                  <button type="button" onClick={() => setEdDiscKind('pct')}
+                    className={`px-3 text-sm ${edDiscKind === 'pct' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground'}`}>%</button>
+                  <button type="button" onClick={() => setEdDiscKind('eur')}
+                    className={`border-l px-3 text-sm ${edDiscKind === 'eur' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground'}`}>€</button>
+                </div>
+                <Input type="number" inputMode="decimal" min={0} step={edDiscKind === 'pct' ? '1' : '0.10'}
+                  className="text-right" placeholder="0"
+                  value={edDiscVal} onChange={(e) => setEdDiscVal(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2">
+              <span className="text-sm text-muted-foreground">Subtotal</span>
+              <span className="text-xl font-bold text-primary tabular-nums">{eur(edSubtotal)}</span>
+            </div>
+          </div>
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setEditIdx(null)}>Cancelar</Button>
+            <Button onClick={saveEdit} className="bg-[#5a1a1a] text-white hover:bg-[#4a1414]">Guardar</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

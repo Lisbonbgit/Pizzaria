@@ -11,6 +11,7 @@ carregado por quem chama; `counter_ext_ref` gera a referência externa estável
 usada pela integração fiscal (idempotência, mesmo espírito do
 `external_reference` do fecho de mesa).
 """
+from pos.pricing import line_vendus, combine_global
 
 
 def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NOR") -> dict:
@@ -59,19 +60,19 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
             "total_price": gross,
             "vendus_tax_id": tax,
         }
-        # € tem PRECEDÊNCIA sobre % (mutuamente exclusivos) — quando ambos vêm,
-        # só o € conta, igual a `line_vendus`/`combine_global`. O líquido do item
-        # (o que entra no `total` do pedido/pagamento) usa a mesma regra.
+        # € tem PRECEDÊNCIA sobre % (mutuamente exclusivos) — só uma chave é
+        # guardada no item, igual a `line_vendus`/`set_item_discount`.
         if damt:
             item["discount_amount"] = round(damt, 2)
-            net = round(max(0.0, gross - damt), 2)
         elif dpct:
             item["discount_pct"] = dpct
-            net = round(max(0.0, gross * (1 - dpct / 100.0)), 2)
-        else:
-            net = gross
         items.append(item)
-        total += net
+        # Líquido do item pela MESMA via da faturação (`line_vendus` +
+        # `combine_global`, sem desconto global) → o `total` do pedido bate ao
+        # cêntimo com o pagamento/FS do `checkout_counter_order` (fonte única de
+        # verdade; evita divergência de arredondamento no total em cache).
+        _, liquido = combine_global(line_vendus(item, None, default_tax), 0)
+        total += liquido
     return {"items": items, "total": round(total, 2)}
 
 

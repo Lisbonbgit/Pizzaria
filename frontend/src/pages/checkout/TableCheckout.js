@@ -104,6 +104,15 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const [edDiscVal, setEdDiscVal] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
 
+  // Gestão do rodízio da mesa (adicionar / corrigir nº de pessoas). `rodPaid`
+  // guarda o que já foi faturado, para o diálogo editar o TOTAL corretamente.
+  const [rodPaid, setRodPaid] = useState({ adults: 0, children: 0 });
+  const [rodizioOpen, setRodizioOpen] = useState(false);
+  const [rdTier, setRdTier] = useState('simples'); // none | simples | completo
+  const [rdAdults, setRdAdults] = useState(0);
+  const [rdChildren, setRdChildren] = useState(0);
+  const [savingRodizio, setSavingRodizio] = useState(false);
+
   // Catálogo + métodos de pagamento + config do rodízio — uma vez, no arranque.
   useEffect(() => {
     api.paymentMethods().then((r) => setMethods(r.data)).catch(() => {});
@@ -154,6 +163,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     const paid = t.rodizio_paid || {};
     setRodAdults(rmode !== 'none' ? Math.max(0, (rp.adults || 0) - (paid.adults || 0)) : 0);
     setRodChildren(rmode !== 'none' ? Math.max(0, (rp.children || 0) - (paid.children || 0)) : 0);
+    setRodPaid({ adults: paid.adults || 0, children: paid.children || 0 });
     setFreeKids(new Set());
     setWasteBoxes(0);
     setMode('edit');
@@ -366,6 +376,46 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     return Math.max(0, Math.round(net * 100) / 100);
   })();
 
+  // ---- Gestão do rodízio da mesa (adicionar / corrigir nº de pessoas) ----
+  const openRodizioDialog = () => {
+    // Pré-preenche com o TOTAL atual (a-pagar + já-pago) e o tier atual; se a
+    // mesa ainda não tem rodízio, arranca em "simples".
+    setRdTier(rodizioMode !== 'none' ? rodizioMode : 'simples');
+    setRdAdults(rodAdults + (rodPaid.adults || 0));
+    setRdChildren(rodChildren + (rodPaid.children || 0));
+    setRodizioOpen(true);
+  };
+
+  const saveRodizio = async () => {
+    const tier = rdTier;
+    const adults = Math.max(0, parseInt(rdAdults, 10) || 0);
+    const children = Math.max(0, parseInt(rdChildren, 10) || 0);
+    if (tier !== 'none' && adults + children < 1) {
+      toast.error('Indica pelo menos 1 pessoa no rodízio');
+      return;
+    }
+    setSavingRodizio(true);
+    try {
+      const r = await api.setRodizio(tableNumber, { tier, adults, children });
+      const s = r.data || {};
+      const paid = s.rodizio_paid || { adults: 0, children: 0 };
+      const people = s.rodizio_people || { adults: 0, children: 0 };
+      const mode = s.rodizio && s.rodizio !== 'none' ? s.rodizio : 'none';
+      setRodizioMode(mode);
+      setRodPaid({ adults: paid.adults || 0, children: paid.children || 0 });
+      setRodAdults(mode !== 'none' ? Math.max(0, (people.adults || 0) - (paid.adults || 0)) : 0);
+      setRodChildren(mode !== 'none' ? Math.max(0, (people.children || 0) - (paid.children || 0)) : 0);
+      if (mode === 'none') { setFreeKids(new Set()); setWasteBoxes(0); }
+      toast.success(mode === 'none' ? 'Rodízio removido' : 'Rodízio atualizado');
+      setRodizioOpen(false);
+      onChanged && onChanged();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erro ao atualizar o rodízio');
+    } finally {
+      setSavingRodizio(false);
+    }
+  };
+
   const countEntries = (entries) => {
     let adults = 0, children_half = 0, children_free = 0, waste_boxes = 0;
     const items = [];
@@ -422,6 +472,10 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
               const rp = t.rodizio_people || {}; const paid = t.rodizio_paid || {};
               setRodAdults(Math.max(0, (rp.adults || 0) - (paid.adults || 0)));
               setRodChildren(Math.max(0, (rp.children || 0) - (paid.children || 0)));
+              // Mantém `rodPaid` fresco — o diálogo "Gerir rodízio" pré-preenche o
+              // TOTAL como (a-pagar + já-pago); sem isto, após um fecho parcial o
+              // total do diálogo vinha errado e podia sub-faturar pessoas.
+              setRodPaid({ adults: paid.adults || 0, children: paid.children || 0 });
             }
           } catch { /* ignore */ }
         }
@@ -745,6 +799,13 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   <span className="flex items-center gap-1"><Users className="h-4 w-4" />{openTablePeople} pessoa{openTablePeople !== 1 ? 's' : ''}</span>
                   <span className="tabular-nums">Total {eur(fullTotal)}</span>
                 </div>
+                {/* Gerir rodízio: adicionar a uma mesa sem, ou corrigir o nº de pessoas. */}
+                <Button variant="outline"
+                  onClick={openRodizioDialog}
+                  className="w-full bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white">
+                  <Users className="h-4 w-4 mr-1" />
+                  {isRodizioTable ? `Rodízio: ${rodAdults} adulto${rodAdults !== 1 ? 's' : ''}${rodChildren ? ` + ${rodChildren} criança${rodChildren !== 1 ? 's' : ''}` : ''}` : 'Adicionar rodízio'}
+                </Button>
                 {/* Separar Conta: liga o modo em que clicar num produto o passa para a
                     esquerda (cobrar à parte) em vez de abrir o diálogo de edição. */}
                 {billable.length > 0 && (
@@ -883,6 +944,66 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
             <Button onClick={saveEdit} disabled={savingEdit} className="bg-[#5a1a1a] hover:bg-[#4a1414]">
               {savingEdit ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
               Gravar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo — gerir rodízio da mesa (adicionar / corrigir nº de pessoas) */}
+      <Dialog open={rodizioOpen} onOpenChange={(v) => !v && setRodizioOpen(false)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-lg pr-6">Rodízio — {tableTitle}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Nível</label>
+              <Select value={rdTier} onValueChange={setRdTier}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sem rodízio (à la carte)</SelectItem>
+                  {Object.entries(rodizioCfg?.tiers || {}).map(([key, t]) => (
+                    <SelectItem key={key} value={key}>{(t?.name || key)} — {eur(t?.price)}/adulto</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {rdTier !== 'none' && (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Adultos <span className="text-muted-foreground">({eur(rodizioCfg?.tiers?.[rdTier]?.price)})</span></span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="icon" className="h-8 w-8"
+                      onClick={() => setRdAdults((n) => Math.max(0, (parseInt(n, 10) || 0) - 1))}>−</Button>
+                    <span className="w-8 text-center font-semibold tabular-nums">{rdAdults}</span>
+                    <Button variant="outline" size="icon" className="h-8 w-8"
+                      onClick={() => setRdAdults((n) => (parseInt(n, 10) || 0) + 1)}>+</Button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Crianças <span className="text-muted-foreground">(½ · {eur((Number(rodizioCfg?.tiers?.[rdTier]?.price) || 0) / 2)})</span></span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="icon" className="h-8 w-8"
+                      onClick={() => setRdChildren((n) => Math.max(0, (parseInt(n, 10) || 0) - 1))}>−</Button>
+                    <span className="w-8 text-center font-semibold tabular-nums">{rdChildren}</span>
+                    <Button variant="outline" size="icon" className="h-8 w-8"
+                      onClick={() => setRdChildren((n) => (parseInt(n, 10) || 0) + 1)}>+</Button>
+                  </div>
+                </div>
+                {(rodPaid.adults > 0 || rodPaid.children > 0) && (
+                  <p className="rounded-lg bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                    Já faturado: {rodPaid.adults} adulto(s){rodPaid.children ? `, ${rodPaid.children} criança(s)` : ''}. Os números acima são os TOTAIS da mesa.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setRodizioOpen(false)}>Cancelar</Button>
+            <Button onClick={saveRodizio} disabled={savingRodizio} className="bg-[#5a1a1a] hover:bg-[#4a1414]">
+              {savingRodizio ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+              Guardar
             </Button>
           </div>
         </DialogContent>

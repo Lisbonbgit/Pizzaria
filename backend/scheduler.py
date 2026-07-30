@@ -184,41 +184,74 @@ def _diff_style(diff: float):
     return "#d97706", f"Sobra {format_currency(diff)}"
 
 
+# ---- Paleta e helpers de estilo do email (design suave, cartões arredondados) ----
+_INK = "#2a221e"
+_MUTED = "#8c817a"
+_HAIR = "#efe9e4"
+_MAROON = "#5a1a1a"
+_GREEN = "#16a34a"
+_PAGE_BG = "#efe9e4"
+
+_CARD = ("background:#ffffff; border:1px solid #efe9e4; border-radius:18px; "
+         "box-shadow:0 2px 6px rgba(60,40,30,0.06); padding:26px 26px; margin:0 0 16px;")
+
+
+def _section_title(text: str, icon: str = "") -> str:
+    ic = f'<span style="margin-right:8px;">{icon}</span>' if icon else ""
+    return (f'<h2 style="margin:0 0 4px; font-size:17px; font-weight:800; color:{_MAROON}; '
+            f'letter-spacing:-0.02em;">{ic}{text}</h2>')
+
+
+def _subtle(text: str) -> str:
+    return f'<p style="margin:0 0 16px; font-size:12px; color:{_MUTED};">{text}</p>'
+
+
+def _stat_tile(value, label, color=_INK, tint="#f6f2ef") -> str:
+    return (f'<td style="padding:18px 8px; text-align:center; background:{tint}; border-radius:14px; '
+            f'vertical-align:top;">'
+            f'<div style="font-size:25px; font-weight:800; color:{color}; letter-spacing:-0.02em; white-space:nowrap;">{value}</div>'
+            f'<div style="font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; margin-top:6px;">{label}</div>'
+            f'</td>')
+
+
+def _money_row(label, value, *, sign="", color=_INK, strong=False, hair=True) -> str:
+    b = f"border-bottom:1px solid {_HAIR};" if hair else ""
+    fw = "800" if strong else "500"
+    lc = _INK if strong else "#5a534d"
+    return (f'<tr>'
+            f'<td style="padding:9px 2px; {b} color:{lc}; font-size:14px; font-weight:{"700" if strong else "400"};">{label}</td>'
+            f'<td style="padding:9px 2px; {b} text-align:right; color:{color}; font-size:14px; font-weight:{fw}; white-space:nowrap;">{sign}{format_currency(value)}</td>'
+            f'</tr>')
+
+
 def _cash_movements_rows(movements: list) -> str:
-    """Lista de entradas/saídas de dinheiro (movimentos) de uma sessão de caixa."""
+    """Lista suave de entradas/saídas de dinheiro (movimentos) de uma sessão."""
     if not movements:
         return ""
     rows = ""
     for m in movements:
         is_in = m.get("type") == "reforco"
         label = "Entrada de dinheiro" if is_in else "Saída de dinheiro"
-        color = "#16a34a" if is_in else "#dc2626"
-        sign = "+" if is_in else "−"
+        color = _GREEN if is_in else "#dc2626"
+        sign = "+ " if is_in else "− "
         amt = round(float(m.get("amount", 0) or 0), 2)
         reason = (m.get("reason") or "").strip()
         hora = _hm_lisbon(m.get("at"))
-        rows += f"""
-                    <tr>
-                        <td style="padding: 8px 10px; border-bottom: 1px solid #f1f5f9; color:{color}; font-weight:600;">{label}</td>
-                        <td style="padding: 8px 10px; border-bottom: 1px solid #f1f5f9; color:#6b7280; font-size:12px;">{reason or '—'}</td>
-                        <td style="padding: 8px 10px; border-bottom: 1px solid #f1f5f9; text-align:center; color:#9ca3af; font-size:12px;">{hora}</td>
-                        <td style="padding: 8px 10px; border-bottom: 1px solid #f1f5f9; text-align:right; color:{color}; font-weight:700;">{sign} {format_currency(amt)}</td>
-                    </tr>"""
-    return f"""
-            <table style="width:100%; border-collapse:collapse; margin-top:10px;">
-                <thead><tr style="background:#f9fafb;">
-                    <th style="padding:8px 10px; text-align:left; font-size:11px; color:#6b7280; text-transform:uppercase;">Movimento</th>
-                    <th style="padding:8px 10px; text-align:left; font-size:11px; color:#6b7280; text-transform:uppercase;">Motivo</th>
-                    <th style="padding:8px 10px; text-align:center; font-size:11px; color:#6b7280; text-transform:uppercase;">Hora</th>
-                    <th style="padding:8px 10px; text-align:right; font-size:11px; color:#6b7280; text-transform:uppercase;">Valor</th>
-                </tr></thead>
-                <tbody>{rows}</tbody>
-            </table>"""
+        meta = " · ".join([x for x in [reason, hora] if x]) or "—"
+        rows += (f'<tr>'
+                 f'<td style="padding:7px 2px; border-bottom:1px solid {_HAIR};">'
+                 f'<span style="color:{color}; font-weight:700; font-size:13px;">{label}</span>'
+                 f'<span style="color:{_MUTED}; font-size:12px;"> &nbsp;{meta}</span></td>'
+                 f'<td style="padding:7px 2px; border-bottom:1px solid {_HAIR}; text-align:right; color:{color}; font-weight:700; font-size:13px; white-space:nowrap;">{sign}{format_currency(amt)}</td>'
+                 f'</tr>')
+    return (f'<div style="margin-top:14px;">'
+            f'<div style="font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">Movimentos</div>'
+            f'<table style="width:100%; border-collapse:collapse;">{rows}</table></div>')
 
 
 def _one_cash_session_html(s: dict) -> str:
-    """HTML de UMA sessão de caixa fechada — fundo, vendas em dinheiro, entradas/
-    saídas, esperado vs contado e a DIFERENÇA em destaque."""
+    """Painel suave de UMA sessão de caixa fechada — fundo, vendas em dinheiro,
+    entradas/saídas, esperado vs contado e a DIFERENÇA em pílula destacada."""
     opening = round(float(s.get("opening_amount", 0) or 0), 2)
     cash_sales = round(float(s.get("cash_sales", 0) or 0), 2)
     expected = round(float(s.get("expected_cash", 0) or 0), 2)
@@ -229,84 +262,65 @@ def _one_cash_session_html(s: dict) -> str:
     sangrias = round(sum(float(m.get("amount", 0) or 0) for m in movements if m.get("type") == "sangria"), 2)
     diff_color, diff_label = _diff_style(diff)
 
-    def line(label, value, *, sign="", strong=False, color="#111827", border=True):
-        b = "border-bottom: 1px solid #e5e7eb;" if border else ""
-        w = "font-weight:700;" if strong else ""
-        return f"""
-                    <tr>
-                        <td style="padding:10px; {b} color:#374151; {w}">{label}</td>
-                        <td style="padding:10px; {b} text-align:right; {w} color:{color};">{sign}{format_currency(value)}</td>
-                    </tr>"""
-
-    rows = line("Fundo de abertura", opening)
-    rows += line("Vendas em dinheiro", cash_sales, sign="+ ", color="#16a34a")
+    rows = _money_row("Fundo de abertura", opening)
+    rows += _money_row("Vendas em dinheiro", cash_sales, sign="+ ", color=_GREEN)
     if reforcos > 0:
-        rows += line("Entradas de dinheiro", reforcos, sign="+ ", color="#16a34a")
+        rows += _money_row("Entradas de dinheiro", reforcos, sign="+ ", color=_GREEN)
     if sangrias > 0:
-        rows += line("Saídas de dinheiro", sangrias, sign="− ", color="#dc2626")
-    rows += line("Esperado em caixa", expected, strong=True)
-    rows += line("Contado (gaveta)", counted, strong=True, border=False)
+        rows += _money_row("Saídas de dinheiro", sangrias, sign="− ", color="#dc2626")
+    rows += _money_row("Esperado em caixa", expected, strong=True)
+    rows += _money_row("Contado (gaveta)", counted, strong=True, hair=False)
 
     recon = s.get("reconciliation") or {}
     if recon and not recon.get("ok", True):
-        recon_html = f"""
-            <div style="background:#fef3c7; color:#92400e; padding:10px 14px; border-radius:8px; margin-top:12px; font-size:12px;">
-                Reconciliação com divergências — Vendus sem par nas vendas POS: {recon.get('orphans', [])}; vendas POS sem fatura: {recon.get('missing', [])}.
-            </div>"""
+        recon_html = (f'<div style="background:#fdf6e3; color:#92400e; padding:10px 14px; border-radius:12px; '
+                      f'margin-top:12px; font-size:12px;">Reconciliação com divergências — Vendus sem par: '
+                      f'{recon.get("orphans", [])}; vendas POS sem fatura: {recon.get("missing", [])}.</div>')
     elif recon:
-        recon_html = """
-            <div style="color:#16a34a; font-size:12px; margin-top:10px;">✓ Reconciliação certa (Vendus = vendas POS).</div>"""
+        recon_html = (f'<div style="margin-top:12px; font-size:12px; color:{_GREEN}; font-weight:600;">'
+                      f'✓ Reconciliação certa (Vendus = vendas POS)</div>')
     else:
         recon_html = ""
 
     quem = []
     if s.get("opened_by_name"):
-        quem.append(f"Aberta por <strong>{s['opened_by_name']}</strong> às {_hm_lisbon(s.get('opened_at'))}")
+        quem.append(f'Aberta por <strong style="color:{_INK};">{s["opened_by_name"]}</strong> · {_hm_lisbon(s.get("opened_at"))}')
     if s.get("closed_by_name"):
-        quem.append(f"Fechada por <strong>{s['closed_by_name']}</strong> às {_hm_lisbon(s.get('closed_at'))}")
-    quem_html = " &nbsp;·&nbsp; ".join(quem)
+        quem.append(f'Fechada por <strong style="color:{_INK};">{s["closed_by_name"]}</strong> · {_hm_lisbon(s.get("closed_at"))}')
+    quem_html = " &nbsp;&nbsp;·&nbsp;&nbsp; ".join(quem)
 
-    return f"""
-        <div style="border:1px solid #e5e7eb; border-radius:10px; padding:18px; margin-bottom:14px;">
-            <p style="margin:0 0 12px; font-size:12px; color:#6b7280;">{quem_html}</p>
-            <table style="width:100%; border-collapse:collapse;">{rows}</table>
-            <div style="margin-top:14px; padding:14px; border-radius:8px; background:{diff_color}12; border:1px solid {diff_color}55; text-align:center;">
-                <div style="font-size:12px; color:#6b7280; text-transform:uppercase;">Diferença de caixa</div>
-                <div style="font-size:28px; font-weight:800; color:{diff_color}; margin-top:4px;">{format_currency(diff)}</div>
-                <div style="font-size:13px; color:{diff_color}; margin-top:2px;">{diff_label}</div>
-            </div>
-            {_cash_movements_rows(movements)}
-            {recon_html}
-        </div>"""
+    return (f'<div style="background:#faf7f4; border-radius:14px; padding:20px; margin-bottom:12px;">'
+            f'<p style="margin:0 0 14px; font-size:12px; color:{_MUTED};">{quem_html}</p>'
+            f'<table style="width:100%; border-collapse:collapse;">{rows}</table>'
+            f'<div style="margin-top:16px; padding:16px; border-radius:14px; background:{diff_color}14; text-align:center;">'
+            f'<div style="font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.06em;">Diferença de caixa</div>'
+            f'<div style="font-size:30px; font-weight:800; color:{diff_color}; margin-top:4px; letter-spacing:-0.02em;">{format_currency(diff)}</div>'
+            f'<div style="font-size:13px; color:{diff_color}; font-weight:600; margin-top:2px;">{diff_label}</div>'
+            f'</div>{_cash_movements_rows(movements)}{recon_html}</div>')
 
 
 def build_cash_section(cash_sessions: Optional[list], open_session: Optional[dict]) -> str:
-    """Secção 'Caixa' do relatório — uma ou mais sessões fechadas no dia + aviso se
-    ficou alguma por fechar."""
+    """Secção 'Caixa' (cartão) — sessões fechadas do dia + aviso se ficou por fechar."""
     cash_sessions = cash_sessions or []
-    inner = ""
     if cash_sessions:
         inner = "".join(_one_cash_session_html(s) for s in cash_sessions)
     else:
-        inner = """<p style="color:#6b7280; padding:12px 0;">Nenhuma caixa foi fechada neste dia.</p>"""
+        inner = f'<p style="color:{_MUTED}; font-size:14px; margin:6px 0;">Nenhuma caixa foi fechada neste dia.</p>'
 
     open_warn = ""
     if open_session is not None:
-        open_warn = f"""
-            <div style="background:#fef3c7; color:#92400e; padding:12px 16px; border-radius:8px; margin-bottom:14px; font-size:13px;">
-                ⚠️ Há uma caixa ainda ABERTA (aberta por {open_session.get('opened_by_name','?')} às {_hm_lisbon(open_session.get('opened_at'))}). O esperado e a diferença só ficam calculados quando a fechares.
-            </div>"""
+        open_warn = (f'<div style="background:#fdf6e3; color:#92400e; padding:12px 16px; border-radius:14px; '
+                     f'margin-bottom:14px; font-size:13px;">⚠️ Há uma caixa ainda <strong>aberta</strong> '
+                     f'(por {open_session.get("opened_by_name", "?")} às {_hm_lisbon(open_session.get("opened_at"))}). '
+                     f'O esperado e a diferença só ficam calculados quando a fechares.</div>')
 
-    return f"""
-        <div style="background: white; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
-            <h2 style="margin: 0 0 16px; font-size: 18px; color: #374151;">Caixa</h2>
-            {open_warn}
-            {inner}
-        </div>"""
+    return (f'<div style="{_CARD}">{_section_title("Caixa", "💶")}'
+            f'{_subtle("Fundo, entradas/saídas, esperado vs contado e a diferença.")}'
+            f'{open_warn}{inner}</div>')
 
 
 def build_people_section(people: Optional[dict]) -> str:
-    """Secção 'Pessoas / Mesas' do relatório."""
+    """Secção 'Pessoas & Mesas' (cartão)."""
     p = people or {}
     tables = int(p.get("tables", 0) or 0)
     covers = int(p.get("people", 0) or 0)
@@ -315,30 +329,17 @@ def build_people_section(people: Optional[dict]) -> str:
     rod_children = int(p.get("rodizio_children", 0) or 0)
     rod_line = ""
     if rod_tables > 0:
-        rod_line = f"""
-            <div style="margin-top:14px; font-size:13px; color:#6b7280;">
-                Rodízio: <strong style="color:#374151;">{rod_tables}</strong> mesa(s) &nbsp;·&nbsp;
-                <strong style="color:#374151;">{rod_adults}</strong> adulto(s) + <strong style="color:#374151;">{rod_children}</strong> criança(s)
-            </div>"""
-    return f"""
-        <div style="background: white; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
-            <h2 style="margin: 0 0 16px; font-size: 18px; color: #374151;">Pessoas &amp; Mesas</h2>
-            <table style="width: 100%; border-collapse: collapse;">
-                <tr>
-                    <td style="padding: 18px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background:#f8fafc;">
-                        <div style="font-size: 30px; font-weight: 700; color: #334155;">{covers}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Pessoas</div>
-                    </td>
-                    <td style="width: 15px;"></td>
-                    <td style="padding: 18px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background:#f8fafc;">
-                        <div style="font-size: 30px; font-weight: 700; color: #334155;">{tables}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Mesas atendidas</div>
-                    </td>
-                </tr>
-            </table>
-            {rod_line}
-            <p style="margin: 14px 0 0; font-size: 12px; color: #9ca3af;">Contagem das mesas fechadas (faturadas) do dia. O balcão (venda rápida) não conta pessoas.</p>
-        </div>"""
+        rod_line = (f'<div style="margin-top:16px; padding:12px 16px; background:#f6f2ef; border-radius:12px; '
+                    f'font-size:13px; color:{_MUTED};">🍢 Rodízio: <strong style="color:{_INK};">{rod_tables}</strong> mesa(s) '
+                    f'&nbsp;·&nbsp; <strong style="color:{_INK};">{rod_adults}</strong> adulto(s) + '
+                    f'<strong style="color:{_INK};">{rod_children}</strong> criança(s)</div>')
+    tiles = (f'<table style="width:100%; border-collapse:separate; border-spacing:10px 0;"><tr>'
+             f'{_stat_tile(covers, "Pessoas", color=_MAROON)}'
+             f'{_stat_tile(tables, "Mesas atendidas", color=_INK)}'
+             f'</tr></table>')
+    return (f'<div style="{_CARD}">{_section_title("Pessoas &amp; Mesas", "👥")}'
+            f'{_subtle("Contagem das mesas faturadas do dia (o balcão não conta pessoas).")}'
+            f'{tiles}{rod_line}</div>')
 
 
 def generate_html_report(orders: list, stats: dict, vendus: Optional[dict],
@@ -355,165 +356,132 @@ def generate_html_report(orders: list, stats: dict, vendus: Optional[dict],
         invoices_count = vendus.get("count", 0)
         by_method = vendus.get("by_method", {})
     else:
-        fiscal_total_str = "indisponivel"
+        fiscal_total_str = "indisponível"
         invoices_count = 0
         by_method = {}
 
+    # Linhas de "por forma de pagamento" (suaves)
     if by_method:
         payments_rows = ""
         for name, d in sorted(by_method.items(), key=lambda kv: -kv[1]["total"]):
-            payments_rows += f"""
-                    <tr>
-                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb;">{name}</td>
-                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: center; color: #6b7280;">{d['count']}</td>
-                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: right; font-weight: 700; color: #111827;">{format_currency(d['total'])}</td>
-                    </tr>"""
+            payments_rows += (f'<tr>'
+                              f'<td style="padding:11px 2px; border-bottom:1px solid {_HAIR}; color:{_INK}; font-size:14px;">{name}</td>'
+                              f'<td style="padding:11px 2px; border-bottom:1px solid {_HAIR}; text-align:center; color:{_MUTED}; font-size:13px;">{d["count"]}</td>'
+                              f'<td style="padding:11px 2px; border-bottom:1px solid {_HAIR}; text-align:right; font-weight:700; color:{_INK}; font-size:14px; white-space:nowrap;">{format_currency(d["total"])}</td>'
+                              f'</tr>')
     else:
-        payments_rows = """
-                    <tr><td colspan="3" style="padding: 20px; text-align: center; color: #6b7280;">Sem faturas emitidas neste dia.</td></tr>"""
+        payments_rows = (f'<tr><td colspan="3" style="padding:18px; text-align:center; color:{_MUTED};">'
+                         f'Sem faturas emitidas neste dia.</td></tr>')
 
-    # Contas fechadas (uma linha por fatura) — soma bate certo com o total
+    # Linhas de "contas fechadas" (suaves)
     invoices = vendus.get("invoices", []) if vendus is not None else []
     if invoices:
         invoices_rows = ""
         for inv in invoices:
-            invoices_rows += f"""
-                    <tr>
-                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb;">{inv.get('label','')}</td>
-                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: center; color: #6b7280;">{inv.get('time','')}</td>
-                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: center; color: #6b7280;">{inv.get('method','')}</td>
-                        <td style="padding: 12px 10px; border-bottom: 1px solid #e5e7eb; text-align: right; font-weight: 700;">{format_currency(inv.get('amount',0))}</td>
-                    </tr>"""
+            invoices_rows += (f'<tr>'
+                              f'<td style="padding:11px 2px; border-bottom:1px solid {_HAIR}; color:{_INK}; font-size:14px;">{inv.get("label", "")}</td>'
+                              f'<td style="padding:11px 2px; border-bottom:1px solid {_HAIR}; text-align:center; color:{_MUTED}; font-size:13px;">{inv.get("time", "")}</td>'
+                              f'<td style="padding:11px 2px; border-bottom:1px solid {_HAIR}; text-align:center; color:{_MUTED}; font-size:13px;">{inv.get("method", "")}</td>'
+                              f'<td style="padding:11px 2px; border-bottom:1px solid {_HAIR}; text-align:right; font-weight:700; color:{_INK}; font-size:14px; white-space:nowrap;">{format_currency(inv.get("amount", 0))}</td>'
+                              f'</tr>')
     else:
-        invoices_rows = """
-                    <tr><td colspan="4" style="padding: 20px; text-align: center; color: #6b7280;">Sem contas fechadas neste dia.</td></tr>"""
+        invoices_rows = (f'<tr><td colspan="4" style="padding:18px; text-align:center; color:{_MUTED};">'
+                         f'Sem contas fechadas neste dia.</td></tr>')
 
     warning_html = ""
     if vendus is None:
-        warning_html = f"""
-            <div style="background: #fef3c7; color: #92400e; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; font-size: 13px;">
-                Nao foi possivel obter os valores faturados do Vendus ({vendus_error or 'erro'}). A atividade abaixo e apenas indicativa.
-            </div>"""
+        warning_html = (f'<div style="background:#fdf6e3; color:#92400e; padding:12px 16px; border-radius:14px; '
+                        f'margin-bottom:16px; font-size:13px;">Não foi possível obter os valores faturados do Vendus '
+                        f'({vendus_error or "erro"}). A atividade abaixo é apenas indicativa.</div>')
 
-    # Secções novas (caixa + pessoas)
+    # Secções (cartões) novas
     cash_section = build_cash_section(cash_sessions, open_session)
     people_section = build_people_section(people)
 
-    # KPI da diferença de caixa (soma das sessões fechadas do dia) para o topo.
+    # KPIs do topo: Faturado + (Diferença de caixa OU Faturas) + Pessoas
     _sessions = cash_sessions or []
     total_diff = round(sum(float(s.get("difference", 0) or 0) for s in _sessions), 2)
-    total_counted = round(sum(float(s.get("counted_amount", 0) or 0) for s in _sessions), 2)
     covers = int((people or {}).get("people", 0) or 0)
+    kpi_faturado = _stat_tile(fiscal_total_str, "Faturado", color=_GREEN, tint="#eef7f0")
     if _sessions:
         _dc, _dl = _diff_style(total_diff)
-        diff_kpi = f"""
-                    <td style="width: 15px;"></td>
-                    <td style="padding: 18px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background:{_dc}10;">
-                        <div style="font-size: 30px; font-weight: 700; color: {_dc};">{format_currency(total_diff)}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Diferença de caixa</div>
-                    </td>"""
+        kpi_mid = _stat_tile(format_currency(total_diff), "Diferença de caixa", color=_dc, tint=f"{_dc}14")
     else:
-        diff_kpi = ""
+        kpi_mid = _stat_tile(invoices_count, "Faturas", color=_INK)
+    kpi_pessoas = _stat_tile(covers, "Pessoas", color=_MAROON, tint="#f6f2ef")
+    kpi_row = (f'<table style="width:100%; border-collapse:separate; border-spacing:10px 0;"><tr>'
+               f'{kpi_faturado}{kpi_mid}{kpi_pessoas}</tr></table>')
 
-    html = f"""
-<!DOCTYPE html>
+    # Cartão de vendas (KPIs + por forma de pagamento + atividade)
+    vendas_card = (
+        f'<div style="{_CARD}">'
+        f'{warning_html}{kpi_row}'
+        f'<div style="height:8px;"></div>'
+        f'{_section_title("Vendas", "🧾")}'
+        f'{_subtle("Receita faturada (Vendus) e repartição por forma de pagamento.")}'
+        f'<table style="width:100%; border-collapse:collapse;">'
+        f'<thead><tr>'
+        f'<th style="padding:8px 2px; text-align:left; font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; border-bottom:2px solid {_HAIR};">Forma</th>'
+        f'<th style="padding:8px 2px; text-align:center; font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; border-bottom:2px solid {_HAIR};">Faturas</th>'
+        f'<th style="padding:8px 2px; text-align:right; font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; border-bottom:2px solid {_HAIR};">Valor</th>'
+        f'</tr></thead><tbody>{payments_rows}'
+        f'<tr><td style="padding:12px 2px; font-weight:800; color:{_INK};">Total</td>'
+        f'<td style="padding:12px 2px; text-align:center; font-weight:700; color:{_MUTED};">{invoices_count}</td>'
+        f'<td style="padding:12px 2px; text-align:right; font-weight:800; color:{_GREEN}; font-size:15px; white-space:nowrap;">{fiscal_total_str}</td></tr>'
+        f'</tbody></table>'
+        f'<div style="margin-top:16px; padding-top:14px; border-top:1px solid {_HAIR}; font-size:12px; color:{_MUTED}; text-align:center;">'
+        f'Atividade: <strong style="color:{_INK};">{stats["total_orders"]}</strong> pedidos'
+        f' &nbsp;·&nbsp; <span style="color:{_GREEN};">{stats["paid_orders"]} pagos</span>'
+        f' &nbsp;·&nbsp; <span style="color:#d97706;">{stats["unpaid_orders"]} pendentes</span></div>'
+        f'</div>'
+    )
+
+    # Cartão de contas fechadas
+    contas_card = (
+        f'<div style="{_CARD}">{_section_title("Contas fechadas", "📋")}'
+        f'{_subtle("Cada linha é uma conta faturada; a soma bate com o total faturado.")}'
+        f'<table style="width:100%; border-collapse:collapse;">'
+        f'<thead><tr>'
+        f'<th style="padding:8px 2px; text-align:left; font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; border-bottom:2px solid {_HAIR};">Conta</th>'
+        f'<th style="padding:8px 2px; text-align:center; font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; border-bottom:2px solid {_HAIR};">Hora</th>'
+        f'<th style="padding:8px 2px; text-align:center; font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; border-bottom:2px solid {_HAIR};">Pagamento</th>'
+        f'<th style="padding:8px 2px; text-align:right; font-size:11px; color:{_MUTED}; text-transform:uppercase; letter-spacing:0.05em; border-bottom:2px solid {_HAIR};">Valor</th>'
+        f'</tr></thead><tbody>{invoices_rows}'
+        f'<tr><td colspan="3" style="padding:12px 2px; font-weight:800; color:{_INK};">Total</td>'
+        f'<td style="padding:12px 2px; text-align:right; font-weight:800; color:{_GREEN}; font-size:15px; white-space:nowrap;">{fiscal_total_str}</td></tr>'
+        f'</tbody></table></div>'
+    )
+
+    html = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6;">
-    <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+<body style="margin:0; padding:0; font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background-color:{_PAGE_BG};">
+    <div style="max-width: 600px; margin: 0 auto; padding: 22px 16px 30px;">
         <!-- Header -->
-        <div style="background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%); padding: 30px; text-align: center; border-radius: 12px 12px 0 0;">
-            <h1 style="margin: 0; color: white; font-size: 24px;">Relatorio Diario</h1>
-            <p style="margin: 10px 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">{report_date}</p>
-        </div>
-        
-        <!-- Faturado + formas de pagamento (Vendus) -->
-        <div style="background: white; padding: 30px; border-left: 1px solid #e5e7eb; border-right: 1px solid #e5e7eb;">
-            {warning_html}
-            <table style="width: 100%; border-collapse: collapse;">
-                <tr>
-                    <td style="padding: 18px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f0fdf4;">
-                        <div style="font-size: 30px; font-weight: 700; color: #16a34a;">{fiscal_total_str}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Faturado (app)</div>
-                    </td>
-                    <td style="width: 15px;"></td>
-                    <td style="padding: 18px; text-align: center; border: 1px solid #e5e7eb; border-radius: 8px; background-color: #f8fafc;">
-                        <div style="font-size: 30px; font-weight: 700; color: #334155;">{invoices_count}</div>
-                        <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; margin-top: 5px;">Faturas</div>
-                    </td>{diff_kpi}
-                </tr>
-            </table>
-
-            <h3 style="margin: 22px 0 8px; font-size: 14px; color: #374151; text-transform: uppercase;">Por forma de pagamento</h3>
-            <table style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr style="background-color: #f9fafb;">
-                        <th style="padding: 10px; text-align: left; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Forma</th>
-                        <th style="padding: 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Faturas</th>
-                        <th style="padding: 10px; text-align: right; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Valor</th>
-                    </tr>
-                </thead>
-                <tbody>{payments_rows}
-                    <tr style="background-color: #f0fdf4;">
-                        <td style="padding: 12px 10px; font-weight: 700;">Total</td>
-                        <td style="padding: 12px 10px; text-align: center; font-weight: 700;">{invoices_count}</td>
-                        <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #16a34a;">{fiscal_total_str}</td>
-                    </tr>
-                </tbody>
-            </table>
-
-            <div style="margin-top: 18px; font-size: 13px; color: #6b7280; text-align: center;">
-                Atividade: <strong style="color:#374151;">{stats['total_orders']}</strong> pedidos lancados
-                &nbsp;|&nbsp; <span style="color:#22c55e;">{stats['paid_orders']} pagos</span>
-                &nbsp;|&nbsp; <span style="color:#f59e0b;">{stats['unpaid_orders']} pendentes</span>
-            </div>
+        <div style="background:linear-gradient(135deg,#6d2119 0%,#3f120f 100%); padding:34px 30px; text-align:center; border-radius:20px; box-shadow:0 4px 14px rgba(90,26,26,0.28);">
+            <div style="font-size:12px; letter-spacing:0.18em; color:rgba(255,255,255,0.72); text-transform:uppercase; margin-bottom:8px;">🔥 Lenha e Brasa</div>
+            <h1 style="margin:0; color:#ffffff; font-size:26px; font-weight:800; letter-spacing:-0.02em;">Relatório do dia</h1>
+            <p style="margin:8px 0 0; color:rgba(255,255,255,0.82); font-size:15px;">{report_date}</p>
         </div>
 
-        <!-- Caixa (fundo, movimentos, esperado vs contado, diferença) -->
+        <div style="height:18px;"></div>
+
+        {vendas_card}
         {cash_section}
-
-        <!-- Contas fechadas (faturas) -->
-        <div style="background: white; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
-            <h2 style="margin: 0 0 6px; font-size: 18px; color: #374151;">Contas fechadas do dia</h2>
-            <p style="margin: 0 0 16px; font-size: 12px; color: #9ca3af;">Cada linha e uma conta faturada (mesa). A soma bate certo com o total faturado.</p>
-            <table style="width: 100%; border-collapse: collapse;">
-                <thead>
-                    <tr style="background-color: #f9fafb;">
-                        <th style="padding: 12px 10px; text-align: left; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Conta</th>
-                        <th style="padding: 12px 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Hora</th>
-                        <th style="padding: 12px 10px; text-align: center; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Pagamento</th>
-                        <th style="padding: 12px 10px; text-align: right; font-size: 12px; color: #6b7280; text-transform: uppercase; border-bottom: 2px solid #e5e7eb;">Valor</th>
-                    </tr>
-                </thead>
-                <tbody>{invoices_rows}
-                    <tr style="background-color: #f0fdf4;">
-                        <td colspan="3" style="padding: 12px 10px; font-weight: 700;">Total</td>
-                        <td style="padding: 12px 10px; text-align: right; font-weight: 700; color: #16a34a;">{fiscal_total_str}</td>
-                    </tr>
-                </tbody>
-            </table>
-            <p style="margin: 14px 0 0; font-size: 12px; color: #9ca3af;">Foram lancados {stats['total_orders']} itens/pedidos na app (no rodizio muitos vao a 0,00 EUR porque o cliente paga por pessoa, nao por item).</p>
-        </div>
-        
-        <!-- Pessoas & Mesas -->
+        {contas_card}
         {people_section}
 
         <!-- Footer -->
-        <div style="background: #374151; padding: 20px; text-align: center; border-radius: 0 0 12px 12px;">
-            <p style="margin: 0; color: rgba(255,255,255,0.7); font-size: 12px;">
-                Relatorio gerado automaticamente pelo sistema de gestao.
-            </p>
-            <p style="margin: 5px 0 0; color: rgba(255,255,255,0.5); font-size: 11px;">
-                Este email foi enviado para {REPORT_EMAIL}
-            </p>
+        <div style="text-align:center; padding:8px 10px 0;">
+            <p style="margin:0; color:{_MUTED}; font-size:12px;">Relatório gerado automaticamente pelo sistema de gestão.</p>
+            <p style="margin:4px 0 0; color:#b8aca3; font-size:11px;">Enviado para {REPORT_EMAIL}</p>
         </div>
     </div>
 </body>
-</html>
-"""
+</html>"""
     return html
 
 

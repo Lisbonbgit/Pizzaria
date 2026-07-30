@@ -99,6 +99,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const [edQty, setEdQty] = useState('1');
   const [edPrice, setEdPrice] = useState('');
   const [edTax, setEdTax] = useState('NOR');       // 'INT' (13%) | 'NOR' (23%)
+  const [edTaxTouched, setEdTaxTouched] = useState(false); // só grava o IVA se o staff o mudou
   const [edDiscKind, setEdDiscKind] = useState('pct'); // 'pct' | 'eur'
   const [edDiscVal, setEdDiscVal] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
@@ -317,6 +318,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     setEdQty(String(l.quantity || 1));
     setEdPrice(String(l.unit_price ?? 0));
     setEdTax(tax === 'INT' ? 'INT' : 'NOR');
+    setEdTaxTouched(false);
     if (l.discount_amount) {
       setEdDiscKind('eur');
       setEdDiscVal(String(l.discount_amount));
@@ -335,7 +337,12 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     const dv = Math.max(0, Number(String(edDiscVal).replace(',', '.')) || 0);
     setSavingEdit(true);
     try {
-      await api.editItem(l.order_id, l.idx, { quantity: q, unit_price: price, vendus_tax_id: edTax });
+      // IVA só vai no payload se o staff o mudou de propósito — assim uma edição
+      // de qtd/preço NÃO reescreve o IVA da linha (que poderia forçar um produto
+      // fora de INT/NOR para 23%). Sem alteração, o backend mantém o IVA atual.
+      const payload = { quantity: q, unit_price: price };
+      if (edTaxTouched) payload.vendus_tax_id = edTax;
+      await api.editItem(l.order_id, l.idx, payload);
       // Desconto sempre gravado (mesmo 0 → limpa o outro tipo no backend).
       await api.setItemDiscount(l.order_id, l.idx, edDiscKind === 'eur' ? { amount: dv } : { pct: dv });
       toast.success('Produto atualizado');
@@ -842,7 +849,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
 
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">IVA</label>
-              <Select value={edTax} onValueChange={setEdTax}>
+              <Select value={edTax} onValueChange={(v) => { setEdTax(v); setEdTaxTouched(true); }}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="INT">Intermédia — 13% (comida, águas)</SelectItem>

@@ -1547,8 +1547,12 @@ async def _open_bill_lines(table_number: int) -> list:
             if it.get("paid") or it.get("removed"):
                 continue
             dpct = float(it.get("discount_pct", 0) or 0)
+            damt = float(it.get("discount_amount", 0) or 0)
             gross = round(float(it.get("total_price", 0) or 0), 2)
-            net = round(gross * (1 - dpct / 100.0), 2)
+            # `pct` e `amount` são mutuamente exclusivos (só um está gravado), mas
+            # subtraímos ambos em segurança. O `net` é o que o ecrã mostra e tem
+            # de bater com a FS real (que também aplica o desconto da linha).
+            net = round(max(0.0, gross * (1 - dpct / 100.0) - damt), 2)
             lines.append({
                 "order_id": o["id"], "idx": idx,
                 "product_id": it.get("product_id"),

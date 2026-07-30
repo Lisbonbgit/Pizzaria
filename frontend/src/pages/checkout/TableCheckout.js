@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Loader2, Receipt, Printer, Plus, Users, Store, X, ChevronsUpDown, Trash2,
+  Loader2, Receipt, Printer, Plus, Users, Store, X, ChevronsUpDown, Trash2, Pencil, Scissors,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -89,6 +89,20 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const [freeKids, setFreeKids] = useState(new Set()); // chaves de crianças marcadas grátis
   const [wasteBoxes, setWasteBoxes] = useState(0);
 
+  // Fase 3 (faturação estilo Vendus): por defeito clicar num item à la carte abre
+  // o DIÁLOGO do produto (editar qtd/preço/IVA/desconto); o botão "Separar Conta"
+  // liga o modo 'split' em que clicar passa o item para a esquerda (cobrar à parte).
+  // As entradas de rodízio (pessoas/desperdício) separam SEMPRE ao clicar (não são
+  // editáveis) — preserva o fluxo do rodízio.
+  const [mode, setMode] = useState('edit'); // 'edit' | 'split'
+  const [editingLine, setEditingLine] = useState(null); // linha (l) em edição, ou null
+  const [edQty, setEdQty] = useState('1');
+  const [edPrice, setEdPrice] = useState('');
+  const [edTax, setEdTax] = useState('NOR');       // 'INT' (13%) | 'NOR' (23%)
+  const [edDiscKind, setEdDiscKind] = useState('pct'); // 'pct' | 'eur'
+  const [edDiscVal, setEdDiscVal] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
   // Catálogo + métodos de pagamento + config do rodízio — uma vez, no arranque.
   useEffect(() => {
     api.paymentMethods().then((r) => setMethods(r.data)).catch(() => {});
@@ -141,6 +155,8 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     setRodChildren(rmode !== 'none' ? Math.max(0, (rp.children || 0) - (paid.children || 0)) : 0);
     setFreeKids(new Set());
     setWasteBoxes(0);
+    setMode('edit');
+    setEditingLine(null);
     loadBill(tableNumber);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tableNumber]);
@@ -292,20 +308,56 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
   const change = Math.round((received - payTotal) * 100) / 100;
 
-  const setItemDiscount = async (l) => {
-    const cur = l.discount_pct || 0;
-    const v = window.prompt(`Desconto (%) em "${lineName(l)}" (0 a 100):`, String(cur));
-    if (v === null) return;
-    const pct = Math.max(0, Math.min(100, Number(String(v).replace(',', '.')) || 0));
+  // Diálogo do produto (Fase 3): abre ao clicar num item à la carte (modo 'edit').
+  // Pré-preenche com os valores atuais da linha (preço/IVA/desconto override, se
+  // houver; senão o IVA do produto).
+  const openEdit = (l) => {
+    const prod = products.find((p) => p.id === l.product_id);
+    const tax = l.vendus_tax_id || prod?.vendus_tax_id || 'NOR';
+    setEdQty(String(l.quantity || 1));
+    setEdPrice(String(l.unit_price ?? 0));
+    setEdTax(tax === 'INT' ? 'INT' : 'NOR');
+    if (l.discount_amount) {
+      setEdDiscKind('eur');
+      setEdDiscVal(String(l.discount_amount));
+    } else {
+      setEdDiscKind('pct');
+      setEdDiscVal(l.discount_pct ? String(l.discount_pct) : '');
+    }
+    setEditingLine(l);
+  };
+
+  const saveEdit = async () => {
+    const l = editingLine;
+    if (!l) return;
+    const q = Math.max(1, parseInt(edQty, 10) || 1);
+    const price = Math.max(0, Number(String(edPrice).replace(',', '.')) || 0);
+    const dv = Math.max(0, Number(String(edDiscVal).replace(',', '.')) || 0);
+    setSavingEdit(true);
     try {
-      await api.setItemDiscount(l.order_id, l.idx, pct);
-      toast.success(pct > 0 ? `Desconto de ${pct}% aplicado` : 'Desconto removido');
+      await api.editItem(l.order_id, l.idx, { quantity: q, unit_price: price, vendus_tax_id: edTax });
+      // Desconto sempre gravado (mesmo 0 → limpa o outro tipo no backend).
+      await api.setItemDiscount(l.order_id, l.idx, edDiscKind === 'eur' ? { amount: dv } : { pct: dv });
+      toast.success('Produto atualizado');
+      setEditingLine(null);
       loadBill(tableNumber);
       onChanged && onChanged();
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Erro ao aplicar o desconto');
+      toast.error(e.response?.data?.detail || 'Erro ao atualizar o produto');
+    } finally {
+      setSavingEdit(false);
     }
   };
+
+  // Subtotal previsto no diálogo (bruto − desconto), para o staff confirmar.
+  const edSubtotal = (() => {
+    const q = Math.max(1, parseInt(edQty, 10) || 1);
+    const price = Math.max(0, Number(String(edPrice).replace(',', '.')) || 0);
+    const dv = Math.max(0, Number(String(edDiscVal).replace(',', '.')) || 0);
+    const gross = Math.round(price * q * 100) / 100;
+    const net = edDiscKind === 'eur' ? gross - dv : gross * (1 - Math.min(100, dv) / 100);
+    return Math.max(0, Math.round(net * 100) / 100);
+  })();
 
   const countEntries = (entries) => {
     let adults = 0, children_half = 0, children_free = 0, waste_boxes = 0;
@@ -568,18 +620,31 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                 ) : (
                   <>
                     {rightEntries.map((e) => (
-                      <div key={e.key} onClick={() => toggle(e.key)}
+                      <div key={e.key}
+                        onClick={() => {
+                          // Item à la carte: em 'edit' abre o diálogo; em 'split' separa.
+                          // Entradas de rodízio (pessoas/desperdício): separam sempre.
+                          if (e.kind === 'item') {
+                            if (mode === 'split') toggle(e.key); else openEdit(e.line);
+                          } else {
+                            toggle(e.key);
+                          }
+                        }}
+                        title={e.kind === 'item' ? (mode === 'split' ? 'Tocar para cobrar à parte' : 'Tocar para editar (qtd/preço/IVA/desconto)') : 'Tocar para separar'}
                         className="w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors cursor-pointer hover:bg-white/10">
                         <span className="truncate flex items-center gap-1.5">
                           {e.name}
                           {e.kind === 'item' && e.line?.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
-                          {e.kind === 'item' && (e.line?.discount_pct > 0) && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 shrink-0">−{e.line.discount_pct}%</span>
+                          {e.kind === 'item' && mode === 'edit' && <Pencil className="h-3 w-3 text-white/30 shrink-0" />}
+                          {e.kind === 'item' && (e.line?.discount_amount > 0 || e.line?.discount_pct > 0) && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 shrink-0">
+                              −{e.line.discount_amount > 0 ? eur(e.line.discount_amount) : `${e.line.discount_pct}%`}
+                            </span>
                           )}
-                          {e.kind === 'item' && (
-                            <button type="button" onClick={(ev) => { ev.stopPropagation(); setItemDiscount(e.line); }}
-                              className="text-[10px] px-1.5 py-0.5 rounded-full border border-white/25 text-white/60 hover:text-white hover:border-white/50 shrink-0 transition-colors"
-                              title="Desconto neste item">%</button>
+                          {e.kind === 'item' && e.line?.vendus_tax_id && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/10 text-white/50 shrink-0">
+                              {e.line.vendus_tax_id === 'INT' ? '13%' : e.line.vendus_tax_id === 'NOR' ? '23%' : e.line.vendus_tax_id}
+                            </span>
                           )}
                           {e.kind === 'child' && (
                             <button type="button" onClick={(ev) => { ev.stopPropagation(); toggleFreeKid(e.key); }}
@@ -589,7 +654,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                             </button>
                           )}
                         </span>
-                        <span className="text-center tabular-nums">1</span>
+                        <span className="text-center tabular-nums">{e.kind === 'item' ? (e.line?.quantity || 1) : 1}</span>
                         <span className="text-right tabular-nums">{eur(e.price)}</span>
                         {e.kind === 'item' ? (
                           <button type="button" title="Remover (não fatura)" aria-label="Remover item"
@@ -673,6 +738,18 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   <span className="flex items-center gap-1"><Users className="h-4 w-4" />{openTablePeople} pessoa{openTablePeople !== 1 ? 's' : ''}</span>
                   <span className="tabular-nums">Total {eur(fullTotal)}</span>
                 </div>
+                {/* Separar Conta: liga o modo em que clicar num produto o passa para a
+                    esquerda (cobrar à parte) em vez de abrir o diálogo de edição. */}
+                {billable.length > 0 && (
+                  <Button
+                    onClick={() => setMode((m) => (m === 'split' ? 'edit' : 'split'))}
+                    className={mode === 'split'
+                      ? 'w-full bg-amber-500 hover:bg-amber-600 text-black font-semibold'
+                      : 'w-full bg-transparent border border-white/25 text-white hover:bg-white/10 hover:text-white'}>
+                    <Scissors className="h-4 w-4 mr-1" />
+                    {mode === 'split' ? 'A separar — toca para terminar' : 'Separar Conta'}
+                  </Button>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   <Button variant="outline" className="bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
                     onClick={printConsulta} disabled={printingConsulta}>
@@ -737,6 +814,72 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Diálogo do produto (Fase 3) — editar quantidade/preço/IVA/desconto da linha */}
+      <Dialog open={!!editingLine} onOpenChange={(v) => !v && setEditingLine(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-heading text-lg pr-6">
+              {editingLine ? lineName(editingLine) : 'Produto'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Quantidade</label>
+                <Input type="number" inputMode="numeric" min={1} step="1"
+                  value={edQty} onChange={(e) => setEdQty(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">Preço unitário</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">€</span>
+                  <Input type="number" inputMode="decimal" min={0} step="0.10" className="pl-7 text-right"
+                    value={edPrice} onChange={(e) => setEdPrice(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">IVA</label>
+              <Select value={edTax} onValueChange={setEdTax}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="INT">Intermédia — 13% (comida, águas)</SelectItem>
+                  <SelectItem value="NOR">Normal — 23% (refrigerantes, bebidas)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Desconto</label>
+              <div className="flex gap-2">
+                <div className="flex rounded-md border overflow-hidden shrink-0">
+                  <button type="button" onClick={() => setEdDiscKind('pct')}
+                    className={`px-3 text-sm ${edDiscKind === 'pct' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground'}`}>%</button>
+                  <button type="button" onClick={() => setEdDiscKind('eur')}
+                    className={`px-3 text-sm border-l ${edDiscKind === 'eur' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground'}`}>€</button>
+                </div>
+                <Input type="number" inputMode="decimal" min={0} step={edDiscKind === 'pct' ? '1' : '0.10'}
+                  className="text-right" placeholder="0"
+                  value={edDiscVal} onChange={(e) => setEdDiscVal(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2">
+              <span className="text-sm text-muted-foreground">Subtotal</span>
+              <span className="font-heading text-xl font-bold text-primary tabular-nums">{eur(edSubtotal)}</span>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 mt-2">
+            <Button variant="outline" onClick={() => setEditingLine(null)}>Cancelar</Button>
+            <Button onClick={saveEdit} disabled={savingEdit} className="bg-[#5a1a1a] hover:bg-[#4a1414]">
+              {savingEdit ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+              Gravar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };

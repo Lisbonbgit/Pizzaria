@@ -11,6 +11,7 @@ carregado por quem chama; `counter_ext_ref` gera a referência externa estável
 usada pela integração fiscal (idempotência, mesmo espírito do
 `external_reference` do fecho de mesa).
 """
+from pos.pricing import line_vendus, combine_global
 
 
 def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NOR") -> dict:
@@ -37,17 +38,41 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
         if prod is None:
             continue
         qty = entry.get("quantity", 0)
-        unit_price = prod.get("base_price", 0)
-        item_total = round(unit_price * qty, 2)
-        items.append({
+        # Overrides do staff (diálogo do produto), com fallback ao produto:
+        #   - preço unitário: `unit_price` do carrinho, senão `base_price`;
+        #   - IVA: `vendus_tax_id` do carrinho, senão o do produto (pode ser None,
+        #     resolvido para o default na faturação, não aqui — mesma regra de antes).
+        up = entry.get("unit_price")
+        unit_price = round(float(up if up is not None else prod.get("base_price", 0) or 0), 2)
+        tax = entry.get("vendus_tax_id") or prod.get("vendus_tax_id")
+        gross = round(unit_price * qty, 2)
+        # Desconto por linha: € tem precedência sobre % (mutuamente exclusivos),
+        # tal como na mesa (`line_vendus`/`set_item_discount`). `total_price`
+        # continua a ser o BRUTO (unit×qty) — a resolução do líquido para a FS
+        # fica em `line_vendus`/`combine_global`, e o `total` do pedido é o líquido.
+        dpct = float(entry.get("discount_pct") or 0)
+        damt = float(entry.get("discount_amount") or 0)
+        item = {
             "product_id": entry.get("product_id"),
             "product_name": prod.get("name"),
             "quantity": qty,
             "unit_price": unit_price,
-            "total_price": item_total,
-            "vendus_tax_id": prod.get("vendus_tax_id"),
-        })
-        total += item_total
+            "total_price": gross,
+            "vendus_tax_id": tax,
+        }
+        # € tem PRECEDÊNCIA sobre % (mutuamente exclusivos) — só uma chave é
+        # guardada no item, igual a `line_vendus`/`set_item_discount`.
+        if damt:
+            item["discount_amount"] = round(damt, 2)
+        elif dpct:
+            item["discount_pct"] = dpct
+        items.append(item)
+        # Líquido do item pela MESMA via da faturação (`line_vendus` +
+        # `combine_global`, sem desconto global) → o `total` do pedido bate ao
+        # cêntimo com o pagamento/FS do `checkout_counter_order` (fonte única de
+        # verdade; evita divergência de arredondamento no total em cache).
+        _, liquido = combine_global(line_vendus(item, None, default_tax), 0)
+        total += liquido
     return {"items": items, "total": round(total, 2)}
 
 

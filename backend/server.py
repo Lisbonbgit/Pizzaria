@@ -128,6 +128,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Não foi possível criar o índice único de pos_sales: {e}")
 
+    # --- Índice único de credit_notes (uma NC por fatura de origem) ---
+    # RESERVA atómica: antes de emitir uma nota de crédito, reserva-se a fatura
+    # de origem aqui. O índice único em `source_document_id` serializa retries e
+    # duplo-toque concorrentes — impede uma 2ª NC REAL à AT para a mesma fatura
+    # (o scan de `related_docs`/ext_ref no Vendus é eventualmente-consistente e
+    # não chega sozinho). Uma tentativa falhada remove a reserva (não bloqueia).
+    try:
+        await db.credit_notes.create_index("source_document_id", unique=True)
+    except Exception as e:
+        logger.error(f"Não foi possível criar o índice único de credit_notes: {e}")
+
     # --- Scheduler do relatório diário ---
     # Protegido: uma falha/lentidão da BD no arranque não deve impedir a API de servir.
     try:
@@ -4107,6 +4118,13 @@ async def list_credit_note_invoices(
         invoices = await asyncio.to_thread(_fetch)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Vendus indisponível: {e}")
+    # Esconde as faturas que a app já creditou (a reserva marca-as) — assim não
+    # reaparecem no picker e o operador não é levado a tentar creditar de novo.
+    # As NC feitas à mão no Vendus são apanhadas na emissão (guard related_docs).
+    credited = set()
+    async for cn in db.credit_notes.find({}, {"_id": 0, "source_document_id": 1}):
+        credited.add(cn.get("source_document_id"))
+    invoices = [inv for inv in invoices if inv.get("id") not in credited]
     invoices.sort(key=lambda x: (x.get("date", ""), x.get("time", "")), reverse=True)
     return {"invoices": invoices}
 
@@ -4128,15 +4146,34 @@ async def create_credit_note(
     baterem). FISCAL-CRÍTICO — valida que é uma fatura DESTA caixa e que AINDA
     não tem NC (o Vendus liga via `related_docs`), para nunca creditar duas
     vezes. Auth-duplo; o operador vem do token POS; exige caixa aberta."""
-    auth = await get_pos_or_admin(authorization, x_device_token)
+    await get_pos_or_admin(authorization, x_device_token)
     operador = await get_pos_operator(x_pos_token)
     pos_user_id = operador["id"]
 
+    # A NC é um estorno que afeta a caixa e o Z — exige SEMPRE uma caixa aberta,
+    # para a venda negativa ficar registada na sessão (senão a reconciliação
+    # veria uma NC no Vendus sem par nas vendas POS = órfã, e o esperado ficava
+    # errado). Vale para admin e operador.
     sess = await db.cash_sessions.find_one({"status": "open"})
-    if auth.get("kind") == "pos":
-        pos_cfg = await _pos_settings_config()
-        if pos_cfg.get("require_open_cash", True) and not sess:
-            raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+    if not sess:
+        raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
+    # RESERVA ATÓMICA da fatura de origem (índice único em `source_document_id`):
+    # serializa duplo-toque/retry concorrentes ANTES de chamar o Vendus, para
+    # nunca emitir 2 NC reais à AT para a mesma fatura. Uma falha adiante REMOVE
+    # a reserva (não bloqueia tentativas legítimas futuras).
+    guard_id = str(uuid.uuid4())
+    try:
+        await db.credit_notes.insert_one({
+            "id": guard_id,
+            "source_document_id": body.document_id,
+            "status": "pending",
+            "pos_user_id": pos_user_id,
+            "cash_session_id": sess["id"],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Esta fatura já tem (ou está a emitir) nota de crédito.")
 
     def _emit():
         c = _vendus_client()
@@ -4151,14 +4188,30 @@ async def create_credit_note(
                     raise HTTPException(
                         status_code=409,
                         detail=f"Esta fatura já tem nota de crédito ({rd.get('number')}).")
-            items = [{"id": it.get("id"), "qty": it.get("qty")}
-                     for it in (fs.get("items") or []) if it.get("id")]
-            if not items:
-                raise HTTPException(status_code=400, detail="Fatura sem itens para creditar.")
+            fs_items = fs.get("items") or []
+            items = [{"id": it.get("id"), "qty": it.get("qty")} for it in fs_items]
+            # Todos os itens TÊM de ter id (a NC credita a linha original por id);
+            # senão o valor creditado não bateria com o total registado.
+            if not items or any(it["id"] is None for it in items):
+                raise HTTPException(status_code=400, detail="Fatura sem itens válidos para creditar.")
             payments = [{"id": p.get("id"), "amount": round(float(p.get("amount") or 0), 2)}
                         for p in (fs.get("payments") or []) if p.get("id")]
+            ext_ref = f"nc-{body.document_id}"
+            # DEDUP fiscal (defesa nº2): se JÁ existe uma NC da app com esta ref
+            # estável (retry cuja resposta se perdeu depois da NC criada),
+            # reutiliza-a em vez de emitir uma 2ª. As NC manuais têm ref vazia, por
+            # isso só apanha as da app — exatamente o caso de retry.
+            try:
+                lisbon = ZoneInfo("Europe/Lisbon")
+                hoje = datetime.now(lisbon).date()
+                for i in range(3):
+                    for d in c.list_app_invoices(date=(hoje - timedelta(days=i)).isoformat()):
+                        if d.get("type") == "NC" and str(d.get("external_reference") or "") == ext_ref:
+                            return fs, d
+            except VendusError:
+                pass  # não bloquear — a reserva atómica + related_docs já protegem
             nc = c.create_invoice(items=items, payments=payments, doc_type="NC",
-                                  external_reference=f"nc-{body.document_id}", output="escpos")
+                                  external_reference=ext_ref, output="escpos")
             return fs, nc
         finally:
             c.close()
@@ -4166,16 +4219,25 @@ async def create_credit_note(
     try:
         fs, nc = await asyncio.to_thread(_emit)
     except HTTPException:
+        await db.credit_notes.delete_one({"id": guard_id})   # rollback: liberta a fatura
         raise
     except VendusError as e:
+        await db.credit_notes.delete_one({"id": guard_id})
         raise HTTPException(status_code=502, detail=f"Erro ao emitir a nota de crédito no Vendus: {e}")
 
     if not nc or not nc.get("id"):
+        await db.credit_notes.delete_one({"id": guard_id})
         raise HTTPException(status_code=502, detail="Vendus não devolveu a nota de crédito")
 
     total = round(float(fs.get("amount_gross") or 0), 2)
     fs_pays = fs.get("payments") or []
     pm_id = fs_pays[0].get("id") if fs_pays else None
+
+    # Marca a reserva como concluída (com a NC emitida).
+    await db.credit_notes.update_one({"id": guard_id}, {"$set": {
+        "status": "done", "nc_id": nc.get("id"), "nc_number": nc.get("number"),
+        "amount": total, "payment_method_id": pm_id,
+    }})
 
     # Venda NEGATIVA (estorno) — para o Z/reconciliação/relatório baterem. A NC
     # JÁ está emitida e válida; uma falha aqui NUNCA a desfaz. O índice único em

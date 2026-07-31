@@ -49,6 +49,12 @@ const PosCreditNote = ({ onClose }) => {
     } catch (err) {
       console.error('Erro ao emitir NC:', err);
       toast.error(err.response?.data?.detail || 'Erro ao emitir a nota de crédito');
+      // 409 = já creditada (ou a ser, noutro tablet) — tira da lista e fecha,
+      // para o operador não voltar a tentar a mesma.
+      if (err.response?.status === 409) {
+        setInvoices((prev) => prev.filter((x) => x.id !== selected.id));
+        setSelected(null);
+      }
     } finally {
       setSubmitting(false);
     }

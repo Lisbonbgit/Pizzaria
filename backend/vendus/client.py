@@ -113,6 +113,44 @@ class VendusClient:
             if str(d.get("date", "")).startswith(date) and d.get("type") != "RG"
         ]
 
+    def get_document_detail(self, doc_id: int) -> dict:
+        """Documento completo (itens, pagamentos, `related_docs`). O GET de UM
+        documento NÃO aceita o parâmetro `view` (devolve 403 P001) — já traz o
+        detalhe. Usado pela nota de crédito para ler os itens/pagamentos da FS."""
+        return self._request("GET", f"documents/{doc_id}/")
+
+    def list_creditable(self, *, date: str) -> list:
+        """Faturas (FS/FR/FT) da caixa da app num dia, com os campos para o picker
+        da nota de crédito: id, número, rótulo (mesa/balcão/conta), hora, valor e
+        forma de pagamento. Exclui NC (créditos) e RG (recibos) — só documentos
+        que se PODEM creditar. Ordena por hora."""
+        out = []
+        for d in self.list_app_invoices(date=date):
+            if d.get("type") not in ("FS", "FR", "FT"):
+                continue
+            pays = d.get("payments") or []
+            method = (pays[0].get("title") or "").strip() if pays else ""
+            ref = str(d.get("external_reference") or "")
+            parts = ref.split("-")
+            if len(parts) >= 2 and parts[0] == "mesa" and parts[1].isdigit():
+                label = f"Mesa {parts[1]}" + (" (rodízio)" if "rodizio" in parts else "")
+            elif ref.startswith("balcao"):
+                label = "Balcão"
+            else:
+                label = "Conta"
+            lt = str(d.get("local_time") or "")
+            out.append({
+                "id": d.get("id"),
+                "number": d.get("number"),
+                "label": label,
+                "date": lt[:10] if len(lt) >= 10 else date,
+                "time": lt[11:16] if len(lt) >= 16 else "",
+                "amount": round(float(d.get("amount_gross") or 0), 2),
+                "method": method,
+            })
+        out.sort(key=lambda x: (x.get("date", ""), x.get("time", "")))
+        return out
+
     def app_sales_summary(self, date: str) -> dict:
         """Resumo das vendas faturadas pela app num dia: total e repartição por
         forma de pagamento (Dinheiro, Multibanco, ...), lido das faturas reais do
@@ -185,17 +223,23 @@ class VendusClient:
         total = 0.0
         invoices = []
         for d in docs:
-            gross = float(d.get("amount_gross") or 0)
+            # Notas de crédito (NC) ESTORNAM a receita — entram com sinal NEGATIVO
+            # (no total, por forma de pagamento e no detalhe). O Vendus devolve o
+            # `amount_gross` e os pagamentos da NC como POSITIVOS, mas representam
+            # um crédito/devolução: sem isto, o "faturado" ficava inflacionado.
+            is_nc = d.get("type") == "NC"
+            sign = -1 if is_nc else 1
+            gross = round(float(d.get("amount_gross") or 0) * sign, 2)
             total = round(total + gross, 2)
             pays = d.get("payments") or []
             method = "Sem pagamento"
             if pays:
                 for p in pays:
                     title = (p.get("title") or "Outro").strip() or "Outro"
-                    amt = float(p.get("amount") or 0)
+                    amt = round(float(p.get("amount") or 0) * sign, 2)
                     cur = by_method.setdefault(title, {"count": 0, "total": 0.0})
                     cur["total"] = round(cur["total"] + amt, 2)
-                # 1 fatura = 1 forma de pagamento (contamos o documento uma vez)
+                # 1 documento = 1 forma de pagamento (contamos o documento uma vez)
                 method = (pays[0].get("title") or "Outro").strip() or "Outro"
                 by_method[method]["count"] += 1
             else:
@@ -203,10 +247,13 @@ class VendusClient:
                 cur["total"] = round(cur["total"] + gross, 2)
                 cur["count"] += 1
 
-            # Rótulo da conta a partir do external_reference: "mesa-N[-rodizio]-ts"
+            # Rótulo da conta a partir do external_reference: "mesa-N[-rodizio]-ts".
+            # A NC mostra o seu número (ex.: "NC 01P2026/14") com marca de crédito.
             ref = str(d.get("external_reference") or "")
             parts = ref.split("-")
-            if len(parts) >= 2 and parts[0] == "mesa" and parts[1].isdigit():
+            if is_nc:
+                label = f"↩ {d.get('number') or 'Nota de crédito'}"
+            elif len(parts) >= 2 and parts[0] == "mesa" and parts[1].isdigit():
                 label = f"Mesa {parts[1]}" + (" (rodízio)" if "rodizio" in parts else "")
             else:
                 label = d.get("number") or "Conta"

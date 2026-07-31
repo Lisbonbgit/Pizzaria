@@ -329,3 +329,51 @@ def test_register_status_le_status_do_registador():
         return httpx.Response(200, json={"id": 7, "status": "close"})
 
     assert _client_com_register(handler).register_status() == "close"
+
+
+def test_summarize_docs_nc_subtrai():
+    """Uma nota de crédito (NC) estorna a receita: entra com sinal NEGATIVO no
+    total e por forma de pagamento; sem isto o 'faturado' ficava inflacionado."""
+    c = _client(lambda r: httpx.Response(200, json=[]))
+    docs = [
+        {"type": "FS", "number": "FS 1", "amount_gross": "100.00",
+         "local_time": "2026-07-30 12:00:00", "external_reference": "mesa-3-x",
+         "payments": [{"title": "Numerário", "amount": "100.00"}]},
+        {"type": "NC", "number": "NC 1", "amount_gross": "40.00",
+         "local_time": "2026-07-30 13:00:00", "external_reference": "",
+         "payments": [{"title": "Numerário", "amount": "40.00"}]},
+    ]
+    r = c._summarize_docs(docs)
+    assert r["total"] == 60.0
+    assert r["by_method"]["Numerário"]["total"] == 60.0
+    nc_rows = [i for i in r["invoices"] if i["amount"] < 0]
+    assert len(nc_rows) == 1 and nc_rows[0]["amount"] == -40.0
+
+
+def test_get_document_detail_sem_view():
+    """O GET de UM documento NÃO pode enviar `view` (o Vendus dá 403 P001)."""
+    def handler(request):
+        assert request.method == "GET"
+        assert "documents/999/" in str(request.url)
+        assert "view" not in str(request.url)
+        return httpx.Response(200, json={"id": 999, "type": "FS", "items": []})
+    assert _client(handler).get_document_detail(999)["id"] == 999
+
+
+def test_list_creditable_exclui_nc_e_rg():
+    """list_creditable só devolve faturas (FS/FR/FT) — exclui NC e RG."""
+    def handler(request):
+        return httpx.Response(200, json=[
+            {"type": "FS", "id": 1, "number": "FS 1", "date": "2026-07-30",
+             "local_time": "2026-07-30 12:00:00", "amount_gross": "20.00",
+             "external_reference": "mesa-5-x", "payments": [{"title": "Numerário", "amount": "20.00"}]},
+            {"type": "NC", "id": 2, "number": "NC 1", "date": "2026-07-30",
+             "local_time": "2026-07-30 13:00:00", "amount_gross": "20.00",
+             "external_reference": "", "payments": []},
+            {"type": "RG", "id": 3, "number": "RG 1", "date": "2026-07-30",
+             "local_time": "2026-07-30 13:00:00", "amount_gross": "20.00",
+             "external_reference": "", "payments": []},
+        ])
+    out = _client(handler).list_creditable(date="2026-07-30")
+    assert [o["number"] for o in out] == ["FS 1"]
+    assert out[0]["label"] == "Mesa 5" and out[0]["method"] == "Numerário"

@@ -327,6 +327,14 @@ export const posCounter = {
     posApi.get('/categories', { params: { active_only: true } })
 };
 
+// POS - Nota de crédito (listar faturas recentes + emitir NC de uma) via posApi
+export const posCreditNote = {
+  listInvoices: () =>
+    posApi.get('/pos/credit-note/invoices'),
+  create: (documentId) =>
+    posApi.post('/pos/credit-note', { document_id: documentId })
+};
+
 // Admin - Gestão do POS (utilizadores, definições, device tokens) via api (JWT admin)
 export const adminPosAPI = {
   listUsers: () =>

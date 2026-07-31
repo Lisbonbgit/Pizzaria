@@ -7,6 +7,7 @@ import PosAbrirCaixa from '@/pages/pos/PosAbrirCaixa';
 import PosHome from '@/pages/pos/PosHome';
 import PosFecharCaixa from '@/pages/pos/PosFecharCaixa';
 import PosBalcao from '@/pages/pos/PosBalcao';
+import PosCreditNote from '@/pages/pos/PosCreditNote';
 import { posAPI } from '@/lib/api';
 
 // Tempo de inatividade até a tela de descanso bloquear o ecrã (Task 6).
@@ -39,6 +40,7 @@ const PosApp = () => {
   // Controla o fluxo "Balcão" (Fase 2, Task 4) — ecrã cheio, substitui a
   // Home enquanto ativo, mesmo mecanismo do Fechar Caixa acima.
   const [showBalcao, setShowBalcao] = useState(false);
+  const [showCreditNote, setShowCreditNote] = useState(false);
   // Tela de descanso (Task 6) — true depois de 2 min sem interação com uma
   // sessão aberta. É só um overlay: o resto do estado abaixo mantém-se.
   const [locked, setLocked] = useState(false);
@@ -57,6 +59,7 @@ const PosApp = () => {
     setCaixaError(false);
     setShowFecharCaixa(false);
     setShowBalcao(false);
+    setShowCreditNote(false);
     setLocked(false);
   }, []);
 
@@ -191,6 +194,10 @@ const PosApp = () => {
     // desliga o botão de voltar enquanto um pedido está impresso mas por
     // faturar).
     content = <PosBalcao onClose={() => setShowBalcao(false)} />;
+  } else if (showCreditNote) {
+    // Nota de crédito — ecrã cheio (lista faturas recentes → emite NC), mesmo
+    // mecanismo de montagem por cima da Home.
+    content = <PosCreditNote onClose={() => setShowCreditNote(false)} />;
   } else {
     // Caixa aberta — Home real do POS (Task 5), com o checkout de mesa
     // (Task 6, `TableCheckout` partilhado com o admin via `posCheckout`) já
@@ -201,6 +208,7 @@ const PosApp = () => {
         operator={user}
         onFecharCaixa={() => setShowFecharCaixa(true)}
         onBalcao={() => setShowBalcao(true)}
+        onCreditNote={() => setShowCreditNote(true)}
         refreshCaixa={refreshCaixa}
         onLogout={logout}
       />

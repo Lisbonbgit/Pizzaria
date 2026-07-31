@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ArrowDownCircle, ArrowUpCircle, ChevronDown, Info, Loader2, LogOut, RefreshCw,
-  Store, Users, Vault, Wallet,
+  Store, Undo2, Users, Vault, Wallet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -58,7 +58,7 @@ const formatHora = (iso) => {
 // sangria/reforco — só o rótulo muda), Abrir Gaveta (posAPI.openDrawer) e
 // Fechar Caixa. Não altera a grelha de mesas, por isso não mexe em
 // `tables`/`load`.
-const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onLogout }) => {
+const PosHome = ({ session, operator, onFecharCaixa, onBalcao, onCreditNote, refreshCaixa, onLogout }) => {
   const [tables, setTables] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -216,6 +216,10 @@ const PosHome = ({ session, operator, onFecharCaixa, onBalcao, refreshCaixa, onL
               <DropdownMenuItem onSelect={abrirGaveta} disabled={drawerSubmitting}>
                 <Vault className="h-4 w-4" />
                 Abrir Gaveta
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onCreditNote}>
+                <Undo2 className="h-4 w-4" />
+                Nota de crédito
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={onFecharCaixa}>

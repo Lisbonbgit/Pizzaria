@@ -149,7 +149,7 @@ async def lifespan(app: FastAPI):
                 SCHEDULER_ENABLED = True
                 scheduler.add_job(
                     run_scheduled_report,
-                    CronTrigger(hour=23, minute=30, timezone='Europe/Lisbon'),
+                    CronTrigger(hour=0, minute=0, timezone='Europe/Lisbon'),
                     id='daily_report',
                     name='Daily Report Email',
                     replace_existing=True
@@ -4813,7 +4813,7 @@ class SchedulerStatusResponse(BaseModel):
     enabled: bool
     next_run: Optional[str] = None
     timezone: str = "Europe/Lisbon"
-    schedule: str = "23:30"
+    schedule: str = "00:00"
 
 @api_router.post("/admin/test-daily-report", response_model=TestReportResponse)
 async def test_daily_report(authorization: Optional[str] = Header(None)):
@@ -4871,7 +4871,7 @@ async def get_report_config(authorization: Optional[str] = Header(None)):
         "source": "env" if RESEND_API_KEY else ("db" if rcfg["api_key"] else "none"),
         "scheduler_enabled": SCHEDULER_ENABLED,
         "timezone": "Europe/Lisbon",
-        "schedule_time": "23:30"
+        "schedule_time": "00:00"
     }
 
 @api_router.post("/admin/resend-config")
@@ -4985,7 +4985,7 @@ async def get_scheduler_status(authorization: Optional[str] = Header(None)):
         enabled=SCHEDULER_ENABLED,
         next_run=next_run,
         timezone="Europe/Lisbon",
-        schedule="23:30"
+        schedule="00:00"
     )
 
 @api_router.get("/admin/report-logs")
@@ -5004,10 +5004,13 @@ async def get_report_logs(
     return logs
 
 async def run_scheduled_report():
-    """Função executada pelo scheduler para enviar o relatório diário"""
+    """Função executada pelo scheduler à 00:00 — envia o relatório do DIA QUE
+    ACABOU (ontem), para o dia sair COMPLETO (à meia-noite "hoje" já é o dia
+    seguinte, que estaria vazio)."""
     logger.info("Executando relatório diário agendado...")
     try:
-        result = await send_daily_report(db)
+        ontem = datetime.now(ZoneInfo('Europe/Lisbon')) - timedelta(days=1)
+        result = await send_daily_report(db, date=ontem)
         if result.get("success"):
             logger.info(f"Relatório diário enviado com sucesso: {result}")
         else:

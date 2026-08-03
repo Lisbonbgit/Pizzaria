@@ -96,7 +96,7 @@ const AdminReports = () => {
     setBusySched(true);
     try {
       await (enable ? reportsAPI.schedulerEnable() : reportsAPI.schedulerDisable());
-      toast.success(enable ? 'Relatório automático ativado (23:30)' : 'Relatório automático desativado');
+      toast.success(enable ? 'Relatório automático ativado (00:00)' : 'Relatório automático desativado');
       loadScheduler();
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Erro ao alterar o agendamento');
@@ -283,7 +283,7 @@ const AdminReports = () => {
       <Card className="mb-6">
         <CardHeader className="pb-3">
           <CardTitle className="text-base flex items-center gap-2">
-            <Clock className="h-4 w-4" /> Relatório automático (todos os dias às 23:30)
+            <Clock className="h-4 w-4" /> Relatório automático (todos os dias às 00:00)
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -319,7 +319,7 @@ const AdminReports = () => {
             ) : (
               <Button onClick={() => toggleScheduler(true)} disabled={busySched || !schedCfg?.resend_configured}>
                 {busySched ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle className="h-4 w-4 mr-2" />}
-                Ativar automático (23:30)
+                Ativar automático (00:00)
               </Button>
             )}
             <Button variant="outline" onClick={sendTestNow} disabled={testing || !schedCfg?.resend_configured}>

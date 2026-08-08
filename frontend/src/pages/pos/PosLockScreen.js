@@ -7,7 +7,7 @@ import PosLogin from '@/pages/pos/PosLogin';
 import { posAPI } from '@/lib/api';
 
 // Tela de bloqueio/descanso do POS (Task 6) — usada tanto no arranque
-// (primeiro login) como no re-desbloqueio após 2 min de inatividade
+// (primeiro login) como no re-desbloqueio após 10 min de inatividade
 // (o `PosApp` sobrepõe este ecrã em vez de desmontar a caixa/mesa por
 // baixo). Fluxo: relógio + avatares dos utilizadores ativos
 // (`GET /pos/users-public`, auth-duplo por device token, como no Vendus) →

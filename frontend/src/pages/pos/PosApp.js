@@ -11,7 +11,7 @@ import PosCreditNote from '@/pages/pos/PosCreditNote';
 import { posAPI } from '@/lib/api';
 
 // Tempo de inatividade até a tela de descanso bloquear o ecrã (Task 6).
-const IDLE_LIMIT_MS = 2 * 60 * 1000;
+const IDLE_LIMIT_MS = 10 * 60 * 1000;
 
 // Shell da janela do POS (`/pos`, fora do ProtectedRoute admin).
 // Máquina de estados por useState, guiada pelo que existe no localStorage:
@@ -19,7 +19,7 @@ const IDLE_LIMIT_MS = 2 * 60 * 1000;
 //   2. Sem pos_token/user    -> tela de bloqueio (escolher utilizador → PIN).
 //   3. Caso contrário        -> porta da caixa: resolve a sessão atual
 //      (posAPI.cashCurrent) e mostra Abrir Caixa ou a Home (PosHome, Task 5).
-// Com sessão aberta, 2 min sem interação sobrepõe a mesma tela de bloqueio
+// Com sessão aberta, 10 min sem interação sobrepõe a mesma tela de bloqueio
 // (Task 6) por cima do que estiver em ecrã, sem desmontar nada por baixo —
 // não perde o estado da caixa/mesa nem faz logout do dispositivo.
 const PosApp = () => {
@@ -41,7 +41,7 @@ const PosApp = () => {
   // Home enquanto ativo, mesmo mecanismo do Fechar Caixa acima.
   const [showBalcao, setShowBalcao] = useState(false);
   const [showCreditNote, setShowCreditNote] = useState(false);
-  // Tela de descanso (Task 6) — true depois de 2 min sem interação com uma
+  // Tela de descanso (Task 6) — true depois de 10 min sem interação com uma
   // sessão aberta. É só um overlay: o resto do estado abaixo mantém-se.
   const [locked, setLocked] = useState(false);
 
@@ -93,7 +93,7 @@ const PosApp = () => {
 
   // Timer de inatividade (Task 6): só corre com sessão aberta (sem isso a
   // tela de bloqueio já é o próprio ecrã de login, não há nada para
-  // "bloquear"). Qualquer clique/toque/tecla reinicia os 2 min.
+  // "bloquear"). Qualquer clique/toque/tecla reinicia os 10 min.
   useEffect(() => {
     if (!posToken || !user) return undefined;
     let timeoutId;

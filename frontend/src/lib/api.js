@@ -13,7 +13,7 @@ const api = axios.create({
 
 // Add auth header interceptor
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('admin_token');
+  const token = sessionStorage.getItem('admin_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -26,8 +26,8 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       // Token expired or invalid
-      localStorage.removeItem('admin_token');
-      localStorage.removeItem('admin_user');
+      sessionStorage.removeItem('admin_token');
+      sessionStorage.removeItem('admin_user');
       if (window.location.pathname.startsWith('/admin') && 
           window.location.pathname !== '/admin/login') {
         window.location.href = '/admin/login';

@@ -16,18 +16,19 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Load auth state from localStorage
-    const savedToken = localStorage.getItem('admin_token');
-    const savedUser = localStorage.getItem('admin_user');
-    
+    // Sessão do admin em sessionStorage: só persiste enquanto o separador/
+    // browser estiver aberto — ao fechar, o login cai (medida de segurança).
+    const savedToken = sessionStorage.getItem('admin_token');
+    const savedUser = sessionStorage.getItem('admin_user');
+
     if (savedToken && savedUser) {
       try {
         setToken(savedToken);
         setUser(JSON.parse(savedUser));
       } catch (e) {
         console.error('Error loading auth state:', e);
-        localStorage.removeItem('admin_token');
-        localStorage.removeItem('admin_user');
+        sessionStorage.removeItem('admin_token');
+        sessionStorage.removeItem('admin_user');
       }
     }
     setLoading(false);
@@ -36,15 +37,15 @@ export const AuthProvider = ({ children }) => {
   const login = (accessToken, userData) => {
     setToken(accessToken);
     setUser(userData);
-    localStorage.setItem('admin_token', accessToken);
-    localStorage.setItem('admin_user', JSON.stringify(userData));
+    sessionStorage.setItem('admin_token', accessToken);
+    sessionStorage.setItem('admin_user', JSON.stringify(userData));
   };
 
   const logout = () => {
     setToken(null);
     setUser(null);
-    localStorage.removeItem('admin_token');
-    localStorage.removeItem('admin_user');
+    sessionStorage.removeItem('admin_token');
+    sessionStorage.removeItem('admin_user');
   };
 
   const getAuthHeader = () => {

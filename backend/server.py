@@ -504,7 +504,7 @@ def create_token(user_id: str, email: str) -> str:
         "user_id": user_id,
         "email": email,
         "typ": "admin",  # marca de tipo — distingue de tokens POS (typ="pos")
-        "exp": datetime.now(timezone.utc).timestamp() + 86400 * 7  # 7 days
+        "exp": datetime.now(timezone.utc).timestamp() + 86400  # 24h (sessão do admin)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

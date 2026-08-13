@@ -4654,30 +4654,35 @@ class ResendConfigRequest(BaseModel):
     sender_email: Optional[str] = None # remetente (default onboarding@resend.dev)
 
 @api_router.get("/admin/report-data")
-async def get_report_data(date: Optional[str] = None, authorization: Optional[str] = Header(None)):
+async def get_report_data(date: Optional[str] = None, start: Optional[str] = None,
+                          end: Optional[str] = None, authorization: Optional[str] = Header(None)):
     """
     Get comprehensive report data for a given date.
     If no date provided, uses today.
     """
     await get_current_user(authorization)
-    
+
     from zoneinfo import ZoneInfo
     lisbon_tz = ZoneInfo('Europe/Lisbon')
-    
-    if date:
+    today_str = datetime.now(lisbon_tz).strftime("%Y-%m-%d")
+
+    def _valid_day(s):
         try:
-            target_date = datetime.fromisoformat(date).replace(tzinfo=lisbon_tz)
-        except:
-            target_date = datetime.now(lisbon_tz)
-    else:
-        target_date = datetime.now(lisbon_tz)
-    
-    # Calculate day range in UTC
-    start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_day = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-    start_utc = start_of_day.astimezone(timezone.utc).isoformat()
-    end_utc = end_of_day.astimezone(timezone.utc).isoformat()
-    
+            datetime.fromisoformat(s)
+            return True
+        except Exception:
+            return False
+
+    start_date = start if (start and _valid_day(start)) else (date if (date and _valid_day(date)) else today_str)
+    end_date = end if (end and _valid_day(end)) else start_date
+    if end_date < start_date:
+        end_date = start_date
+
+    start_dt = datetime.fromisoformat(start_date).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=lisbon_tz)
+    end_dt = datetime.fromisoformat(end_date).replace(hour=23, minute=59, second=59, microsecond=999999, tzinfo=lisbon_tz)
+    start_utc = start_dt.astimezone(timezone.utc).isoformat()
+    end_utc = end_dt.astimezone(timezone.utc).isoformat()
+
     # Fetch orders for the day
     query = {
         "created_at": {"$gte": start_utc, "$lte": end_utc}
@@ -4700,17 +4705,19 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
     avg_ticket = 0.0
     invoices_count = 0
     payment_methods = {}
+    invoices = []
     revenue_source = "vendus"
     revenue_error = None
     try:
         c = _vendus_client()
         try:
-            _summ = c.app_sales_summary(target_date.strftime("%Y-%m-%d"))
+            _summ = c.app_sales_summary_window(f"{start_date}T00:00:00", f"{end_date}T23:59:59")
         finally:
             c.close()
         total_revenue = _summ["total"]
         payment_methods = _summ["by_method"]
         invoices_count = _summ["count"]
+        invoices = _summ.get("invoices", [])
         avg_ticket = (total_revenue / invoices_count) if invoices_count else 0.0
     except Exception as e:
         revenue_source = "erro"
@@ -4747,9 +4754,11 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
     ).sort("at", 1).to_list(500)
     drawer_opens = summarize_drawer_opens(drawer_rows, lisbon_tz)
 
+    days = (end_dt.date() - start_dt.date()).days + 1
     return {
-        "date": target_date.strftime("%Y-%m-%d"),
-        "date_formatted": target_date.strftime("%d/%m/%Y"),
+        "date": start_date,
+        "date_formatted": start_dt.strftime("%d/%m/%Y"),
+        "range": {"start": start_date, "end": end_date, "days": days},
         "summary": {
             "total_orders": total_orders,
             "total_revenue": round(total_revenue, 2),
@@ -4765,7 +4774,8 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
         "payment_methods": payment_methods,
         "top_products": top_products,
         "peak_hours": peak_hours,
-        "drawer_opens": drawer_opens
+        "drawer_opens": drawer_opens,
+        "invoices": invoices
     }
 
 @api_router.post("/admin/send-daily-report")

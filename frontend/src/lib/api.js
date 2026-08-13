@@ -311,6 +311,8 @@ export const posCheckout = {
 export const posCounter = {
   createOrder: (items) =>
     posApi.post('/pos/counter/order', { items }),
+  updateOrder: (orderId, items) =>
+    posApi.post(`/pos/counter/${orderId}/update`, { items }),
   checkout: (orderId, paymentMethodId, nif) =>
     posApi.post('/pos/counter/checkout', {
       order_id: orderId,

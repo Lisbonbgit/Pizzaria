@@ -67,6 +67,7 @@ const PosBalcao = ({ onClose }) => {
   const [orderId, setOrderId] = useState(null);
   const [orderNumber, setOrderNumber] = useState(null);
   const [orderTotal, setOrderTotal] = useState(null);
+  const [dirty, setDirty] = useState(false); // há alterações por reimprimir?
 
   const [paymentId, setPaymentId] = useState('');
   const [nif, setNif] = useState('');
@@ -97,7 +98,6 @@ const PosBalcao = ({ onClose }) => {
   const printed = orderId != null;
 
   const addToCart = useCallback((p) => {
-    if (printed) return;
     setCart((prev) => {
       const idx = prev.findIndex((c) => c.id === p.id);
       if (idx >= 0) {
@@ -112,22 +112,23 @@ const PosBalcao = ({ onClose }) => {
         taxTouched: false, discKind: 'pct', discVal: '',
       }];
     });
+    if (printed) setDirty(true);
   }, [printed]);
 
   const changeQty = useCallback((id, delta) => {
-    if (printed) return;
     setCart((prev) => prev
       .map((c) => (c.id === id ? { ...c, qty: c.qty + delta } : c))
       .filter((c) => c.qty > 0));
+    if (printed) setDirty(true);
   }, [printed]);
 
   const cartTotal = Math.round(cart.reduce((s, c) => s + lineNet(c), 0) * 100) / 100;
-  const total = printed ? (orderTotal ?? cartTotal) : cartTotal;
+  const total = cartTotal;
 
   // Abre o diálogo do produto para a linha `idx` do carrinho (só antes de imprimir).
   const openEdit = (idx) => {
     const c = cart[idx];
-    if (!c || printed) return;
+    if (!c) return;
     setEdQty(String(c.qty));
     setEdPrice(String(c.unitPrice));
     setEdTax(c.tax);
@@ -146,6 +147,7 @@ const PosBalcao = ({ onClose }) => {
       discKind: edDiscKind, discVal: edDiscVal,
     } : c)));
     setEditIdx(null);
+    if (printed) setDirty(true);
   };
 
   // Subtotal previsto no diálogo (bruto − desconto).
@@ -186,6 +188,33 @@ const PosBalcao = ({ onClose }) => {
     }
   };
 
+  const reimprimirPedido = async () => {
+    if (!orderId || !cart.length) return;
+    setPrinting(true);
+    try {
+      const items = cart.map((c) => {
+        const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
+        if (c.taxTouched) it.vendus_tax_id = c.tax;
+        const dv = Number(String(c.discVal).replace(',', '.')) || 0;
+        if (dv > 0) {
+          if (c.discKind === 'eur') it.discount_amount = dv;
+          else it.discount_pct = dv;
+        }
+        return it;
+      });
+      const r = await posCounter.updateOrder(orderId, items);
+      setOrderNumber(r.data.order_number);
+      setOrderTotal(r.data.total);
+      setDirty(false);
+      toast.success('Pedido atualizado e reenviado para a cozinha');
+    } catch (err) {
+      console.error('Erro ao atualizar o pedido de balcão:', err);
+      toast.error(err.response?.data?.detail || 'Erro ao atualizar o pedido');
+    } finally {
+      setPrinting(false);
+    }
+  };
+
   const selectedMethod = methods.find((m) => String(m.id) === String(paymentId));
   const isCash = !!selectedMethod && /dinheiro|numer|cash/i.test(selectedMethod.title || '');
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
@@ -212,6 +241,7 @@ const PosBalcao = ({ onClose }) => {
     setOrderId(null);
     setOrderNumber(null);
     setOrderTotal(null);
+    setDirty(false);
     setPaymentId('');
     setNif('');
     setCashReceived('');
@@ -311,8 +341,8 @@ const PosBalcao = ({ onClose }) => {
         {/* ESQUERDA — picker de produtos, agrupado por categoria */}
         <div className="flex-1 min-h-0 overflow-y-auto bg-background px-5 py-5 text-foreground sm:px-8 sm:py-6">
           {printed && (
-            <div className="mb-4 rounded-lg border border-emerald-600/30 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
-              Pedido já enviado para a cozinha — o carrinho está bloqueado. Usa "Nova Venda" para o próximo cliente.
+            <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              Pedido nº {orderNumber} na cozinha. Podes acrescentar/editar linhas e <strong>Reimprimir pedido</strong>; no fim, <strong>Emitir Documento</strong>.
             </div>
           )}
           {loadingCatalog ? (
@@ -350,13 +380,7 @@ const PosBalcao = ({ onClose }) => {
                       key={p.id}
                       type="button"
                       onClick={() => addToCart(p)}
-                      disabled={printed}
-                      className={[
-                        'flex min-h-[76px] flex-col items-start justify-between rounded-lg border p-3 text-left transition-all touch-manipulation active:scale-[0.97]',
-                        printed
-                          ? 'cursor-not-allowed border-border bg-muted/40 opacity-50'
-                          : 'cursor-pointer border-border bg-white hover:border-primary/40 hover:shadow-sm',
-                      ].join(' ')}
+                      className="flex min-h-[76px] flex-col items-start justify-between rounded-lg border border-border bg-white p-3 text-left transition-all touch-manipulation active:scale-[0.97] cursor-pointer hover:border-primary/40 hover:shadow-sm"
                     >
                       <span className="text-sm font-medium leading-snug line-clamp-2">{p.name}</span>
                       <span className="mt-2 text-sm font-semibold text-[#5a1a1a] tabular-nums">{eur(p.base_price)}</span>
@@ -383,13 +407,13 @@ const PosBalcao = ({ onClose }) => {
                   <div
                     key={c.id}
                     onClick={() => openEdit(i)}
-                    title={printed ? undefined : 'Tocar para editar (qtd/preço/IVA/desconto)'}
-                    className={`grid grid-cols-[1fr_5.5rem_5rem] items-center gap-2 border-b border-white/5 px-4 py-3 ${printed ? '' : 'cursor-pointer hover:bg-white/5'}`}
+                    title="Tocar para editar (qtd/preço/IVA/desconto)"
+                    className="grid grid-cols-[1fr_5.5rem_5rem] items-center gap-2 border-b border-white/5 px-4 py-3 cursor-pointer hover:bg-white/5"
                   >
                     <span className="min-w-0">
                       <span className="flex items-center gap-1.5">
                         <span className="truncate">{c.name}</span>
-                        {!printed && <Pencil className="h-3 w-3 shrink-0 text-white/30" />}
+                        <Pencil className="h-3 w-3 shrink-0 text-white/30" />
                       </span>
                       <span className="mt-0.5 flex items-center gap-1.5 text-white/40">
                         <span className="text-[11px] tabular-nums">{eur(c.unitPrice)}/un</span>
@@ -409,7 +433,7 @@ const PosBalcao = ({ onClose }) => {
                       <Button
                         variant="outline" size="icon"
                         className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
-                        onClick={() => changeQty(c.id, -1)} disabled={printed}
+                        onClick={() => changeQty(c.id, -1)}
                         aria-label={`Diminuir ${c.name}`}
                       >
                         <Minus className="h-3.5 w-3.5" />
@@ -418,7 +442,7 @@ const PosBalcao = ({ onClose }) => {
                       <Button
                         variant="outline" size="icon"
                         className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
-                        onClick={() => changeQty(c.id, 1)} disabled={printed}
+                        onClick={() => changeQty(c.id, 1)}
                         aria-label={`Aumentar ${c.name}`}
                       >
                         <Plus className="h-3.5 w-3.5" />
@@ -451,6 +475,18 @@ const PosBalcao = ({ onClose }) => {
 
             {printed && docNumber == null && (
               <>
+                <Button
+                  onClick={reimprimirPedido}
+                  disabled={!cart.length || printing}
+                  variant={dirty ? 'default' : 'outline'}
+                  className={dirty
+                    ? 'h-12 w-full bg-amber-400 text-base font-semibold text-[#3a1414] hover:bg-amber-300'
+                    : 'h-12 w-full border-white/25 bg-transparent text-base font-semibold text-white hover:bg-white/10'}
+                >
+                  {printing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Printer className="h-5 w-5" />}
+                  {dirty ? 'Reimprimir pedido (atualizado)' : 'Reimprimir pedido'}
+                </Button>
+
                 <div className="space-y-2">
                   <Select value={paymentId} onValueChange={setPaymentId}>
                     <SelectTrigger className="border-white/25 bg-white/10 text-white data-[placeholder]:text-white/50">
@@ -494,9 +530,15 @@ const PosBalcao = ({ onClose }) => {
                   </div>
                 )}
 
+                {dirty && (
+                  <p className="text-center text-xs text-amber-200">
+                    Tens alterações por reimprimir — carrega em «Reimprimir pedido» antes de faturar.
+                  </p>
+                )}
+
                 <Button
                   onClick={emitirDocumento}
-                  disabled={checkingOut || cancelling || !paymentId}
+                  disabled={checkingOut || cancelling || !paymentId || dirty}
                   className="h-14 w-full bg-white text-base font-semibold text-[#5a1a1a] hover:bg-white/90"
                 >
                   {checkingOut ? <Loader2 className="h-5 w-5 animate-spin" /> : <Receipt className="h-5 w-5" />}

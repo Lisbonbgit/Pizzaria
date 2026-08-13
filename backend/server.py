@@ -3916,6 +3916,109 @@ async def cancel_counter_order(
     return {"ok": True, "order_id": order_id, "cancelled": True}
 
 
+@api_router.post("/pos/counter/{order_id}/update")
+async def update_counter_order(
+    order_id: str,
+    body: CounterOrderRequest,
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+    x_pos_token: Optional[str] = Header(None),
+):
+    """Atualiza os itens de um pedido de balcão JÁ impresso mas ainda não
+    faturado (o operador acrescentou/editou/anulou linhas) e reimprime o pedido
+    COMPLETO só na COZINHA, marcado como ATUALIZADO. Substitui os itens e
+    recalcula o total; o `checkout_counter_order` lê os itens frescos, por isso
+    continua a sair UMA só FS com tudo. Guards: pedido de balcão existe, NÃO
+    pago, NÃO cancelado e (como o `create`) caixa aberta. Auth-duplo; o operador
+    vem sempre do token POS."""
+    auth = await get_pos_or_admin(authorization, x_device_token)
+    await get_pos_operator(x_pos_token)  # operador identificado (não-falsificável)
+
+    sess = await db.cash_sessions.find_one({"status": "open"})
+    if auth.get("kind") == "pos":
+        pos_cfg = await _pos_settings_config()
+        if pos_cfg.get("require_open_cash", True) and not sess:
+            raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
+    order = await db.orders.find_one({"id": order_id, "source": "balcao"}, {"_id": 0})
+    if not order:
+        raise HTTPException(status_code=404, detail="Pedido de balcão não encontrado")
+    if order.get("paid"):
+        raise HTTPException(status_code=400, detail="Pedido já faturado — não pode ser alterado")
+    if order.get("status") == "cancelled":
+        raise HTTPException(status_code=400, detail="Pedido cancelado — não pode ser alterado")
+
+    # Valida os overrides do staff (mesma validação do create).
+    for i in body.items:
+        if i.unit_price is not None and i.unit_price < 0:
+            raise HTTPException(status_code=400, detail="Preço inválido")
+        if i.vendus_tax_id is not None and i.vendus_tax_id not in ("INT", "NOR"):
+            raise HTTPException(status_code=400, detail="IVA inválido")
+        if i.discount_pct is not None and not (0 <= i.discount_pct <= 100):
+            raise HTTPException(status_code=400, detail="Desconto % inválido")
+        if i.discount_amount is not None and i.discount_amount < 0:
+            raise HTTPException(status_code=400, detail="Desconto € inválido")
+
+    product_ids = [i.product_id for i in body.items]
+    prods = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(1000)
+    products_by_id = {
+        p["id"]: p for p in prods
+        if not p.get("rodizio_only", False) and p.get("available", True)
+    }
+    cart = [{
+        "product_id": i.product_id, "quantity": i.quantity,
+        "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
+        "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
+    } for i in body.items]
+    built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
+    if not built["items"]:
+        raise HTTPException(status_code=400, detail="Nada para faturar")
+
+    # Substituição ATÓMICA — só se o pedido ainda estiver por faturar. Fecha a
+    # corrida com o checkout: um update que chegue depois do pagamento é
+    # recusado (409) em vez de crescer um pedido já faturado (que a FS não
+    # cobriria).
+    res = await db.orders.update_one(
+        {"id": order_id, "source": "balcao", "paid": False, "status": {"$ne": "cancelled"}},
+        {"$set": {"items": built["items"], "total": built["total"]}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=409, detail="Pedido já faturado ou cancelado")
+
+    # Reimprime o pedido COMPLETO só na COZINHA, marcado ATUALIZADO, via
+    # order_snapshot (nunca `_enqueue_order_prints`, que imprimiria também um
+    # talão de CAIXA e como "NOVO PEDIDO").
+    snapshot = {
+        "id": f"balcao-update-{order_id}",
+        "order_number": order["order_number"],
+        "table_number": None,
+        "source": "balcao",
+        "items": built["items"],
+        "total": built["total"],
+        "is_update": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    printers = await db.printers.find({"active": True}, {"_id": 0}).to_list(100)
+    kitchen = [p for p in printers if p.get("printer_type") == "kitchen"]
+    targets = kitchen or [None]
+    for printer in targets:
+        await db.print_jobs.insert_one({
+            "id": str(uuid.uuid4()),
+            "order_id": None,
+            "order_snapshot": snapshot,
+            "printer_id": printer["id"] if printer else None,
+            "printer_name": printer["name"] if printer else "Cozinha",
+            "printer_type": "kitchen",
+            "status": "pending",
+            "attempts": 0,
+            "error": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    return {"order_number": order["order_number"], "total": built["total"], "items": built["items"]}
+
+
 class CounterCheckoutRequest(BaseModel):
     order_id: str
     payment_method_id: int

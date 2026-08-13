@@ -28,13 +28,31 @@ class _FakePrintJobs:
         self.inserted.append(doc)
 
 
+class _FakeCollection:
+    def __init__(self, docs=None):
+        self.docs = list(docs or [])
+        self.inserted = []
+
+    async def insert_one(self, doc):
+        self.inserted.append(doc)
+        self.docs.append(doc)
+
+    async def find_one(self, query, projection=None):
+        for d in self.docs:
+            if all(d.get(k) == v for k, v in query.items()):
+                return d
+        return None
+
+
 class _FakeDb:
-    def __init__(self):
+    def __init__(self, open_session=None):
         self.print_jobs = _FakePrintJobs()
+        self.drawer_opens = _FakeCollection()
+        self.cash_sessions = _FakeCollection([open_session] if open_session else [])
 
 
 def test_sem_auth_da_401_e_nao_enfileira_nada(monkeypatch):
-    fake_db = _FakeDb()
+    fake_db = _FakeDb(open_session=None)
     monkeypatch.setattr(server, "db", fake_db)
 
     async def fake_valid_device_token(raw: str) -> bool:
@@ -52,7 +70,7 @@ def test_sem_auth_da_401_e_nao_enfileira_nada(monkeypatch):
 
 
 def test_device_token_valido_enfileira_kick_na_caixa(monkeypatch):
-    fake_db = _FakeDb()
+    fake_db = _FakeDb(open_session=None)
     monkeypatch.setattr(server, "db", fake_db)
 
     async def fake_valid_device_token(raw: str) -> bool:
@@ -77,7 +95,7 @@ def test_device_token_valido_enfileira_kick_na_caixa(monkeypatch):
 def test_admin_jwt_valido_tambem_abre_a_gaveta(monkeypatch):
     # Auth-duplo (get_pos_or_admin): o JWT de admin também é aceite, sem
     # device token nenhum.
-    fake_db = _FakeDb()
+    fake_db = _FakeDb(open_session=None)
     monkeypatch.setattr(server, "db", fake_db)
     token = create_token("admin-1", "gestor@lenhaebrasa.com")
 
@@ -87,3 +105,54 @@ def test_admin_jwt_valido_tambem_abre_a_gaveta(monkeypatch):
     resultado = asyncio.run(run())
     assert resultado == {"ok": True}
     assert len(fake_db.print_jobs.inserted) == 1
+
+
+def test_regista_abertura_com_operador_do_pos_token(monkeypatch):
+    # Caixa FECHADA (sem sessão aberta) + operador identificado pelo X-POS-Token.
+    fake_db = _FakeDb(open_session=None)
+    monkeypatch.setattr(server, "db", fake_db)
+
+    async def fake_valid_device_token(raw: str) -> bool:
+        return raw == "dev-ok"
+
+    monkeypatch.setattr(server, "valid_device_token", fake_valid_device_token)
+
+    from server import create_pos_token
+    pos_token = create_pos_token("op-1", "Ana")
+
+    async def run():
+        return await open_cash_drawer(
+            authorization=None, x_device_token="dev-ok", x_pos_token=pos_token
+        )
+
+    resultado = asyncio.run(run())
+    assert resultado == {"ok": True}
+
+    # Registou a abertura com o operador do token e sem sessão aberta.
+    assert len(fake_db.drawer_opens.inserted) == 1
+    reg = fake_db.drawer_opens.inserted[0]
+    assert reg["operator_id"] == "op-1"
+    assert reg["operator_name"] == "Ana"
+    assert reg["had_open_session"] is False
+    assert reg["cash_session_id"] is None
+    # E continua a enfileirar o pulso da gaveta.
+    assert len(fake_db.print_jobs.inserted) == 1
+
+
+def test_regista_had_open_session_quando_ha_caixa_aberta(monkeypatch):
+    fake_db = _FakeDb(open_session={"id": "cs-1", "status": "open"})
+    monkeypatch.setattr(server, "db", fake_db)
+
+    async def fake_valid_device_token(raw: str) -> bool:
+        return raw == "dev-ok"
+
+    monkeypatch.setattr(server, "valid_device_token", fake_valid_device_token)
+
+    async def run():
+        return await open_cash_drawer(authorization=None, x_device_token="dev-ok", x_pos_token=None)
+
+    asyncio.run(run())
+    reg = fake_db.drawer_opens.inserted[0]
+    assert reg["had_open_session"] is True
+    assert reg["cash_session_id"] == "cs-1"
+    assert reg["operator_name"] == "—"  # sem X-POS-Token e sem admin

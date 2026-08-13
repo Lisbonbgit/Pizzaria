@@ -3394,13 +3394,40 @@ async def add_cash_movement(
 async def open_cash_drawer(
     authorization: Optional[str] = Header(None),
     x_device_token: Optional[str] = Header(None),
+    x_pos_token: Optional[str] = Header(None),
 ):
-    """Abre a gaveta do dinheiro (menu Caixa, "Abrir Gaveta"): enfileira o comando
-    ESC/POS padrão de pulso ("kick") na impressora da CAIXA, pelo mesmo mecanismo
-    `print_jobs` + `escpos_direct_b64` + `printer_type="cashier"` usado pelas
-    faturas (`close_table`) e pelo talão Z (`close_cash_session`) — o app-ponte
-    apanha o job e pulsa a gaveta ligada a essa impressora."""
-    await get_pos_or_admin(authorization, x_device_token)
+    """Abre a gaveta do dinheiro: enfileira o pulso ESC/POS ("kick") na impressora
+    da CAIXA (mesmo mecanismo `print_jobs` + `escpos_direct_b64` +
+    `printer_type="cashier"` das faturas e do talão Z). Regista SEMPRE a abertura
+    (operador + hora + se havia caixa aberta) em `drawer_opens` — controlo interno,
+    já que a gaveta pode ser aberta com o caixa fechado."""
+    auth = await get_pos_or_admin(authorization, x_device_token)
+
+    # Operador para o registo: do token POS (PIN) se houver; senão, se veio por
+    # JWT de admin, "Administrador". A identidade vem sempre do token.
+    operator_id, operator_name = None, None
+    if x_pos_token:
+        try:
+            payload = decode_pos_token(x_pos_token)
+            operator_id = payload.get("pos_user_id")
+            operator_name = payload.get("name")
+        except jwt.InvalidTokenError:
+            pass
+    if not operator_name and auth.get("kind") == "admin":
+        operator_id, operator_name = "admin", "Administrador"
+
+    sessao = await db.cash_sessions.find_one({"status": "open"}, {"_id": 0, "id": 1})
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    await db.drawer_opens.insert_one({
+        "id": str(uuid.uuid4()),
+        "operator_id": operator_id,
+        "operator_name": operator_name or "—",
+        "at": now_iso,
+        "had_open_session": bool(sessao),
+        "cash_session_id": sessao["id"] if sessao else None,
+    })
+
     kick_bytes = b"\x1b\x70\x00\x19\xfa"  # ESC p 0 25 250 — pulso padrão da gaveta
     await db.print_jobs.insert_one({
         "id": str(uuid.uuid4()),
@@ -3412,8 +3439,8 @@ async def open_cash_drawer(
         "status": "pending",
         "attempts": 0,
         "error": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now_iso,
+        "updated_at": now_iso,
     })
     return {"ok": True}
 

@@ -32,9 +32,11 @@ const lineNet = (c) => {
 // Fluxo, tudo no mesmo ecrã (2 painéis: catálogo à esquerda, carrinho/fatura
 // à direita — as mesmas cores do TableCheckout partilhado):
 //   1. Escolher produtos (agrupados por categoria) → carrinho com +/-.
-//   2. "Imprimir Pedido" → posCounter.createOrder (cozinha) — a partir daqui
-//      o carrinho fica bloqueado (o pedido já foi enviado; simplifica não ter
-//      de reconciliar edições pós-impressão com a cozinha).
+//   2. "Imprimir Pedido" → posCounter.createOrder (cozinha). O carrinho
+//      continua EDITÁVEL (Fase 3): acrescentar/editar/anular linhas marca
+//      `dirty` e "Reimprimir pedido" → posCounter.updateOrder reenvia o pedido
+//      completo só à cozinha (talão "PEDIDO ATUALIZADO"); "Emitir" fica
+//      bloqueado enquanto houver alterações por reimprimir.
 //   3. Faturação → posCounter.checkout (FS + pos_sales + recibo).
 //   4. "Nova Venda" reinicia tudo, sem sair do balcão (vários clientes
 //      seguidos); o botão Voltar leva à Home (Task 5/6 mesas).
@@ -125,7 +127,7 @@ const PosBalcao = ({ onClose }) => {
   const cartTotal = Math.round(cart.reduce((s, c) => s + lineNet(c), 0) * 100) / 100;
   const total = cartTotal;
 
-  // Abre o diálogo do produto para a linha `idx` do carrinho (só antes de imprimir).
+  // Abre o diálogo do produto para a linha `idx` do carrinho (qtd/preço/IVA/desconto).
   const openEdit = (idx) => {
     const c = cart[idx];
     if (!c) return;
@@ -578,7 +580,7 @@ const PosBalcao = ({ onClose }) => {
         </div>
       </main>
 
-      {/* Diálogo do produto — editar qtd/preço/IVA/desconto de uma linha (antes de imprimir) */}
+      {/* Diálogo do produto — editar qtd/preço/IVA/desconto de uma linha */}
       <Dialog open={editIdx != null} onOpenChange={(v) => !v && setEditIdx(null)}>
         <DialogContent className="max-w-sm text-foreground">
           <DialogHeader>

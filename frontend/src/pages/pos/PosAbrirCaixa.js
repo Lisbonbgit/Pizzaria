@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { Lock, Loader2 } from 'lucide-react';
+import { Lock, Loader2, Vault } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -38,6 +38,20 @@ const formatDataHora = (iso) => {
 const PosAbrirCaixa = ({ operator, onAberta, lastClose }) => {
   const [montante, setMontante] = useState('0');
   const [submitting, setSubmitting] = useState(false);
+  const [drawerSubmitting, setDrawerSubmitting] = useState(false);
+
+  const abrirGaveta = useCallback(async () => {
+    setDrawerSubmitting(true);
+    try {
+      await posAPI.openDrawer();
+      toast.success('Gaveta aberta');
+    } catch (err) {
+      console.error('Erro ao abrir a gaveta:', err);
+      toast.error(err.response?.data?.detail || 'Não foi possível abrir a gaveta');
+    } finally {
+      setDrawerSubmitting(false);
+    }
+  }, []);
 
   const abrir = useCallback(async () => {
     const valor = Number(montante);
@@ -104,6 +118,16 @@ const PosAbrirCaixa = ({ operator, onAberta, lastClose }) => {
         ) : (
           'Abrir Caixa'
         )}
+      </Button>
+
+      <Button
+        variant="outline"
+        onClick={abrirGaveta}
+        disabled={drawerSubmitting}
+        className="w-full max-w-xs mt-3 h-12 border-white/30 bg-transparent text-white hover:bg-white/10 hover:text-white"
+      >
+        <Vault className="h-4 w-4 mr-1.5" />
+        {drawerSubmitting ? 'A abrir...' : 'Abrir Gaveta'}
       </Button>
     </div>
   );

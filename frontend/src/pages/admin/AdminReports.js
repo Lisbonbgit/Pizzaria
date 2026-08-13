@@ -163,7 +163,9 @@ const AdminReports = () => {
     const today = new Date();
     today.setHours(23, 59, 59, 999);
     if (date <= today) {
-      setSelectedDate(date.toISOString().split('T')[0]);
+      const d = date.toISOString().split('T')[0];
+      setSelectedDate(d);
+      setEndDate(d); // setas = um dia; intervalos usam os inputs De/Até
     }
   };
 
@@ -345,7 +347,11 @@ const AdminReports = () => {
       </Card>
 
       {/* Date label */}
-      <p className="text-sm text-muted-foreground mb-6 capitalize">{formatDate(selectedDate)}</p>
+      <p className="text-sm text-muted-foreground mb-6 capitalize">
+        {selectedDate !== endDate
+          ? `${formatDate(selectedDate)} até ${formatDate(endDate)}`
+          : formatDate(selectedDate)}
+      </p>
 
       {loading ? (
         <div className="flex items-center justify-center h-32">

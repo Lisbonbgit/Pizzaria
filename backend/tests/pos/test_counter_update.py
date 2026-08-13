@@ -107,3 +107,31 @@ def test_update_recusa_pedido_pago(monkeypatch):
         asyncio.run(run())
     assert exc.value.status_code == 400
     assert fake.print_jobs.inserted == []   # não reimprimiu nada
+
+
+def test_update_recusa_se_faturado_no_meio_corrida(monkeypatch):
+    """Corrida update-vs-checkout: find_one ve o pedido por faturar, mas o
+    checkout aterra entre os guards e o $set — o update filtrado por paid:false
+    nao bate (matched_count=0) -> 409, sem reimprimir e sem alterar o pedido."""
+    order = {"id": "o1", "source": "balcao", "order_number": 7, "paid": False,
+             "status": "received", "items": [{"product_name": "Antigo", "quantity": 1}], "total": 3.0}
+    products = [{"id": "p1", "name": "Pizza", "base_price": 10.0, "vendus_tax_id": "INT"}]
+    fake = _FakeDb(order, products)
+
+    async def _no_match(query, update):
+        class R: matched_count = 0
+        return R()
+    fake.orders.update_one = _no_match  # simula o checkout a pagar no meio
+
+    monkeypatch.setattr(server, "db", fake)
+    admin = create_token("admin-1", "gestor@lenhaebrasa.com")
+    pos_token = create_pos_token("op-1", "Ana")
+
+    async def run():
+        return await update_counter_order("o1", _req(), authorization=f"Bearer {admin}",
+                                          x_device_token=None, x_pos_token=pos_token)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run())
+    assert exc.value.status_code == 409
+    assert fake.print_jobs.inserted == []            # nao reimprimiu
+    assert order["items"] == [{"product_name": "Antigo", "quantity": 1}]  # inalterado

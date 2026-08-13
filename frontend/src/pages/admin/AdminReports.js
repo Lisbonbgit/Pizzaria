@@ -512,6 +512,35 @@ const AdminReports = () => {
               )}
             </CardContent>
           </Card>
+
+          {/* Aberturas de gaveta (auditoria) */}
+          <Card className="mt-6">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Wallet className="h-5 w-5" />
+                Aberturas de gaveta
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(reportData?.drawer_opens || []).length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  Nenhuma abertura de gaveta registada neste dia
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {reportData.drawer_opens.map((d, idx) => (
+                    <div key={idx} className="flex items-center gap-3 p-2 rounded-lg hover:bg-secondary/50">
+                      <span className="font-mono text-sm text-muted-foreground w-12">{d.time}</span>
+                      <span className="flex-1 font-medium truncate">{d.operator}</span>
+                      <Badge variant={d.had_session ? 'secondary' : 'outline'}>
+                        {d.had_session ? 'Caixa aberta' : 'Caixa fechada'}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
       )}
     </AdminLayout>

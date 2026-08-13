@@ -35,6 +35,7 @@ from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
 from pos.app_products import extract_app_products, is_app_product
 from pos.pricing import line_vendus, combine_global
+from pos.drawer import summarize_drawer_opens
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -4766,7 +4767,13 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
         {"hour": h, "label": f"{h:02d}:00", "orders": hours_count.get(h, 0)}
         for h in range(8, 24)
     ]
-    
+
+    # Aberturas de gaveta do dia (registo de auditoria — Fase 1)
+    drawer_rows = await db.drawer_opens.find(
+        {"at": {"$gte": start_utc, "$lte": end_utc}}, {"_id": 0}
+    ).sort("at", 1).to_list(500)
+    drawer_opens = summarize_drawer_opens(drawer_rows, lisbon_tz)
+
     return {
         "date": target_date.strftime("%Y-%m-%d"),
         "date_formatted": target_date.strftime("%d/%m/%Y"),
@@ -4784,7 +4791,8 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
         },
         "payment_methods": payment_methods,
         "top_products": top_products,
-        "peak_hours": peak_hours
+        "peak_hours": peak_hours,
+        "drawer_opens": drawer_opens
     }
 
 @api_router.post("/admin/send-daily-report")

@@ -18,5 +18,9 @@ def summarize_drawer_opens(rows, tz):
             "operator": r.get("operator_name") or "—",
             "had_session": bool(r.get("had_open_session")),
         })
+    # Ordenar por "HH:MM" só é correto porque o relatório cobre UM dia.
+    # TODO(Fase 3 — intervalo de datas): quando `rows` abranger vários dias,
+    # ordenar pelo datetime de `at` (não pela hora local formatada), senão os
+    # dias interleavam-se.
     out.sort(key=lambda x: x["time"])
     return out

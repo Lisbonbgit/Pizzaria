@@ -603,14 +603,22 @@ class ESCPOSFormatter:
         """Format for KITCHEN printer - focus on preparation details"""
         data = bytearray()
         data.extend(self.INIT)
-        
-        # Header - NEW ORDER alert
+
+        # Header — NOVO PEDIDO, ou PEDIDO ATUALIZADO nas reimpressões de balcão
+        # (Fase 3): o operador acrescentou/editou linhas e reimprimiu; a cozinha
+        # deve descartar o talão anterior deste pedido.
         data.extend(self.CENTER)
         data.extend(self.BOLD_ON)
         data.extend(self.DOUBLE_HEIGHT)
-        data.extend(self._text("NOVO PEDIDO\n"))
-        data.extend(self.NORMAL_SIZE)
-        data.extend(self.BOLD_OFF)
+        if order.get("is_update"):
+            data.extend(self._text("PEDIDO ATUALIZADO\n"))
+            data.extend(self.NORMAL_SIZE)
+            data.extend(self.BOLD_OFF)
+            data.extend(self._text("(substitui o pedido anterior)\n"))
+        else:
+            data.extend(self._text("NOVO PEDIDO\n"))
+            data.extend(self.NORMAL_SIZE)
+            data.extend(self.BOLD_OFF)
         
         data.extend(self._line('='))
         

@@ -3679,26 +3679,10 @@ async def close_cash_session(
     except Exception as e:
         logger.error(f"Falha a enfileirar impressão do Z (fecho já commitado, sessão {sessao['id']}): {e}")
 
-    # Imprime o talão Z REAL do Vendus, se a sincronização acima teve sucesso e
-    # devolveu o ESC/POS — job de impressão SEPARADO do Z da app, mesma
-    # impressora da CAIXA. Best-effort: uma falha aqui também é só registada.
-    if vendus_resp and vendus_resp.get("output"):
-        try:
-            await db.print_jobs.insert_one({
-                "id": str(uuid.uuid4()),
-                "order_id": None,
-                "escpos_direct_b64": vendus_resp["output"],
-                "printer_id": None,
-                "printer_name": "Caixa",
-                "printer_type": "cashier",
-                "status": "pending",
-                "attempts": 0,
-                "error": None,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            })
-        except Exception as e:
-            logger.error(f"Falha a enfileirar impressão do Z do Vendus (sessão {sessao['id']}): {e}")
+    # O talão Z do Vendus (2º papel) DEIXOU de ser impresso no fecho (decisão do
+    # dono, Fase 2): o registador Vendus continua a ser fechado por
+    # `_vendus_cash_close_sync` acima; o comprovativo Z oficial fica consultável
+    # no backoffice do Vendus. O talão Z da APP (reconciliação, acima) mantém-se.
 
     return z_data
 

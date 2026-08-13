@@ -162,8 +162,10 @@ export const printJobsAPI = {
 
 // Reports API
 export const reportsAPI = {
-  getData: (date = null) =>
-    api.get('/admin/report-data', { params: date ? { date } : {} }),
+  getData: (start = null, end = null) =>
+    api.get('/admin/report-data', {
+      params: { ...(start ? { start } : {}), ...(end ? { end } : {}) },
+    }),
   sendEmail: (date = null) =>
     api.post('/admin/send-daily-report', { date }),
   getConfig: () =>

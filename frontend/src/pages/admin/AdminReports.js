@@ -63,6 +63,7 @@ const AdminReports = () => {
     const now = new Date();
     return now.toISOString().split('T')[0];
   });
+  const [endDate, setEndDate] = useState(() => new Date().toISOString().split('T')[0]);
 
   const loadScheduler = useCallback(async () => {
     try {
@@ -121,7 +122,8 @@ const AdminReports = () => {
   const loadReport = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await reportsAPI.getData(selectedDate);
+      const end = endDate < selectedDate ? selectedDate : endDate;
+      const response = await reportsAPI.getData(selectedDate, end);
       setReportData(response.data);
     } catch (err) {
       console.error('Error loading report:', err);
@@ -129,7 +131,7 @@ const AdminReports = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, endDate]);
 
   useEffect(() => {
     loadReport();
@@ -205,6 +207,18 @@ const AdminReports = () => {
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
               max={new Date().toISOString().split('T')[0]}
+              className="bg-transparent border-0 outline-none font-medium text-sm cursor-pointer"
+            />
+          </div>
+          <span className="text-muted-foreground text-sm">até</span>
+          <div className="flex items-center gap-2 px-4 py-2 rounded-lg border bg-card justify-center">
+            <CalendarDays className="h-4 w-4 text-muted-foreground" />
+            <input
+              type="date"
+              value={endDate}
+              min={selectedDate}
+              max={new Date().toISOString().split('T')[0]}
+              onChange={(e) => setEndDate(e.target.value)}
               className="bg-transparent border-0 outline-none font-medium text-sm cursor-pointer"
             />
           </div>

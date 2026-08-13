@@ -458,7 +458,10 @@ const AdminReports = () => {
                           {idx + 1}
                         </span>
                         <span className="flex-1 font-medium truncate">{product.name}</span>
-                        <Badge variant="secondary">{product.quantity}x</Badge>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-muted-foreground">€ {(product.revenue || 0).toFixed(2)}</span>
+                          <Badge variant="secondary">{product.quantity}x</Badge>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -535,6 +538,36 @@ const AdminReports = () => {
                       <Badge variant={d.had_session ? 'secondary' : 'outline'}>
                         {d.had_session ? 'Caixa aberta' : 'Caixa fechada'}
                       </Badge>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Faturas emitidas */}
+          <Card className="mt-6">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg flex items-center gap-2">
+                <Receipt className="h-5 w-5" />
+                Faturas emitidas
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(reportData?.invoices || []).length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  Nenhuma fatura neste período
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {reportData.invoices.map((inv, idx) => (
+                    <div key={idx} className="flex items-center gap-3 p-2 rounded-lg hover:bg-secondary/50 text-sm">
+                      <span className="font-mono text-muted-foreground w-12">{inv.time}</span>
+                      <span className="flex-1 truncate">{inv.number || inv.label}</span>
+                      <span className="text-muted-foreground truncate max-w-[120px]">{inv.method}</span>
+                      <span className={`font-medium tabular-nums ${inv.amount < 0 ? 'text-red-600' : ''}`}>
+                        € {inv.amount.toFixed(2)}
+                      </span>
                     </div>
                   ))}
                 </div>

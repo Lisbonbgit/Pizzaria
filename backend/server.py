@@ -35,6 +35,7 @@ from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
 from pos.app_products import extract_app_products, is_app_product
 from pos.pricing import line_vendus, combine_global
+from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
 
 ROOT_DIR = Path(__file__).parent
@@ -4716,21 +4717,9 @@ async def get_report_data(date: Optional[str] = None, authorization: Optional[st
         revenue_error = str(e)[:200]
         logger.error(f"report-data: falha ao obter vendas do Vendus: {revenue_error}")
     
-    # Top products
-    product_counts = {}
-    for o in non_cancelled:
-        for item in o.get("items", []):
-            name = item.get("product_name", "Desconhecido")
-            qty = item.get("quantity", 1)
-            if name not in product_counts:
-                product_counts[name] = 0
-            product_counts[name] += qty
-    
-    top_products = sorted(
-        [{"name": k, "quantity": v} for k, v in product_counts.items()],
-        key=lambda x: x["quantity"],
-        reverse=True
-    )[:15]
+    # Produtos vendidos: quantidade + valor € (via de preço da faturação;
+    # rodízio a €0). `non_cancelled` já exclui cancelados.
+    top_products = summarize_products(non_cancelled, VENDUS_DEFAULT_TAX_ID)
     
     # Peak hours
     hours_count = {}

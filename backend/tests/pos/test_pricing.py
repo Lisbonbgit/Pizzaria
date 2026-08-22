@@ -170,3 +170,21 @@ def test_combine_mapeamento_open_bill_line():
     assert out["tax_id"] == "NOR"
     assert net == 8.0
     assert out["discount_percentage"] == 20.0
+
+
+# ---- vendus_id: liga a linha ao artigo já criado no Vendus (reutiliza, não duplica) ----
+
+
+def test_line_vendus_inclui_id_do_artigo():
+    from pos.pricing import line_vendus, combine_global
+    item = {"product_name": "Calabresa", "quantity": 1, "unit_price": 13.9}
+    li = line_vendus(item, "INT", "NOR", vendus_id=2)
+    assert li["id"] == 2
+    out, _ = combine_global(li, 0)
+    assert out["id"] == 2                 # combine_global preserva o id
+
+
+def test_line_vendus_sem_id_nao_poe_chave():
+    from pos.pricing import line_vendus
+    li = line_vendus({"product_name": "X", "quantity": 1, "unit_price": 5}, "INT", "NOR")
+    assert "id" not in li

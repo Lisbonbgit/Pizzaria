@@ -1946,10 +1946,13 @@ async def close_table(table_number: int, req: CloseTableRequest,
             extra_lines = []
         prod_ids = list({l.get("product_id") for l in extra_lines if l.get("product_id")})
         tax_by_prod = {}
+        vid_by_prod = {}
         if prod_ids:
-            async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1}):
+            async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1, "vendus_id": 1}):
                 if p.get("vendus_tax_id"):
                     tax_by_prod[p["id"]] = p["vendus_tax_id"]
+                if p.get("vendus_id") is not None:
+                    vid_by_prod[p["id"]] = p["vendus_id"]
 
         vendus_items = []
         total = 0.0
@@ -1971,7 +1974,8 @@ async def close_table(table_number: int, req: CloseTableRequest,
             # Extra à la carte: line_vendus resolve título/qtd/preço/IVA (com os
             # overrides do item) e combine_global aplica o desconto global por cima.
             li, net = combine_global(
-                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID), g_disc)
+                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID,
+                            vendus_id=vid_by_prod.get(l.get("product_id"))), g_disc)
             vendus_items.append(li)
             total += net
         if req.waste_boxes and req.waste_boxes > 0:
@@ -2010,10 +2014,13 @@ async def close_table(table_number: int, req: CloseTableRequest,
         # IVA por produto (do que foi importado do Vendus); fallback ao default
         prod_ids = list({l.get("product_id") for l in lines if l.get("product_id")})
         tax_by_prod = {}
+        vid_by_prod = {}
         if prod_ids:
-            async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1}):
+            async for p in db.products.find({"id": {"$in": prod_ids}}, {"_id": 0, "id": 1, "vendus_tax_id": 1, "vendus_id": 1}):
                 if p.get("vendus_tax_id"):
                     tax_by_prod[p["id"]] = p["vendus_tax_id"]
+                if p.get("vendus_id") is not None:
+                    vid_by_prod[p["id"]] = p["vendus_id"]
 
         # Itens (fatura única/subconjunto) + subtotais por IVA (para dividir).
         vendus_items = []
@@ -2025,7 +2032,8 @@ async def close_table(table_number: int, req: CloseTableRequest,
             # desconto da linha com o desconto GLOBAL num único discount_percentage
             # e devolve o líquido EXATO que o Vendus calcula (sem desvio).
             li, amt = combine_global(
-                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID), g_disc)
+                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID,
+                            vendus_id=vid_by_prod.get(l.get("product_id"))), g_disc)
             tax = li["tax_id"]                                  # IVA efetivo (override incluído)
             vendus_items.append(li)
             by_tax[tax] = round(by_tax.get(tax, 0.0) + amt, 2)
@@ -4096,10 +4104,17 @@ async def checkout_counter_order(
     # como `discount_percentage` (nunca o campo `discount`, que dá 403). Não há
     # desconto GLOBAL no balcão (0). O total pago é a soma dos líquidos das
     # linhas (bate com o `order.total` gravado por `build_counter_items`).
+    _pids = list({l.get("product_id") for l in order.get("items", []) if l.get("product_id")})
+    vid_by_prod = {}
+    if _pids:
+        async for p in db.products.find({"id": {"$in": _pids}}, {"_id": 0, "id": 1, "vendus_id": 1}):
+            if p.get("vendus_id") is not None:
+                vid_by_prod[p["id"]] = p["vendus_id"]
+
     vendus_items = []
     total = 0.0
     for l in order.get("items", []):
-        li = line_vendus(l, None, VENDUS_DEFAULT_TAX_ID)
+        li = line_vendus(l, None, VENDUS_DEFAULT_TAX_ID, vendus_id=vid_by_prod.get(l.get("product_id")))
         out, liquido = combine_global(li, 0)
         vendus_items.append(out)
         total += liquido

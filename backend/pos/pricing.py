@@ -9,7 +9,8 @@ inline em `close_table`/`server.py` — NÃO tocado nesta tarefa).
 from typing import Optional
 
 
-def line_vendus(item: dict, product_tax_id: Optional[str], default_tax_id: str) -> dict:
+def line_vendus(item: dict, product_tax_id: Optional[str], default_tax_id: str,
+                vendus_id: Optional[int] = None) -> dict:
     """Resolve a linha Vendus de um item da conta.
 
     - `title`: nome do produto, com a variação entre parêntesis se existir
@@ -32,6 +33,9 @@ def line_vendus(item: dict, product_tax_id: Optional[str], default_tax_id: str) 
         "gross_price": round(float(item.get("unit_price", 0) or 0), 2),
         "tax_id": item.get("vendus_tax_id") or product_tax_id or default_tax_id,
     }
+
+    if vendus_id is not None:
+        line["id"] = vendus_id
 
     damount = item.get("discount_amount")
     dpct = item.get("discount_pct")
@@ -68,7 +72,7 @@ def combine_global(li: dict, global_pct: float) -> tuple:
     unit = float(li.get("gross_price", 0) or 0)
     gross = round(unit * qty, 2)
 
-    out = {k: li[k] for k in ("title", "qty", "gross_price", "tax_id") if k in li}
+    out = {k: li[k] for k in ("id", "title", "qty", "gross_price", "tax_id") if k in li}
 
     damount = li.get("discount_amount")
     dpct = li.get("discount_percentage")

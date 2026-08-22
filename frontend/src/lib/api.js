@@ -339,6 +339,14 @@ export const posCreditNote = {
     posApi.post('/pos/credit-note', { document_id: documentId })
 };
 
+// Ligação de produtos aos artigos do Vendus
+export const vendusLinkAPI = {
+  suggestions: () =>
+    api.get('/admin/vendus/link-suggestions'),
+  save: (links) =>
+    api.post('/admin/vendus/link', { links })
+};
+
 // Admin - Gestão do POS (utilizadores, definições, device tokens) via api (JWT admin)
 export const adminPosAPI = {
   listUsers: () =>

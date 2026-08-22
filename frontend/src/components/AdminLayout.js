@@ -10,7 +10,8 @@ import {
   Pizza,
   Menu,
   X,
-  BarChart3
+  BarChart3,
+  Link2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
@@ -22,6 +23,7 @@ const navItems = [
   { path: '/admin/menu', label: 'Menu', icon: UtensilsCrossed },
   { path: '/admin/tables', label: 'Mesas', icon: Grid3X3 },
   { path: '/admin/reports', label: 'Relatórios', icon: BarChart3 },
+  { path: '/admin/vendus-link', label: 'Ligar Vendus', icon: Link2 },
   { path: '/admin/settings', label: 'Definições', icon: Settings },
 ];
 

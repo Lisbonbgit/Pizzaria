@@ -4570,7 +4570,25 @@ async def get_dashboard_stats(authorization: Optional[str] = Header(None)):
     ).to_list(1000)
     
     total_orders = len(orders_today)
-    total_revenue = sum(o.get("total", 0) for o in orders_today)
+
+    # Faturação de hoje: a fonte FISCAL é o Vendus (as FS reais), a MESMA do ecrã
+    # de Relatórios — nunca a soma de `order.total`, que incluía pedidos
+    # CANCELADOS e não refletia descontos/rodízio, inflacionando o valor (ex.:
+    # 246,25 no dashboard vs 195,36 real). Dia em hora de Lisboa; degrada para 0
+    # se o Vendus falhar (nunca rebenta o dashboard).
+    from zoneinfo import ZoneInfo
+    hoje_lisboa = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y-%m-%d")
+    total_revenue = 0.0
+    try:
+        _c = _vendus_client()
+        try:
+            total_revenue = _c.app_sales_summary_window(
+                f"{hoje_lisboa}T00:00:00", f"{hoje_lisboa}T23:59:59")["total"]
+        finally:
+            _c.close()
+    except Exception as e:
+        logger.error(f"dashboard: falha ao obter faturação do Vendus: {e}")
+        total_revenue = 0.0
     
     # Orders by status
     status_counts = {}

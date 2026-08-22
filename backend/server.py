@@ -37,7 +37,7 @@ from pos.app_products import extract_app_products, is_app_product
 from pos.pricing import line_vendus, combine_global
 from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
-from pos.vendus_match import match_products
+from pos.vendus_match import match_products, is_official
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1000,6 +1000,7 @@ async def create_product(product: ProductCreate, authorization: Optional[str] = 
         "rodizio_incluido": product.rodizio_incluido,
         "rodizio_only": product.rodizio_only,
         "vendus_tax_id": product.vendus_tax_id,
+        "vendus_id": product.vendus_id,
         "order": await db.products.count_documents({"category_id": product.category_id}),
         "created_at": datetime.now(timezone.utc).isoformat()
     }
@@ -4509,7 +4510,7 @@ async def vendus_link_suggestions(authorization: Optional[str] = Header(None)):
             page += 1
     finally:
         c.close()
-    official = [a for a in arts if str(a.get("reference") or "") and not __import__("re").search(r"-\d{6,}$", str(a.get("reference")))]
+    official = [a for a in arts if is_official(a.get("reference"))]
     sugg = match_products(app_products, arts)
     by_pid = {p["id"]: p for p in app_products}
     for s in sugg:

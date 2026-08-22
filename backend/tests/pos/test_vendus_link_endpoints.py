@@ -1,7 +1,6 @@
 """Endpoints de ligação produtos<->Vendus: sugestões e gravação."""
 import asyncio
 import pytest
-from fastapi import HTTPException
 
 import server
 from server import create_token, save_vendus_links, VendusLinkRequest, VendusLink

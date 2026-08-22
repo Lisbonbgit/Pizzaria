@@ -37,6 +37,7 @@ from pos.app_products import extract_app_products, is_app_product
 from pos.pricing import line_vendus, combine_global
 from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
+from pos.vendus_match import match_products
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -297,6 +298,7 @@ class ProductCreate(BaseModel):
     rodizio_incluido: str = "nao"  # nao | ambos | completo
     rodizio_only: bool = False     # só aparece no menu quando a mesa está em rodízio
     vendus_tax_id: Optional[str] = None  # IVA p/ fatura: INT=13% | NOR=23%
+    vendus_id: Optional[int] = None  # id do artigo oficial no Vendus (ligação da FS)
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -313,6 +315,7 @@ class ProductUpdate(BaseModel):
     rodizio_incluido: Optional[str] = None
     rodizio_only: Optional[bool] = None
     vendus_tax_id: Optional[str] = None
+    vendus_id: Optional[int] = None  # id do artigo oficial no Vendus (ligação da FS)
 
 class ProductResponse(BaseModel):
     id: str
@@ -330,6 +333,7 @@ class ProductResponse(BaseModel):
     rodizio_incluido: str = "nao"
     rodizio_only: bool = False
     vendus_tax_id: Optional[str] = None
+    vendus_id: Optional[int] = None  # id do artigo oficial no Vendus (ligação da FS)
     order: int = 0
     created_at: str
 
@@ -4476,6 +4480,54 @@ async def import_app_products(authorization: Optional[str] = Header(None)):
         imported += 1
 
     return {"imported": imported, "category_id": app_cat_id}
+
+
+class VendusLink(BaseModel):
+    product_id: str
+    vendus_id: Optional[int] = None
+
+class VendusLinkRequest(BaseModel):
+    links: List[VendusLink]
+
+
+@api_router.get("/admin/vendus/link-suggestions")
+async def vendus_link_suggestions(authorization: Optional[str] = Header(None)):
+    """Casa cada produto da app com um artigo OFICIAL do Vendus (por nome) e
+    devolve as sugestões + preços dos dois lados, para o dono confirmar. Só lê."""
+    await get_current_user(authorization)
+    app_products = await db.products.find({}, {"_id": 0}).sort("name", 1).to_list(1000)
+    c = _vendus_client()
+    try:
+        arts, page = [], 1
+        while page <= 80:
+            batch = c.list_products(page=page, per_page=100)
+            if not batch:
+                break
+            arts.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+    finally:
+        c.close()
+    official = [a for a in arts if str(a.get("reference") or "") and not __import__("re").search(r"-\d{6,}$", str(a.get("reference")))]
+    sugg = match_products(app_products, arts)
+    by_pid = {p["id"]: p for p in app_products}
+    for s in sugg:
+        s["current_vendus_id"] = by_pid.get(s["product_id"], {}).get("vendus_id")
+    return {"suggestions": sugg, "official_count": len(official)}
+
+
+@api_router.post("/admin/vendus/link")
+async def save_vendus_links(body: VendusLinkRequest, authorization: Optional[str] = Header(None)):
+    """Grava o `vendus_id` escolhido por produto (None desliga a ligação)."""
+    await get_current_user(authorization)
+    updated = 0
+    for link in body.links:
+        res = await db.products.update_one(
+            {"id": link.product_id}, {"$set": {"vendus_id": link.vendus_id}}
+        )
+        updated += res.matched_count
+    return {"updated": updated}
 
 # ==================== DASHBOARD ROUTES ====================
 

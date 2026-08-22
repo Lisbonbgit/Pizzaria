@@ -4530,7 +4530,12 @@ async def vendus_link_suggestions(authorization: Optional[str] = Header(None)):
     by_pid = {p["id"]: p for p in app_products}
     for s in sugg:
         s["current_vendus_id"] = by_pid.get(s["product_id"], {}).get("vendus_id")
-    return {"suggestions": sugg, "official_count": len(official)}
+    official_articles = [
+        {"id": a.get("id"), "title": a.get("title"),
+         "reference": a.get("reference"), "price": a.get("gross_price")}
+        for a in official
+    ]
+    return {"suggestions": sugg, "official_count": len(official), "official_articles": official_articles}
 
 
 @api_router.post("/admin/vendus/link")

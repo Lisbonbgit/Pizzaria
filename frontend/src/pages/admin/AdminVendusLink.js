@@ -14,6 +14,7 @@ const NONE_VALUE = '__none__';
 const AdminVendusLink = () => {
   const [suggestions, setSuggestions] = useState([]);
   const [officialCount, setOfficialCount] = useState(0);
+  const [officialArticlesRaw, setOfficialArticlesRaw] = useState([]);
   // product_id -> vendus_id (number) | null
   const [links, setLinks] = useState({});
   const [loading, setLoading] = useState(true);
@@ -28,6 +29,7 @@ const AdminVendusLink = () => {
       const list = res.data?.suggestions || [];
       setSuggestions(list);
       setOfficialCount(res.data?.official_count || 0);
+      setOfficialArticlesRaw(res.data?.official_articles || []);
       const initialLinks = {};
       list.forEach((s) => {
         // Pré-selecciona a ligação já gravada; sem essa, a sugestão por nome.
@@ -46,18 +48,13 @@ const AdminVendusLink = () => {
     load();
   }, [load]);
 
-  // Artigos oficiais distintos, obtidos de todos os "match" das sugestões.
+  // Todos os artigos oficiais do Vendus (não só os que casaram por nome),
+  // para permitir ligar manualmente qualquer produto a qualquer artigo.
   const officialArticles = useMemo(() => {
-    const byId = new Map();
-    suggestions.forEach((s) => {
-      if (s.match && s.match.id != null && !byId.has(s.match.id)) {
-        byId.set(s.match.id, s.match);
-      }
-    });
-    return Array.from(byId.values()).sort((a, b) =>
+    return [...officialArticlesRaw].sort((a, b) =>
       String(a.title || '').localeCompare(String(b.title || ''), 'pt-PT')
     );
-  }, [suggestions]);
+  }, [officialArticlesRaw]);
 
   const articleById = useMemo(() => {
     const map = new Map();

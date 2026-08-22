@@ -38,6 +38,7 @@ from pos.pricing import line_vendus, combine_global
 from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
+from pos.credit_note import nc_items_from_fs
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -4333,10 +4334,14 @@ async def create_credit_note(
                         status_code=409,
                         detail=f"Esta fatura já tem nota de crédito ({rd.get('number')}).")
             fs_items = fs.get("items") or []
-            items = [{"id": it.get("id"), "qty": it.get("qty")} for it in fs_items]
-            # Todos os itens TÊM de ter id (a NC credita a linha original por id);
-            # senão o valor creditado não bateria com o total registado.
-            if not items or any(it["id"] is None for it in items):
+            # Todos os itens TÊM de ter id (a NC credita a linha original por id) e
+            # levar o preço/IVA ORIGINAIS da linha — senão o Vendus re-deriva pelo
+            # preço de catálogo do artigo, errado quando tamanhos partilham um id.
+            try:
+                items = nc_items_from_fs(fs_items)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Fatura sem itens válidos para creditar.")
+            if not items:
                 raise HTTPException(status_code=400, detail="Fatura sem itens válidos para creditar.")
             payments = [{"id": p.get("id"), "amount": round(float(p.get("amount") or 0), 2)}
                         for p in (fs.get("payments") or []) if p.get("id")]

@@ -1,0 +1,10 @@
+# Configuracao da ponte de impressao (renomear para config.txt, ao lado do .exe)
+# URL do backend (sem barra no fim)
+url=https://pedido.lenhaebrasa.com
+# Chave do agente de impressao (a mesma do tablet: Admin -> Definicoes)
+api_key=COLAR_A_CHAVE_AQUI
+# Nomes EXATOS das impressoras no Windows (ver a lista que o programa mostra no arranque)
+printer_kitchen=Cozinha
+printer_cashier=Caixa
+# Intervalo de consulta em segundos (opcional, default 3)
+poll_seconds=3

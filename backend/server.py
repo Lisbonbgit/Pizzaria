@@ -3572,14 +3572,18 @@ async def close_cash_session(
     # Vendus por janela + o mapa id→título dos métodos de pagamento (para
     # identificar o dinheiro por ID e para alinhar as pos_sales com o Vendus, que
     # vem repartido por título). Tudo numa só sessão HTTP.
-    c = _vendus_client()
+    # Em thread — httpx síncrono não pode bloquear o event loop do worker único.
+    def _reconcile_read():
+        c = _vendus_client()
+        try:
+            return (c.app_sales_summary_window(inicio_lisboa.isoformat(), fim_lisboa.isoformat()),
+                    c.list_payment_methods())
+        finally:
+            c.close()
     try:
-        vendus = c.app_sales_summary_window(inicio_lisboa.isoformat(), fim_lisboa.isoformat())
-        metodos = c.list_payment_methods()
+        vendus, metodos = await asyncio.to_thread(_reconcile_read)
     except VendusError as e:
         raise HTTPException(status_code=502, detail=f"Vendus indisponível para reconciliar: {e}")
-    finally:
-        c.close()
 
     # Dinheiro identificado pelo ID configurado, nunca pela string "Dinheiro".
     # `cash_sales_from_vendus` (pos/cash_math.py) é a MESMA função usada pela
@@ -3808,6 +3812,9 @@ async def update_pos_settings(cfg: PosSettingsConfig, authorization: Optional[st
 class CounterOrderItem(BaseModel):
     product_id: str
     quantity: int = Field(gt=0)
+    # Tamanho/variação escolhida no balcão (ex.: "Grande (8 Fatias)"). Vai para
+    # o talão da cozinha/caixa e para a FS (convenção `variation:{name}`).
+    variation_name: Optional[str] = None
     # Overrides opcionais do staff (diálogo do produto no balcão). Sem eles, usa-se
     # o preço/IVA do produto e sem desconto — comportamento de venda rápida.
     unit_price: Optional[float] = None       # override do preço unitário
@@ -3873,6 +3880,7 @@ async def create_counter_order(
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
+        "variation_name": i.variation_name,
     } for i in body.items]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
 
@@ -3983,6 +3991,7 @@ async def update_counter_order(
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
+        "variation_name": i.variation_name,
     } for i in body.items]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
     if not built["items"]:
@@ -4487,7 +4496,8 @@ async def import_app_products(authorization: Optional[str] = Header(None)):
             await db.products.update_one({"id": existing["id"]}, {"$set": {
                 "name": ap["name"], "base_price": ap["base_price"],
                 "category_id": app_cat_id, "vendus_tax_id": ap["vendus_tax_id"],
-                "vendus_reference": ref, "available": True, "rodizio_only": False,
+                "vendus_reference": ref, "vendus_id": ap["vendus_id"],
+                "available": True, "rodizio_only": False,
             }})
         else:
             await db.products.insert_one({
@@ -4496,6 +4506,7 @@ async def import_app_products(authorization: Optional[str] = Header(None)):
                 "variations": [], "extras": [], "complement_groups": [],
                 "preference_options": None, "available": True, "featured": False,
                 "rodizio_only": False, "vendus_tax_id": ap["vendus_tax_id"], "vendus_reference": ref,
+                "vendus_id": ap["vendus_id"],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
         imported += 1
@@ -4578,14 +4589,18 @@ async def get_dashboard_stats(authorization: Optional[str] = Header(None)):
     # se o Vendus falhar (nunca rebenta o dashboard).
     from zoneinfo import ZoneInfo
     hoje_lisboa = datetime.now(ZoneInfo("Europe/Lisbon")).strftime("%Y-%m-%d")
-    total_revenue = 0.0
-    try:
+    # Vendus é HTTP síncrono (httpx.Client) — corre em thread para NÃO bloquear
+    # o event loop (worker único; senão trava TODOS os pedidos durante a chamada).
+    def _dash_revenue():
         _c = _vendus_client()
         try:
-            total_revenue = _c.app_sales_summary_window(
+            return _c.app_sales_summary_window(
                 f"{hoje_lisboa}T00:00:00", f"{hoje_lisboa}T23:59:59")["total"]
         finally:
             _c.close()
+    total_revenue = 0.0
+    try:
+        total_revenue = await asyncio.to_thread(_dash_revenue)
     except Exception as e:
         logger.error(f"dashboard: falha ao obter faturação do Vendus: {e}")
         total_revenue = 0.0
@@ -4915,12 +4930,15 @@ async def get_report_data(date: Optional[str] = None, start: Optional[str] = Non
     invoices = []
     revenue_source = "vendus"
     revenue_error = None
-    try:
+    # Em thread — httpx síncrono não pode bloquear o event loop do worker único.
+    def _report_summary():
         c = _vendus_client()
         try:
-            _summ = c.app_sales_summary_window(f"{start_date}T00:00:00", f"{end_date}T23:59:59")
+            return c.app_sales_summary_window(f"{start_date}T00:00:00", f"{end_date}T23:59:59")
         finally:
             c.close()
+    try:
+        _summ = await asyncio.to_thread(_report_summary)
         total_revenue = _summ["total"]
         payment_methods = _summ["by_method"]
         invoices_count = _summ["count"]

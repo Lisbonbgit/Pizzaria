@@ -41,8 +41,44 @@ def test_produto_sem_preco_ou_referencia_nao_rebenta():
     vprods = [{"title": "Água App"}]
     out = extract_app_products(vprods)
     assert out == [{
-        "name": "Água App", "base_price": 0.0, "vendus_tax_id": None, "vendus_reference": None,
+        "name": "Água App", "base_price": 0.0, "vendus_tax_id": None,
+        "vendus_reference": None, "vendus_id": None,
     }]
+
+
+def test_extrai_vendus_id_do_artigo():
+    # O `vendus_id` (id do artigo) é essencial: a FS reaproveita o artigo por id,
+    # senão cada venda App cria um artigo-lixo novo.
+    vprods = [{"title": "Pizza Calabresa App", "gross_price": 18.4, "tax_id": "INT",
+               "reference": "Pizza Calabresa App", "id": 316430694}]
+    assert extract_app_products(vprods)[0]["vendus_id"] == 316430694
+
+
+def test_dedup_prefere_referencia_limpa_e_descarta_lixo():
+    # Mesmo título, duas versões: a limpa (nome legível) + a cópia-lixo
+    # (reference auto-gerada "V???\\d..."). Fica só a limpa — em QUALQUER ordem
+    # de entrada (independente de qual vem primeiro no Vendus).
+    limpa = {"title": "Pizza Calabresa App", "gross_price": 18.40, "tax_id": "INT",
+             "reference": "Pizza Calabresa App", "id": 316430694}
+    lixo = {"title": "Pizza Calabresa App", "gross_price": 26.10, "tax_id": "INT",
+            "reference": "VPIZ247-2608014", "id": 361800593}
+    for vprods in ([lixo, limpa], [limpa, lixo]):
+        out = extract_app_products(vprods)
+        assert len(out) == 1
+        assert out[0]["vendus_id"] == 316430694
+        assert out[0]["base_price"] == 18.40
+        assert out[0]["vendus_reference"] == "Pizza Calabresa App"
+
+
+def test_dedup_desempata_pelo_id_mais_baixo():
+    # Duas cópias-lixo do mesmo produto (ambas auto-geradas): fica a de id mais
+    # baixo (o artigo mais antigo) — em qualquer ordem de entrada.
+    a = {"title": "Guaraná App", "gross_price": 2.5, "reference": "VGUA302-1", "id": 500}
+    b = {"title": "Guaraná App", "gross_price": 2.5, "reference": "VGUA302-2", "id": 200}
+    for vprods in ([a, b], [b, a]):
+        out = extract_app_products(vprods)
+        assert len(out) == 1
+        assert out[0]["vendus_id"] == 200
 
 
 def test_lista_vazia_devolve_lista_vazia():

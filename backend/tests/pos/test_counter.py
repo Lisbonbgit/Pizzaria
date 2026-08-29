@@ -118,3 +118,24 @@ def test_mantem_vendus_tax_id_none_quando_produto_sem_imposto():
     r = build_counter_items(prods, cart, default_tax="NOR")
     assert r["items"][0]["vendus_tax_id"] is None
     assert r["total"] == 4.5
+
+
+def test_variacao_de_tamanho_no_item():
+    # Balcão: pizza Grande — o item leva variation:{name} (o talão da cozinha/
+    # caixa e a FS mostram-no) e o preço é o da variação (unit_price do
+    # carrinho), não o base_price da Média.
+    prods = {"p1": {"name": "Frango", "base_price": 13.9, "vendus_tax_id": "INT"}}
+    cart = [{"product_id": "p1", "quantity": 1, "unit_price": 18.9,
+             "variation_name": "Grande (8 Fatias)"}]
+    r = build_counter_items(prods, cart, default_tax="NOR")
+    item = r["items"][0]
+    assert item["variation"] == {"name": "Grande (8 Fatias)"}
+    assert item["unit_price"] == 18.9
+    assert item["total_price"] == 18.9
+    assert r["total"] == 18.9
+
+
+def test_sem_variacao_nao_mete_chave_variation():
+    prods = {"p1": {"name": "Imperial", "base_price": 2.0, "vendus_tax_id": "NOR"}}
+    cart = [{"product_id": "p1", "quantity": 1}]
+    assert "variation" not in build_counter_items(prods, cart)["items"][0]

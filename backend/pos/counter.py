@@ -66,6 +66,12 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
             item["discount_amount"] = round(damt, 2)
         elif dpct:
             item["discount_pct"] = dpct
+        # Tamanho/variação (ex.: pizza Grande no balcão) — mesma convenção
+        # `variation:{name}` da mesa: o talão da cozinha, o da caixa e a FS
+        # (line_vendus) já a leem e mostram "(Grande)".
+        vname = entry.get("variation_name")
+        if vname:
+            item["variation"] = {"name": vname}
         items.append(item)
         # Líquido do item pela MESMA via da faturação (`line_vendus` +
         # `combine_global`, sem desconto global) → o `total` do pedido bate ao

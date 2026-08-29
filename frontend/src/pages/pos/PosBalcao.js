@@ -54,6 +54,8 @@ const PosBalcao = ({ onClose }) => {
   // Carrinho: [{id, name, qty, unitPrice, tax, taxTouched, discKind, discVal}]
   const [cart, setCart] = useState([]);
   const [selectedCat, setSelectedCat] = useState(null);
+  // Produto cujo tamanho está a ser escolhido (pizzas com variações), ou null.
+  const [sizePick, setSizePick] = useState(null);
 
   // Diálogo do produto (editar qtd/preço/IVA/desconto de uma linha do carrinho,
   // antes de "Imprimir Pedido").
@@ -99,17 +101,22 @@ const PosBalcao = ({ onClose }) => {
 
   const printed = orderId != null;
 
-  const addToCart = useCallback((p) => {
+  // Adiciona uma linha ao carrinho. `variation` = {name,price} da variação
+  // escolhida (pizza Grande, etc.) ou null (preço base). Funde por (produto +
+  // variação): a mesma pizza em tamanhos diferentes fica em linhas separadas.
+  const addLine = useCallback((p, variation) => {
+    const vname = variation?.name || null;
+    const price = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
     setCart((prev) => {
-      const idx = prev.findIndex((c) => c.id === p.id);
+      const idx = prev.findIndex((c) => c.id === p.id && (c.variationName || null) === vname);
       if (idx >= 0) {
         const next = [...prev];
         next[idx] = { ...next[idx], qty: next[idx].qty + 1 };
         return next;
       }
       return [...prev, {
-        id: p.id, name: p.name, qty: 1,
-        unitPrice: Number(p.base_price) || 0,
+        id: p.id, name: p.name, variationName: vname, qty: 1,
+        unitPrice: price,
         tax: p.vendus_tax_id === 'INT' ? 'INT' : 'NOR',
         taxTouched: false, discKind: 'pct', discVal: '',
       }];
@@ -117,9 +124,19 @@ const PosBalcao = ({ onClose }) => {
     if (printed) setDirty(true);
   }, [printed]);
 
-  const changeQty = useCallback((id, delta) => {
+  // Toque num produto: com variações (tamanhos), abre o seletor; senão adiciona
+  // logo ao preço base.
+  const addToCart = useCallback((p) => {
+    if (Array.isArray(p.variations) && p.variations.length > 0) {
+      setSizePick(p);
+      return;
+    }
+    addLine(p, null);
+  }, [addLine]);
+
+  const changeQty = useCallback((i, delta) => {
     setCart((prev) => prev
-      .map((c) => (c.id === id ? { ...c, qty: c.qty + delta } : c))
+      .map((c, idx) => (idx === i ? { ...c, qty: c.qty + delta } : c))
       .filter((c) => c.qty > 0));
     if (printed) setDirty(true);
   }, [printed]);
@@ -168,6 +185,7 @@ const PosBalcao = ({ onClose }) => {
     try {
       const items = cart.map((c) => {
         const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
+        if (c.variationName) it.variation_name = c.variationName;
         // IVA só vai se o staff o mudou (senão o backend usa o do produto).
         if (c.taxTouched) it.vendus_tax_id = c.tax;
         const dv = Number(String(c.discVal).replace(',', '.')) || 0;
@@ -196,6 +214,7 @@ const PosBalcao = ({ onClose }) => {
     try {
       const items = cart.map((c) => {
         const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
+        if (c.variationName) it.variation_name = c.variationName;
         if (c.taxTouched) it.vendus_tax_id = c.tax;
         const dv = Number(String(c.discVal).replace(',', '.')) || 0;
         if (dv > 0) {
@@ -407,14 +426,14 @@ const PosBalcao = ({ onClose }) => {
                 const dv = Number(String(c.discVal).replace(',', '.')) || 0;
                 return (
                   <div
-                    key={c.id}
+                    key={`${c.id}|${c.variationName || ''}`}
                     onClick={() => openEdit(i)}
                     title="Tocar para editar (qtd/preço/IVA/desconto)"
                     className="grid grid-cols-[1fr_5.5rem_5rem] items-center gap-2 border-b border-white/5 px-4 py-3 cursor-pointer hover:bg-white/5"
                   >
                     <span className="min-w-0">
                       <span className="flex items-center gap-1.5">
-                        <span className="truncate">{c.name}</span>
+                        <span className="truncate">{c.name}{c.variationName ? ` · ${c.variationName}` : ''}</span>
                         <Pencil className="h-3 w-3 shrink-0 text-white/30" />
                       </span>
                       <span className="mt-0.5 flex items-center gap-1.5 text-white/40">
@@ -435,7 +454,7 @@ const PosBalcao = ({ onClose }) => {
                       <Button
                         variant="outline" size="icon"
                         className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
-                        onClick={() => changeQty(c.id, -1)}
+                        onClick={() => changeQty(i, -1)}
                         aria-label={`Diminuir ${c.name}`}
                       >
                         <Minus className="h-3.5 w-3.5" />
@@ -444,7 +463,7 @@ const PosBalcao = ({ onClose }) => {
                       <Button
                         variant="outline" size="icon"
                         className="h-7 w-7 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
-                        onClick={() => changeQty(c.id, 1)}
+                        onClick={() => changeQty(i, 1)}
                         aria-label={`Aumentar ${c.name}`}
                       >
                         <Plus className="h-3.5 w-3.5" />
@@ -580,12 +599,38 @@ const PosBalcao = ({ onClose }) => {
         </div>
       </main>
 
+      {/* Seletor de tamanho — pizzas com variações (Média/Grande). Escolher um
+          tamanho adiciona a linha ao preço dessa variação. */}
+      <Dialog open={sizePick != null} onOpenChange={(v) => !v && setSizePick(null)}>
+        <DialogContent className="max-w-sm text-foreground">
+          <DialogHeader>
+            <DialogTitle className="pr-6 text-lg">{sizePick?.name || 'Tamanho'}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">Escolhe o tamanho</p>
+          <div className="grid gap-2">
+            {(sizePick?.variations || []).map((v) => (
+              <button
+                key={v.name}
+                type="button"
+                onClick={() => { addLine(sizePick, v); setSizePick(null); }}
+                className="flex items-center justify-between rounded-lg border border-border bg-white px-4 py-3 text-left transition-all touch-manipulation active:scale-[0.98] hover:border-primary/40 hover:shadow-sm"
+              >
+                <span className="text-sm font-medium">{v.name}</span>
+                <span className="text-sm font-semibold text-[#5a1a1a] tabular-nums">{eur(v.price)}</span>
+              </button>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Diálogo do produto — editar qtd/preço/IVA/desconto de uma linha */}
       <Dialog open={editIdx != null} onOpenChange={(v) => !v && setEditIdx(null)}>
         <DialogContent className="max-w-sm text-foreground">
           <DialogHeader>
             <DialogTitle className="pr-6 text-lg">
-              {editIdx != null && cart[editIdx] ? cart[editIdx].name : 'Produto'}
+              {editIdx != null && cart[editIdx]
+                ? cart[editIdx].name + (cart[editIdx].variationName ? ` · ${cart[editIdx].variationName}` : '')
+                : 'Produto'}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3">

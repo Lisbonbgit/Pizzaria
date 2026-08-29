@@ -4457,9 +4457,22 @@ async def import_app_products(authorization: Optional[str] = Header(None)):
     await get_current_user(authorization)
 
     def _fetch():
+        # TODAS as páginas (o Vendus tem >500 artigos; um único per_page=500
+        # deixava de fora artigos App — a maioria das pizzas). Mesmo padrão de
+        # paginação de `vendus_link_suggestions` (pára na última página parcial,
+        # sem pedir a página que dá 404 "No data").
         c = _vendus_client()
         try:
-            return c.list_products(per_page=500)
+            out, page = [], 1
+            while page <= 80:
+                batch = c.list_products(page=page, per_page=100)
+                if not batch:
+                    break
+                out.extend(batch)
+                if len(batch) < 100:
+                    break
+                page += 1
+            return out
         finally:
             c.close()
     try:

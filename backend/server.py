@@ -1448,6 +1448,8 @@ async def void_order_item(order_id: str, idx: int, authorization: Optional[str] 
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if order.get("table_number") is not None:
+        await _assert_no_open_split("table", order["table_number"])
     items = order.get("items", [])
     if idx < 0 or idx >= len(items):
         raise HTTPException(status_code=404, detail="Item não encontrado")
@@ -1487,9 +1489,11 @@ async def edit_order_item(order_id: str, idx: int, body: ItemEdit,
     if body.vendus_tax_id is not None and body.vendus_tax_id not in ("INT", "NOR"):
         raise HTTPException(status_code=400, detail="IVA inválido")
 
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1, "table_number": 1})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if order.get("table_number") is not None:
+        await _assert_no_open_split("table", order["table_number"])
     items = order.get("items", [])
     if idx < 0 or idx >= len(items):
         raise HTTPException(status_code=404, detail="Item não encontrado")
@@ -1531,9 +1535,11 @@ async def set_item_discount(order_id: str, idx: int, body: ItemDiscount,
     outro. Fica gravado no item e reflete-se na conta, na consulta e na
     fatura (enviado ao Vendus como discount_percentage ou discount_amount)."""
     await get_pos_or_admin(authorization, x_device_token)
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1})
+    order = await db.orders.find_one({"id": order_id}, {"_id": 0, "items": 1, "table_number": 1})
     if not order:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
+    if order.get("table_number") is not None:
+        await _assert_no_open_split("table", order["table_number"])
     items = order.get("items", [])
     if idx < 0 or idx >= len(items):
         raise HTTPException(status_code=404, detail="Item não encontrado")
@@ -1932,6 +1938,25 @@ async def _assert_no_open_split(kind: str, ident):
                             detail="Divisão em curso — termina ou cancela a divisão")
 
 
+@api_router.post("/tables/{table_number}/split-cancel")
+async def cancel_table_split(table_number: int,
+                             authorization: Optional[str] = Header(None),
+                             x_device_token: Optional[str] = Header(None)):
+    """Cancela uma divisão AINDA sem nenhuma parte emitida. Com uma FS já
+    emitida não há cancelamento — documento fiscal não se desfaz (para isso há
+    nota de crédito)."""
+    await get_pos_or_admin(authorization, x_device_token)
+    target = _split_target("table", table_number)
+    plan = await _get_split_plan(target)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Não há divisão em curso")
+    if any(s.get("paid") for s in plan["shares"]):
+        raise HTTPException(status_code=409,
+                            detail="Já foi emitida uma parte — não é possível cancelar")
+    await _delete_split_plan(target)
+    return {"cancelled": True}
+
+
 @api_router.post("/tables/{table_number}/close")
 async def close_table(table_number: int, req: CloseTableRequest,
                       authorization: Optional[str] = Header(None),
@@ -2082,6 +2107,10 @@ async def close_table(table_number: int, req: CloseTableRequest,
         else:
             lines = all_lines
         partial = len(lines) < len(all_lines)
+        # Com uma divisão a meio não se pode cobrar itens à parte: mudaria o que
+        # falta pagar face à conta já fotografada. Termina ou cancela a divisão.
+        if partial:
+            await _assert_no_open_split("table", table_number)
 
         # IVA por produto (do que foi importado do Vendus); fallback ao default
         prod_ids = list({l.get("product_id") for l in lines if l.get("product_id")})

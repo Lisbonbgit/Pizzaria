@@ -39,6 +39,7 @@ from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
 from pos.credit_note import nc_items_from_fs
+from pos.split_plan import compute_shares, next_unpaid_index, remaining_amount
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -142,6 +143,15 @@ async def lifespan(app: FastAPI):
         await db.credit_notes.create_index("source_document_id", unique=True)
     except Exception as e:
         logger.error(f"Não foi possível criar o índice único de credit_notes: {e}")
+
+    # --- Índice único dos planos de divisão (um por contentor) ---
+    # Uma mesa/venda só pode ter UMA divisão a meio. O índice único em `target`
+    # ({kind,id}) impede dois planos concorrentes para o mesmo contentor — sem
+    # isso, duplo-toque criava duas fotografias da mesma conta.
+    try:
+        await db.split_plans.create_index("target", unique=True)
+    except Exception as e:
+        logger.error(f"Não foi possível criar o índice único de split_plans: {e}")
 
     # --- Scheduler do relatório diário ---
     # Protegido: uma falha/lentidão da BD no arranque não deve impedir a API de servir.
@@ -1864,6 +1874,62 @@ async def vendus_payment_methods(authorization: Optional[str] = Header(None),
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Vendus indisponível: {e}")
     return [{"id": m.get("id"), "title": m.get("title")} for m in methods]
+
+
+# --- Divisão da conta em N partes (mesa e balcão) ---
+# O plano fotografa a conta no início e guarda que partes já saíram. As linhas
+# (mesa) ou a venda (balcão) só ficam PAGAS na ÚLTIMA parte — um retry a meio
+# nunca fecha nada. Um plano aberto por contentor (índice único em `target`).
+
+def _split_target(kind: str, ident) -> dict:
+    return {"kind": kind, "id": ident}
+
+
+async def _get_split_plan(target: dict):
+    return await db.split_plans.find_one({"target": target}, {"_id": 0})
+
+
+async def _create_split_plan(target: dict, n: int, total: float, by_tax: dict,
+                             title: str, base_ext_ref: str, finalize: dict,
+                             cash_session_id):
+    """Fotografa a conta e pré-calcula as partes. Cada parte leva uma
+    `ext_ref` ESTÁVEL (`…-{i}de{n}`) — é ela que faz a dedup fiscal apanhar um
+    retry da mesma parte em vez de emitir 2ª FS."""
+    shares = compute_shares(by_tax, n, title)
+    for i, s in enumerate(shares):
+        s["ext_ref"] = f"{base_ext_ref}-{i + 1}de{len(shares)}"
+        s["paid"] = False
+        s["doc_number"] = None
+    plan = {
+        "target": target, "cash_session_id": cash_session_id,
+        "n": len(shares), "total": round(float(total), 2),
+        "finalize": finalize, "shares": shares,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.split_plans.insert_one(dict(plan))
+    return plan
+
+
+async def _mark_share_paid(target: dict, index: int, doc_number):
+    await db.split_plans.update_one({"target": target}, {"$set": {
+        f"shares.{index}.paid": True,
+        f"shares.{index}.doc_number": doc_number,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    return await _get_split_plan(target)
+
+
+async def _delete_split_plan(target: dict) -> None:
+    await db.split_plans.delete_one({"target": target})
+
+
+async def _assert_no_open_split(kind: str, ident):
+    """Recusa mutações enquanto há uma divisão a meio (o total fotografado não
+    pode mudar). A porta fecha-se no SERVIDOR, não só no ecrã."""
+    if await _get_split_plan(_split_target(kind, ident)):
+        raise HTTPException(status_code=409,
+                            detail="Divisão em curso — termina ou cancela a divisão")
 
 
 @api_router.post("/tables/{table_number}/close")

@@ -4093,6 +4093,9 @@ async def update_counter_order(
     vem sempre do token POS."""
     auth = await get_pos_or_admin(authorization, x_device_token)
     await get_pos_operator(x_pos_token)  # operador identificado (não-falsificável)
+    # Com uma divisão a meio o carrinho não se mexe: as partes já foram
+    # calculadas sobre o total fotografado.
+    await _assert_no_open_split("counter", order_id)
 
     sess = await db.cash_sessions.find_one({"status": "open"})
     if auth.get("kind") == "pos":
@@ -4184,6 +4187,28 @@ class CounterCheckoutRequest(BaseModel):
     order_id: str
     payment_method_id: int
     nif: Optional[str] = None
+    # >1 divide a venda em N partes iguais, emitidas UMA de cada vez (cada uma
+    # com o seu NIF e método de pagamento). Só conta na 1ª chamada: a seguir o
+    # plano guardado é que manda.
+    split_count: int = 1
+
+
+@api_router.post("/pos/counter/{order_id}/split-cancel")
+async def cancel_counter_split(order_id: str,
+                               authorization: Optional[str] = Header(None),
+                               x_device_token: Optional[str] = Header(None)):
+    """Cancela uma divisão do balcão AINDA sem nenhuma parte emitida. Com uma FS
+    já emitida não há cancelamento (para isso há nota de crédito)."""
+    await get_pos_or_admin(authorization, x_device_token)
+    target = _split_target("counter", order_id)
+    plan = await _get_split_plan(target)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Não há divisão em curso")
+    if any(sh.get("paid") for sh in plan["shares"]):
+        raise HTTPException(status_code=409,
+                            detail="Já foi emitida uma parte — não é possível cancelar")
+    await _delete_split_plan(target)
+    return {"cancelled": True}
 
 
 @api_router.post("/pos/counter/checkout")
@@ -4261,17 +4286,43 @@ async def checkout_counter_order(
 
     vendus_items = []
     total = 0.0
+    by_tax = {}
     for l in order.get("items", []):
         li = line_vendus(l, None, VENDUS_DEFAULT_TAX_ID, vendus_id=vid_by_prod.get(l.get("product_id")))
         out, liquido = combine_global(li, 0)
         vendus_items.append(out)
+        _tax = li.get("tax_id") or VENDUS_DEFAULT_TAX_ID
+        by_tax[_tax] = round(by_tax.get(_tax, 0.0) + liquido, 2)
         total += liquido
     total = round(total, 2)
     if not vendus_items or total <= 0:
         raise HTTPException(status_code=400, detail="Pedido sem itens para faturar")
 
-    ext_ref = counter_ext_ref(body.order_id)
+    base_ext_ref = counter_ext_ref(body.order_id)
     client = {"fiscal_id": body.nif} if body.nif else None
+
+    # DIVISÃO SEQUENCIAL (mesmo mecanismo da mesa): com `split_count>1` (1ª
+    # chamada) ou um plano já aberto, emite UMA parte por chamada — cada uma com
+    # o SEU NIF e método de pagamento. A venda só fica paga na ÚLTIMA parte.
+    split_target = _split_target("counter", body.order_id)
+    plan = await _get_split_plan(split_target)
+    n_req = max(1, min(int(body.split_count or 1), 50))
+    if plan is None and n_req > 1:
+        plan = await _create_split_plan(
+            split_target, n_req, total, by_tax, "Venda dividida", base_ext_ref,
+            {"order_id": body.order_id}, (sess or {}).get("id"))
+
+    if plan is not None:
+        idx = next_unpaid_index(plan["shares"])
+        if idx is None:
+            raise HTTPException(status_code=409, detail="Divisão já concluída")
+        _share = plan["shares"][idx]
+        emit_items = _share["items"]
+        emit_amount = _share["amount"]
+        emit_ext_ref = _share["ext_ref"]
+    else:
+        idx = None
+        emit_items, emit_amount, emit_ext_ref = vendus_items, total, base_ext_ref
 
     # Janela de dedup (Europe/Lisbon): cobre toda a sessão de caixa — não só hoje
     # — para um retry a atravessar a meia-noite ainda encontrar a FS de ontem
@@ -4302,7 +4353,7 @@ async def checkout_counter_order(
             try:
                 for _ds in dedup_dates:
                     for d in c.list_app_invoices(date=_ds):
-                        if str(d.get("external_reference") or "") == ext_ref:
+                        if str(d.get("external_reference") or "") == emit_ext_ref:
                             existente = d
                             break
                     if existente is not None:
@@ -4311,13 +4362,13 @@ async def checkout_counter_order(
                 logger.warning(f"dedup fiscal balcão: consulta falhou, emito na mesma: {e}")
             if existente is not None:
                 logger.warning(
-                    f"dedup fiscal balcão: ref {ext_ref} já emitida "
+                    f"dedup fiscal balcão: ref {emit_ext_ref} já emitida "
                     f"(doc {existente.get('id')}), reutilizada sem nova FS")
                 return existente
             return c.create_invoice(
-                items=vendus_items,
-                payments=[{"id": body.payment_method_id, "amount": total}],
-                client=client, external_reference=ext_ref,
+                items=emit_items,
+                payments=[{"id": body.payment_method_id, "amount": emit_amount}],
+                client=client, external_reference=emit_ext_ref,
                 doc_type="FS", output="escpos")
         finally:
             c.close()
@@ -4329,14 +4380,30 @@ async def checkout_counter_order(
     if not doc:
         raise HTTPException(status_code=502, detail="Vendus não devolveu documento")
 
+    # DIVISÃO: marca a parte que acabou de sair e só finaliza na ÚLTIMA.
+    split_part = split_of = None
+    split_remaining = 0.0
+    order_paid = True
+    if plan is not None:
+        plan = await _mark_share_paid(split_target, idx, doc.get("number"))
+        split_part, split_of = idx + 1, plan["n"]
+        order_paid = next_unpaid_index(plan["shares"]) is None
+        if order_paid:
+            await _delete_split_plan(split_target)
+        else:
+            split_remaining = remaining_amount(plan["shares"])
+
     # Marca o pedido pago com o documento (id + número, para a reconsulta
-    # idempotente do paid-guard devolver o número sem chamar o Vendus).
-    await db.orders.update_one({"id": body.order_id}, {"$set": {
-        "paid": True, "status": "delivered",
-        "payment_method": str(body.payment_method_id),
-        "vendus_document_id": doc.get("id"),
-        "vendus_document_number": doc.get("number"),
-    }})
+    # idempotente do paid-guard devolver o número sem chamar o Vendus). Numa
+    # divisão a MEIO não se marca: o paid-guard bloquearia as partes seguintes
+    # e a venda ficava por cobrar.
+    if order_paid:
+        await db.orders.update_one({"id": body.order_id}, {"$set": {
+            "paid": True, "status": "delivered",
+            "payment_method": str(body.payment_method_id),
+            "vendus_document_id": doc.get("id"),
+            "vendus_document_number": doc.get("number"),
+        }})
 
     # Regista a venda POS (fecho Z + reconciliação). SÓ com caixa aberta. A FS JÁ
     # está emitida e válida neste ponto, por isso uma falha aqui NUNCA pode
@@ -4346,7 +4413,7 @@ async def checkout_counter_order(
     if sess:
         try:
             rows = build_pos_sales_rows(
-                [{"amount": total}], [doc], body.payment_method_id,
+                [{"amount": emit_amount}], [doc], body.payment_method_id,
                 sess["id"], pos_user_id, "balcao", None,
             )
             if rows:
@@ -4380,7 +4447,9 @@ async def checkout_counter_order(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    return {"doc_number": doc.get("number"), "total": total}
+    return {"doc_number": doc.get("number"), "total": emit_amount,
+            "part": split_part, "of": split_of,
+            "order_paid": order_paid, "remaining_total": split_remaining}
 
 
 # ==================== POS: NOTA DE CRÉDITO ====================

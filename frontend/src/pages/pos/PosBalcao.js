@@ -77,6 +77,12 @@ const PosBalcao = ({ onClose }) => {
   const [nif, setNif] = useState('');
   const [cashReceived, setCashReceived] = useState('');
   const [checkingOut, setCheckingOut] = useState(false);
+  // Divisão da venda: N partes, quantas já saíram e quanto falta.
+  const [splitCount, setSplitCount] = useState(1);
+  const [splitPart, setSplitPart] = useState(0);
+  const [splitOf, setSplitOf] = useState(0);
+  const [splitRemaining, setSplitRemaining] = useState(0);
+  const [cancellingSplit, setCancellingSplit] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [docNumber, setDocNumber] = useState(null);
 
@@ -105,6 +111,7 @@ const PosBalcao = ({ onClose }) => {
   // escolhida (pizza Grande, etc.) ou null (preço base). Funde por (produto +
   // variação): a mesma pizza em tamanhos diferentes fica em linhas separadas.
   const addLine = useCallback((p, variation) => {
+    if (splitOf > 0) { toast.error('Divisão em curso — termina ou cancela a divisão'); return; }
     const vname = variation?.name || null;
     const price = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
     setCart((prev) => {
@@ -122,7 +129,7 @@ const PosBalcao = ({ onClose }) => {
       }];
     });
     if (printed) setDirty(true);
-  }, [printed]);
+  }, [printed, splitOf]);
 
   // Toque num produto: com variações (tamanhos), abre o seletor; senão adiciona
   // logo ao preço base.
@@ -135,17 +142,19 @@ const PosBalcao = ({ onClose }) => {
   }, [addLine]);
 
   const changeQty = useCallback((i, delta) => {
+    if (splitOf > 0) { toast.error('Divisão em curso — termina ou cancela a divisão'); return; }
     setCart((prev) => prev
       .map((c, idx) => (idx === i ? { ...c, qty: c.qty + delta } : c))
       .filter((c) => c.qty > 0));
     if (printed) setDirty(true);
-  }, [printed]);
+  }, [printed, splitOf]);
 
   const cartTotal = Math.round(cart.reduce((s, c) => s + lineNet(c), 0) * 100) / 100;
   const total = cartTotal;
 
   // Abre o diálogo do produto para a linha `idx` do carrinho (qtd/preço/IVA/desconto).
   const openEdit = (idx) => {
+    if (splitOf > 0) { toast.error('Divisão em curso — termina ou cancela a divisão'); return; }
     const c = cart[idx];
     if (!c) return;
     setEdQty(String(c.qty));
@@ -245,9 +254,23 @@ const PosBalcao = ({ onClose }) => {
     if (!orderId || !paymentId) return;
     setCheckingOut(true);
     try {
-      const r = await posCounter.checkout(orderId, Number(paymentId), nif.trim() || undefined);
-      setDocNumber(r.data.doc_number);
-      toast.success('Fatura emitida');
+      const r = await posCounter.checkout(orderId, Number(paymentId),
+        nif.trim() || undefined, splitCount);
+      if (r.data.order_paid === false) {
+        // Divisão a meio: a venda continua aberta e cada parte seguinte escolhe
+        // o SEU método de pagamento e o SEU NIF.
+        setSplitPart(r.data.part || 0);
+        setSplitOf(r.data.of || 0);
+        setSplitRemaining(r.data.remaining_total || 0);
+        setPaymentId('');
+        setNif('');
+        setCashReceived('');
+        toast.success(`Parte ${r.data.part} de ${r.data.of} — fatura ${r.data.doc_number} emitida`);
+      } else {
+        setSplitPart(0); setSplitOf(0); setSplitRemaining(0);
+        setDocNumber(r.data.doc_number);
+        toast.success('Fatura emitida');
+      }
     } catch (err) {
       console.error('Erro ao faturar o balcão:', err);
       toast.error(err.response?.data?.detail || 'Erro ao emitir o documento');
@@ -258,6 +281,10 @@ const PosBalcao = ({ onClose }) => {
 
   const novaVenda = () => {
     setCart([]);
+    setSplitCount(1);
+    setSplitPart(0);
+    setSplitOf(0);
+    setSplitRemaining(0);
     setEditIdx(null);
     setOrderId(null);
     setOrderNumber(null);
@@ -508,6 +535,36 @@ const PosBalcao = ({ onClose }) => {
                   {dirty ? 'Reimprimir pedido (atualizado)' : 'Reimprimir pedido'}
                 </Button>
 
+                {/* Dividir a venda por N — travado assim que a 1ª parte sai
+                    (o total já foi fotografado e as partes calculadas). */}
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm">Dividir por</span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="icon"
+                      className="h-8 w-8 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
+                      onClick={() => setSplitCount((n) => Math.max(1, n - 1))}
+                      disabled={splitCount <= 1 || splitOf > 0}>−</Button>
+                    <span className="w-8 text-center font-semibold tabular-nums">{splitOf || splitCount}</span>
+                    <Button variant="outline" size="icon"
+                      className="h-8 w-8 border-white/25 bg-transparent text-white hover:bg-white/10 hover:text-white"
+                      onClick={() => setSplitCount((n) => n + 1)}
+                      disabled={splitOf > 0}>+</Button>
+                    <span className="text-sm text-white/60">pessoa{(splitOf || splitCount) > 1 ? 's' : ''}</span>
+                  </div>
+                </div>
+
+                {splitOf > 0 && (
+                  <div className="rounded-lg border border-amber-400/60 bg-amber-400/15 px-3 py-2">
+                    <div className="flex items-center justify-between text-sm font-semibold text-amber-100">
+                      <span>{splitPart} de {splitOf} {splitPart === 1 ? 'parte emitida' : 'partes emitidas'}</span>
+                      <span className="tabular-nums">falta {eur(splitRemaining)}</span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-amber-200/90">
+                      Escolhe o pagamento e o NIF da parte {splitPart + 1} e emite.
+                    </p>
+                  </div>
+                )}
+
                 <div className="space-y-2">
                   <Select value={paymentId} onValueChange={setPaymentId}>
                     <SelectTrigger className="border-white/25 bg-white/10 text-white data-[placeholder]:text-white/50">
@@ -563,8 +620,34 @@ const PosBalcao = ({ onClose }) => {
                   className="h-14 w-full bg-white text-base font-semibold text-[#5a1a1a] hover:bg-white/90"
                 >
                   {checkingOut ? <Loader2 className="h-5 w-5 animate-spin" /> : <Receipt className="h-5 w-5" />}
-                  Emitir Documento
+                  {(splitOf > 0 || splitCount > 1)
+                    ? `Emitir parte ${splitPart + 1} de ${splitOf || splitCount}`
+                    : 'Emitir Documento'}
                 </Button>
+
+                {/* Cancelar a divisão — só enquanto NENHUMA parte saiu. */}
+                {splitOf > 0 && splitPart === 0 && (
+                  <Button
+                    variant="ghost"
+                    disabled={cancellingSplit || checkingOut}
+                    onClick={async () => {
+                      setCancellingSplit(true);
+                      try {
+                        await posCounter.cancelSplit(orderId);
+                        setSplitOf(0); setSplitPart(0); setSplitRemaining(0); setSplitCount(1);
+                        toast.success('Divisão cancelada');
+                      } catch (err) {
+                        toast.error(err.response?.data?.detail || 'Não foi possível cancelar');
+                      } finally {
+                        setCancellingSplit(false);
+                      }
+                    }}
+                    className="h-10 w-full text-sm text-white/60 hover:bg-white/10 hover:text-white"
+                  >
+                    {cancellingSplit ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                    Cancelar divisão
+                  </Button>
+                )}
 
                 <Button
                   variant="ghost"

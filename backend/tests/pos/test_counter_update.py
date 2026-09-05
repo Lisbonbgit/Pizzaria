@@ -54,12 +54,16 @@ class _Simple:
 
 
 class _FakeDb:
-    def __init__(self, order, products, open_session=None, printers=None):
+    def __init__(self, order, products, open_session=None, printers=None,
+                 split_plan=None):
         self.orders = _Orders(order)
         self.products = _Simple(many=products)
         self.cash_sessions = _Simple(one=open_session)
         self.printers = _Simple(many=printers or [])
         self.print_jobs = _PrintJobs()
+        # Divisão da conta: sem plano aberto (find_one -> None). Um teste
+        # injeta um plano para provar que o guard recusa (409).
+        self.split_plans = _Simple(one=split_plan)
 
 
 def _req():
@@ -135,3 +139,28 @@ def test_update_recusa_se_faturado_no_meio_corrida(monkeypatch):
     assert exc.value.status_code == 409
     assert fake.print_jobs.inserted == []            # nao reimprimiu
     assert order["items"] == [{"product_name": "Antigo", "quantity": 1}]  # inalterado
+
+
+def test_update_recusa_com_divisao_a_meio(monkeypatch):
+    """Com uma divisão já começada o carrinho NÃO se mexe: as partes foram
+    calculadas sobre o total fotografado, e mudar itens agora desalinhava o que
+    falta cobrar. A porta fecha-se no SERVIDOR (409), não só no ecrã."""
+    order = {"id": "o1", "source": "balcao", "order_number": 7, "paid": False,
+             "status": "received", "items": [], "total": 0.0}
+    products = [{"id": "p1", "name": "Pizza", "base_price": 10.0, "vendus_tax_id": "INT"}]
+    plano = {"target": {"kind": "counter", "id": "o1"}, "n": 2,
+             "shares": [{"amount": 5.0, "paid": True}, {"amount": 5.0, "paid": False}]}
+    fake = _FakeDb(order, products, split_plan=plano)
+    monkeypatch.setattr(server, "db", fake)
+
+    admin = create_token("admin-1", "gestor@lenhaebrasa.com")
+    pos_token = create_pos_token("op-1", "Ana")
+
+    async def run():
+        return await update_counter_order("o1", _req(), authorization=f"Bearer {admin}",
+                                          x_device_token=None, x_pos_token=pos_token)
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(run())
+    assert e.value.status_code == 409
+    assert "ivis" in e.value.detail          # "Divisão em curso…"
+    assert order["items"] == []              # e não mexeu no carrinho

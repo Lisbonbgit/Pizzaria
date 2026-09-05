@@ -74,6 +74,12 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const [paymentId, setPaymentId] = useState('');
   const [nif, setNif] = useState('');
   const [splitCount, setSplitCount] = useState(1);
+  // Divisão sequencial: partes já emitidas / total de partes do plano aberto.
+  const [splitPart, setSplitPart] = useState(0);
+  const [splitOf, setSplitOf] = useState(0);
+  // Quanto falta das PARTES (as linhas ficam todas por pagar até à última).
+  const [splitRemaining, setSplitRemaining] = useState(0);
+  const [cancellingSplit, setCancellingSplit] = useState(false);
   const [globalDiscount, setGlobalDiscount] = useState('');
   const [cashReceived, setCashReceived] = useState('');
   const [printingConsulta, setPrintingConsulta] = useState(false);
@@ -129,6 +135,13 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     try {
       const r = await api.getBill(num);
       setBillLines(r.data.lines || []);
+      // Divisão a meio (o servidor é a fonte de verdade): repõe o progresso,
+      // para reabrir a conta não mostrar "dividir por 1" como se nada fosse.
+      const sp = r.data.split;
+      setSplitPart(sp ? sp.part : 0);
+      setSplitOf(sp ? sp.of : 0);
+      setSplitRemaining(sp ? sp.remaining : 0);
+      if (sp) setSplitCount(sp.of);
     } catch {
       toast.error('Erro ao carregar a conta da mesa');
     } finally {
@@ -451,16 +464,27 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
         body.split_count = splitActive ? splitCount : 1;
       }
       const r = await api.closeTable(tableNumber, body);
-      const nInv = r.data.invoices || 1;
-      toast.success(nInv > 1 ? `${nInv} faturas emitidas` : `Fatura ${r.data.vendus.number} emitida`);
+      toast.success(r.data.of
+        ? `Parte ${r.data.part} de ${r.data.of} — fatura ${r.data.vendus.number} emitida`
+        : `Fatura ${r.data.vendus.number} emitida`);
       if (r.data.table_free) {
+        setSplitPart(0);
+        setSplitOf(0);
         closeModal();
         onChanged && onChanged();
       } else {
-        // separação parcial: a mesa continua aberta com o resto
+        // separação parcial / divisão a meio: a mesa continua aberta com o resto
+        if (r.data.of) {
+          // Cada parte escolhe o SEU método de pagamento e o SEU NIF.
+          setSplitPart(r.data.part || 0);
+          setSplitOf(r.data.of);
+          setSplitRemaining(r.data.remaining_total || 0);
+          setPaymentId('');
+          setNif('');
+        }
         setSelected(new Set());
         setCashReceived('');
-        setSplitCount(1);
+        if (!r.data.of) setSplitCount(1);
         setFreeKids(new Set());
         setWasteBoxes(0);
         await loadBill(tableNumber);
@@ -592,21 +616,37 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   </div>
                 )}
 
-                {/* Dividir — só quando é a conta toda (à la carte) */}
+                {/* Dividir — só quando é a conta toda (à la carte). Com uma
+                    divisão a meio o número fica travado (a conta já foi
+                    fotografada e as partes calculadas). */}
                 {!isRodizioTable && !hasSelection && (
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm">Dividir por</span>
                     <div className="flex items-center gap-2">
                       <Button variant="outline" size="icon" className="h-8 w-8"
-                        onClick={() => setSplitCount((n) => Math.max(1, n - 1))} disabled={splitCount <= 1}>−</Button>
-                      <span className="w-8 text-center font-semibold tabular-nums">{splitCount}</span>
+                        onClick={() => setSplitCount((n) => Math.max(1, n - 1))}
+                        disabled={splitCount <= 1 || splitOf > 0}>−</Button>
+                      <span className="w-8 text-center font-semibold tabular-nums">{splitOf || splitCount}</span>
                       <Button variant="outline" size="icon" className="h-8 w-8"
-                        onClick={() => setSplitCount((n) => n + 1)}>+</Button>
-                      <span className="text-sm text-muted-foreground">pessoa{splitCount > 1 ? 's' : ''}</span>
+                        onClick={() => setSplitCount((n) => n + 1)}
+                        disabled={splitOf > 0}>+</Button>
+                      <span className="text-sm text-muted-foreground">pessoa{(splitOf || splitCount) > 1 ? 's' : ''}</span>
                     </div>
                   </div>
                 )}
-                {splitActive && (
+                {splitOf > 0 ? (
+                  <div className="rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 space-y-1">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-semibold text-amber-900">
+                        {splitPart} de {splitOf} {splitPart === 1 ? 'parte emitida' : 'partes emitidas'}
+                      </span>
+                      <span className="font-semibold text-amber-900 tabular-nums">falta {eur(splitRemaining)}</span>
+                    </div>
+                    <p className="text-xs text-amber-800">
+                      Escolhe o pagamento e o NIF da parte {splitPart + 1} e emite.
+                    </p>
+                  </div>
+                ) : splitActive && (
                   <div className="flex items-center justify-between text-sm bg-primary/[0.06] rounded-lg px-3 py-2">
                     <span>Cada pessoa paga</span>
                     <span className="font-semibold text-primary tabular-nums">{eur(perPerson)}</span>
@@ -648,7 +688,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
               </div>
 
               {/* Rodapé — Emitir */}
-              <div className="px-6 py-4 border-t">
+              <div className="px-6 py-4 border-t space-y-2">
                 <Button
                   onClick={() => {
                     if (!billable.length) { toast.error('Nada para faturar'); return; }
@@ -659,8 +699,34 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   disabled={closing || !billable.length}
                   className="w-full h-14 text-base font-semibold bg-[#5a1a1a] hover:bg-[#4a1414]">
                   {closing ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Receipt className="h-5 w-5 mr-2" />}
-                  Emitir Documento
+                  {(splitOf > 0 || splitActive)
+                    ? `Emitir parte ${splitPart + 1} de ${splitOf || splitCount}`
+                    : 'Emitir Documento'}
                 </Button>
+
+                {/* Cancelar a divisão — só enquanto NENHUMA parte saiu (com FS
+                    emitida não se desfaz; para isso há nota de crédito). */}
+                {splitOf > 0 && splitPart === 0 && (
+                  <Button
+                    variant="ghost"
+                    disabled={cancellingSplit || closing}
+                    onClick={async () => {
+                      setCancellingSplit(true);
+                      try {
+                        await api.cancelSplit(tableNumber);
+                        toast.success('Divisão cancelada');
+                        await loadBill(tableNumber);
+                      } catch (e) {
+                        toast.error(e.response?.data?.detail || 'Não foi possível cancelar');
+                      } finally {
+                        setCancellingSplit(false);
+                      }
+                    }}
+                    className="w-full h-10 text-sm text-muted-foreground">
+                    {cancellingSplit ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                    Cancelar divisão
+                  </Button>
+                )}
               </div>
             </div>
 

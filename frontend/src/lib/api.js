@@ -237,6 +237,9 @@ export const checkoutAPI = {
     api.get('/vendus/payment-methods'),
   closeTable: (tableNumber, data) =>
     api.post(`/tables/${tableNumber}/close`, data),
+  // Cancela uma divisão ainda sem nenhuma parte emitida (409 se já saiu uma).
+  cancelSplit: (tableNumber) =>
+    api.post(`/tables/${tableNumber}/split-cancel`),
   printConsulta: (tableNumber) =>
     api.post(`/tables/${tableNumber}/print-consulta`),
   freeTable: (tableNumber) =>
@@ -290,6 +293,9 @@ export const posCheckout = {
     posApi.get(`/tables/${tableNumber}/bill`),
   closeTable: (tableNumber, data) =>
     posApi.post(`/tables/${tableNumber}/close`, data),
+  // Cancela uma divisão ainda sem nenhuma parte emitida (409 se já saiu uma).
+  cancelSplit: (tableNumber) =>
+    posApi.post(`/tables/${tableNumber}/split-cancel`),
   // Desconto por item: corpo { pct } (%) OU { amount } (€) — mutuamente exclusivos.
   setItemDiscount: (orderId, idx, body) =>
     posApi.post(`/orders/${orderId}/items/${idx}/discount`, body),

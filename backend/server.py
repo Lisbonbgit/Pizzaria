@@ -1640,8 +1640,17 @@ async def get_table_bill(table_number: int, authorization: Optional[str] = Heade
     lines = await _open_bill_lines(table_number)
     total = round(sum((l.get("total_price", 0) or 0) for l in lines), 2)
     n_orders = len({l["order_id"] for l in lines})
+    # Progresso de uma divisão a meio — para o ecrã não mentir se o operador
+    # fechar e reabrir a conta (o servidor continua a saber, o ecrã tem de saber
+    # também: quantas partes já saíram e quanto falta).
+    split = None
+    plan = await _get_split_plan(_split_target("table", table_number))
+    if plan:
+        pagas = sum(1 for s in plan["shares"] if s.get("paid"))
+        split = {"part": pagas, "of": plan["n"],
+                 "remaining": remaining_amount(plan["shares"])}
     return {"table_number": table_number, "orders": n_orders,
-            "lines": lines, "total": total}
+            "lines": lines, "total": total, "split": split}
 
 
 @api_router.get("/tables-overview")

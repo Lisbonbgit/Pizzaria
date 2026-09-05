@@ -1952,6 +1952,12 @@ async def close_table(table_number: int, req: CloseTableRequest,
         except Exception:
             pos_user_id = None
 
+    # Divisão sequencial: inicializados ANTES de qualquer ramo (o rodízio e o
+    # fecho por itens passam por aqui sem entrar no bloco da divisão).
+    split_target = _split_target("table", table_number)
+    plan = None
+    idx = None
+
     # Sessão de caixa resolvida no SERVIDOR (nunca do corpo). No caminho POS, se
     # as definições exigem caixa aberta e não há sessão, recusa ANTES de faturar
     # — não se emite FS sem caixa aberta. O admin legado (JWT) segue sem caixa.
@@ -2054,7 +2060,6 @@ async def close_table(table_number: int, req: CloseTableRequest,
 
         lines = extra_lines     # só os extras selecionados ficam pagos como itens
         partial = False
-        n = 1
         # Chave de idempotência do rodízio: estado pago-ANTES (pd) + pessoas pagas
         # AGORA + extras faturados. Estável no retry (o pago-antes ainda não foi
         # commitado); distinta do próximo pagamento (o pago-antes muda).
@@ -2108,38 +2113,42 @@ async def close_table(table_number: int, req: CloseTableRequest,
         total = round(total, 2)
 
         # A divisão igual só se aplica à conta TODA (não a uma separação por itens).
-        n = 1 if partial else max(1, min(int(req.split_count or 1), 50))
+        n_req = 1 if partial else max(1, min(int(req.split_count or 1), 50))
 
-        # Constrói as faturas a emitir. n==1: uma fatura itemizada. n>1: uma fatura por
-        # pessoa com a sua parte, agrupada por IVA (o resto do arredondamento vai para a
-        # última, para as n faturas somarem EXATAMENTE o total).
-        invoices = []  # {"items": [...], "amount": float, "ext_ref": str}
         # Chave de idempotência à la carte/dividir: a IDENTIDADE das linhas
         # faturadas (order_id, idx) — não o conteúdo. Fica estável no retry (as
         # linhas só ficam pagas no fim) e distinta de outro fecho (outras linhas).
         line_ids = sorted((l["order_id"], l["idx"]) for l in lines)
-        if n == 1:
-            invoices.append({"items": vendus_items, "amount": total,
-                             "ext_ref": stable_ext_ref(table_number, cash_session_id, line_ids)})
-        else:
-            shares_by_tax = {}
-            for tax, sub in by_tax.items():
-                base = round(sub / n, 2)
-                shares_by_tax[tax] = [base] * (n - 1) + [round(sub - base * (n - 1), 2)]
-            for i in range(n):
-                items_i, amount_i = [], 0.0
-                for tax, parts in shares_by_tax.items():
-                    share = parts[i]
-                    if share and share > 0:
-                        items_i.append({"title": f"Conta dividida Mesa {table_number} ({i+1}/{n})",
-                                        "qty": 1, "gross_price": share, "tax_id": tax})
-                        amount_i += share
-                if items_i:
-                    base = stable_ext_ref(table_number, cash_session_id, line_ids)
-                    invoices.append({"items": items_i, "amount": round(amount_i, 2),
-                                     "ext_ref": f"{base}-{i+1}de{n}"})
+        base_ext_ref = stable_ext_ref(table_number, cash_session_id, line_ids)
 
-        client = {"fiscal_id": req.nif} if (req.nif and n == 1) else None
+        # DIVISÃO SEQUENCIAL: em vez de emitir as N faturas de uma vez, emite
+        # UMA parte por chamada — cada uma com o SEU NIF e método de pagamento.
+        # O plano fotografa a conta na 1ª chamada; as linhas só ficam pagas na
+        # última parte (um retry a meio nunca fecha a mesa).
+        # Um fecho POR ITENS nunca pega num plano de divisão aberto (senão
+        # emitia uma parte da divisão em vez dos itens selecionados). O
+        # `_assert_no_open_split` recusa-o mais cedo; isto é a segunda tranca.
+        plan = None if partial else await _get_split_plan(split_target)
+        if plan is None and n_req > 1:
+            plan = await _create_split_plan(
+                split_target, n_req, total, by_tax,
+                f"Conta dividida Mesa {table_number}", base_ext_ref,
+                {"line_ids": [list(x) for x in line_ids]}, cash_session_id)
+
+        invoices = []  # {"items": [...], "amount": float, "ext_ref": str}
+        if plan is not None:
+            idx = next_unpaid_index(plan["shares"])
+            if idx is None:
+                raise HTTPException(status_code=409, detail="Divisão já concluída")
+            share = plan["shares"][idx]
+            invoices.append({"items": share["items"], "amount": share["amount"],
+                             "ext_ref": share["ext_ref"]})
+        else:
+            invoices.append({"items": vendus_items, "amount": total,
+                             "ext_ref": base_ext_ref})
+
+        # NIF aceite SEMPRE (antes só quando n==1): cada parte leva o seu.
+        client = {"fiscal_id": req.nif} if req.nif else None
 
     # Dias (Europe/Lisbon) a consultar na DEDUP fiscal. Tem de cobrir toda a
     # sessão de caixa — NÃO só hoje — senão um retry de um fecho a atravessar a
@@ -2242,6 +2251,25 @@ async def close_table(table_number: int, req: CloseTableRequest,
         except Exception as e:
             logger.error(f"pos_sales: falha a gravar, ignorado (FS já emitida e válida): {e}")
 
+    # DIVISÃO: marca a parte que acabou de sair e só finaliza na ÚLTIMA. Enquanto
+    # faltarem partes, as linhas NÃO ficam pagas — a mesa continua aberta e um
+    # retry a meio não fecha nada.
+    split_part = split_of = None
+    split_done = True
+    split_remaining = 0.0
+    if plan is not None:
+        plan = await _mark_share_paid(split_target, idx, docs[0].get("number"))
+        split_part, split_of = idx + 1, plan["n"]
+        split_done = next_unpaid_index(plan["shares"]) is None
+        if split_done:
+            # Última parte: agora sim, marca TODAS as linhas fotografadas pagas.
+            for oid, lidx in plan["finalize"]["line_ids"]:
+                await db.orders.update_one({"id": oid},
+                                           {"$set": {f"items.{lidx}.paid": True}})
+            await _delete_split_plan(split_target)
+        else:
+            split_remaining = remaining_amount(plan["shares"])
+
     # Fecho da sessão. Rodízio: contabiliza as pessoas pagas e salda quando o
     # rodízio todo + todos os extras com preço estiverem pagos. À la carte: salda
     # quando já não há linhas por faturar.
@@ -2276,6 +2304,11 @@ async def close_table(table_number: int, req: CloseTableRequest,
         remaining = await _open_bill_lines(table_number)
         settled = not remaining
         remaining_total = round(sum((l.get("total_price", 0) or 0) for l in remaining), 2)
+        # Divisão a meio: a mesa NÃO fecha e o que falta é o resto das partes
+        # (as linhas ainda estão todas por pagar de propósito).
+        if plan is not None and not split_done:
+            settled = False
+            remaining_total = split_remaining
         if settled:
             await db.table_sessions.update_many(
                 {"table_number": table_number, "status": "open"},
@@ -2305,7 +2338,8 @@ async def close_table(table_number: int, req: CloseTableRequest,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
     return {"table_number": table_number, "total": total,
-            "invoices": len(docs), "split": n, "partial": partial,
+            "invoices": len(docs), "split": (split_of or 1), "partial": partial,
+            "part": split_part, "of": split_of,
             "table_free": settled,
             "remaining_total": remaining_total,
             "vendus": {"id": docs[0].get("id"), "number": docs[0].get("number"),

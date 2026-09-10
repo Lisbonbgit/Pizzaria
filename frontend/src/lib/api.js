@@ -319,13 +319,15 @@ export const posCounter = {
     posApi.post('/pos/counter/order', { items }),
   updateOrder: (orderId, items) =>
     posApi.post(`/pos/counter/${orderId}/update`, { items }),
-  checkout: (orderId, paymentMethodId, nif, splitCount) =>
+  checkout: (orderId, paymentMethodId, nif, splitCount, globalDiscountPct) =>
     posApi.post('/pos/counter/checkout', {
       order_id: orderId,
       payment_method_id: paymentMethodId,
       nif: nif || undefined,
       // >1 divide a venda: emite UMA parte por chamada (NIF/pagamento próprios).
-      split_count: splitCount && splitCount > 1 ? splitCount : undefined
+      split_count: splitCount && splitCount > 1 ? splitCount : undefined,
+      // Desconto global (%) sobre a venda toda, como na mesa.
+      global_discount_pct: globalDiscountPct > 0 ? globalDiscountPct : undefined
     }),
   // Cancela uma divisão do balcão ainda sem nenhuma parte emitida.
   cancelSplit: (orderId) =>

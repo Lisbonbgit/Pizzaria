@@ -4191,6 +4191,10 @@ class CounterCheckoutRequest(BaseModel):
     # com o seu NIF e método de pagamento). Só conta na 1ª chamada: a seguir o
     # plano guardado é que manda.
     split_count: int = 1
+    # Desconto GLOBAL (%) sobre a venda toda, tal como na mesa. Combina-se com o
+    # desconto próprio de cada linha (`combine_global`) e vai ao Vendus linha a
+    # linha — nunca um abatimento por fora.
+    global_discount_pct: float = 0
 
 
 @api_router.post("/pos/counter/{order_id}/split-cancel")
@@ -4275,7 +4279,7 @@ async def checkout_counter_order(
     # (preço/IVA/desconto do diálogo do balcão) resolvidos pelos MESMOS helpers
     # da mesa — o IVA e o desconto por linha chegam à FS real; o desconto vai
     # como `discount_percentage` (nunca o campo `discount`, que dá 403). Não há
-    # desconto GLOBAL no balcão (0). O total pago é a soma dos líquidos das
+    # desconto GLOBAL do balcão (`global_discount_pct`). O total pago é a soma dos líquidos das
     # linhas (bate com o `order.total` gravado por `build_counter_items`).
     _pids = list({l.get("product_id") for l in order.get("items", []) if l.get("product_id")})
     vid_by_prod = {}
@@ -4284,12 +4288,16 @@ async def checkout_counter_order(
             if p.get("vendus_id") is not None:
                 vid_by_prod[p["id"]] = p["vendus_id"]
 
+    # Desconto GLOBAL (%) sobre toda a fatura; aplica-se SEMPRE por cima do
+    # desconto próprio de cada linha (mesma regra e mesmo helper da mesa).
+    g_disc = max(0.0, min(100.0, float(body.global_discount_pct or 0)))
+
     vendus_items = []
     total = 0.0
     by_tax = {}
     for l in order.get("items", []):
         li = line_vendus(l, None, VENDUS_DEFAULT_TAX_ID, vendus_id=vid_by_prod.get(l.get("product_id")))
-        out, liquido = combine_global(li, 0)
+        out, liquido = combine_global(li, g_disc)
         vendus_items.append(out)
         _tax = li.get("tax_id") or VENDUS_DEFAULT_TAX_ID
         by_tax[_tax] = round(by_tax.get(_tax, 0.0) + liquido, 2)

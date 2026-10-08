@@ -315,8 +315,8 @@ export const posCheckout = {
 
 // POS - Balcão (pedido sem mesa: criar + faturar + catálogo p/ picker) via posApi
 export const posCounter = {
-  createOrder: (items) =>
-    posApi.post('/pos/counter/order', { items }),
+  createOrder: (items, printKitchen = true) =>
+    posApi.post('/pos/counter/order', { items, print_kitchen: printKitchen }),
   updateOrder: (orderId, items) =>
     posApi.post(`/pos/counter/${orderId}/update`, { items }),
   checkout: (orderId, paymentMethodId, nif, splitCount, globalDiscountPct) =>

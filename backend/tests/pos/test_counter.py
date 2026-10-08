@@ -139,3 +139,24 @@ def test_sem_variacao_nao_mete_chave_variation():
     prods = {"p1": {"name": "Imperial", "base_price": 2.0, "vendus_tax_id": "NOR"}}
     cart = [{"product_id": "p1", "quantity": 1}]
     assert "variation" not in build_counter_items(prods, cart)["items"][0]
+
+
+def test_extras_vao_para_o_item():
+    # Borda de Catupiry: os talões (cozinha e caixa) já imprimem `extras`. O
+    # preço do extra vem JÁ somado no unit_price (igual ao menu do cliente), por
+    # isso o total NÃO o volta a somar.
+    prods = {"p1": {"name": "Calabresa", "base_price": 13.9, "vendus_tax_id": "INT"}}
+    cart = [{"product_id": "p1", "quantity": 1, "unit_price": 16.9,
+             "variation_name": "Média (6 Fatias)",
+             "extras": [{"name": "Borda de Catupiry", "price": 3}]}]
+    r = build_counter_items(prods, cart, default_tax="NOR")
+    item = r["items"][0]
+    assert item["extras"] == [{"name": "Borda de Catupiry", "price": 3}]
+    assert item["unit_price"] == 16.9          # 13,90 + 3,00 já vem somado
+    assert r["total"] == 16.9                  # e não 19,90
+
+
+def test_sem_extras_nao_mete_a_chave():
+    prods = {"p1": {"name": "Imperial", "base_price": 2.0, "vendus_tax_id": "NOR"}}
+    assert "extras" not in build_counter_items(
+        prods, [{"product_id": "p1", "quantity": 1}])["items"][0]

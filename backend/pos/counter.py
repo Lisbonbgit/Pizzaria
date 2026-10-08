@@ -72,6 +72,12 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
         vname = entry.get("variation_name")
         if vname:
             item["variation"] = {"name": vname}
+        # Extras (ex.: Borda de Catupiry): mesma convenção do menu do cliente —
+        # os formatadores ESC/POS já os imprimem. O preço já vem somado no
+        # `unit_price`, por isso NÃO se volta a somar aqui.
+        extras = entry.get("extras") or []
+        if extras:
+            item["extras"] = extras
         items.append(item)
         # Líquido do item pela MESMA via da faturação (`line_vendus` +
         # `combine_global`, sem desconto global) → o `total` do pedido bate ao

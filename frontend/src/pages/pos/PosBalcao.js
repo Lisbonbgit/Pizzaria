@@ -54,8 +54,10 @@ const PosBalcao = ({ onClose }) => {
   // Carrinho: [{id, name, qty, unitPrice, tax, taxTouched, discKind, discVal}]
   const [cart, setCart] = useState([]);
   const [selectedCat, setSelectedCat] = useState(null);
-  // Produto cujo tamanho está a ser escolhido (pizzas com variações), ou null.
+  // Produto cujas opções estão a ser escolhidas (tamanho e/ou extras), ou null.
   const [sizePick, setSizePick] = useState(null);
+  const [pickVar, setPickVar] = useState(null);      // variação escolhida
+  const [pickExtras, setPickExtras] = useState([]);  // extras escolhidos
 
   // Diálogo do produto (editar qtd/preço/IVA/desconto de uma linha do carrinho,
   // antes de "Imprimir Pedido").
@@ -112,19 +114,26 @@ const PosBalcao = ({ onClose }) => {
   // Adiciona uma linha ao carrinho. `variation` = {name,price} da variação
   // escolhida (pizza Grande, etc.) ou null (preço base). Funde por (produto +
   // variação): a mesma pizza em tamanhos diferentes fica em linhas separadas.
-  const addLine = useCallback((p, variation) => {
+  const addLine = useCallback((p, variation, extras = []) => {
     if (splitOf > 0) { toast.error('Divisão em curso — termina ou cancela a divisão'); return; }
     const vname = variation?.name || null;
-    const price = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
+    // O preço do extra (ex.: Borda de Catupiry +3€) soma-se ao da linha, tal
+    // como no menu do cliente — o servidor recebe o unit_price já somado.
+    const extrasTotal = extras.reduce((s, e) => s + (Number(e.price) || 0), 0);
+    const base = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
+    const price = Math.round((base + extrasTotal) * 100) / 100;
+    const chave = extras.map((e) => e.name).sort().join('|');
     setCart((prev) => {
-      const idx = prev.findIndex((c) => c.id === p.id && (c.variationName || null) === vname);
+      const idx = prev.findIndex((c) => c.id === p.id
+        && (c.variationName || null) === vname
+        && (c.extras || []).map((e) => e.name).sort().join('|') === chave);
       if (idx >= 0) {
         const next = [...prev];
         next[idx] = { ...next[idx], qty: next[idx].qty + 1 };
         return next;
       }
       return [...prev, {
-        id: p.id, name: p.name, variationName: vname, qty: 1,
+        id: p.id, name: p.name, variationName: vname, extras, qty: 1,
         unitPrice: price,
         tax: p.vendus_tax_id === 'INT' ? 'INT' : 'NOR',
         taxTouched: false, discKind: 'pct', discVal: '',
@@ -136,8 +145,12 @@ const PosBalcao = ({ onClose }) => {
   // Toque num produto: com variações (tamanhos), abre o seletor; senão adiciona
   // logo ao preço base.
   const addToCart = useCallback((p) => {
-    if (Array.isArray(p.variations) && p.variations.length > 0) {
+    const temVar = Array.isArray(p.variations) && p.variations.length > 0;
+    const temExtras = Array.isArray(p.extras) && p.extras.length > 0;
+    if (temVar || temExtras) {
       setSizePick(p);
+      setPickVar(temVar ? null : undefined);
+      setPickExtras([]);
       return;
     }
     addLine(p, null);
@@ -193,13 +206,16 @@ const PosBalcao = ({ onClose }) => {
     return Math.max(0, Math.round(net * 100) / 100);
   })();
 
-  const imprimirPedido = async () => {
+  // `paraCozinha=false` = venda direta: cria o pedido (preciso para faturar)
+  // mas NÃO manda talão para a cozinha.
+  const imprimirPedido = async (paraCozinha = true) => {
     if (!cart.length) return;
     setPrinting(true);
     try {
       const items = cart.map((c) => {
         const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
         if (c.variationName) it.variation_name = c.variationName;
+        if (c.extras?.length) it.extras = c.extras;
         // IVA só vai se o staff o mudou (senão o backend usa o do produto).
         if (c.taxTouched) it.vendus_tax_id = c.tax;
         const dv = Number(String(c.discVal).replace(',', '.')) || 0;
@@ -209,11 +225,13 @@ const PosBalcao = ({ onClose }) => {
         }
         return it;
       });
-      const r = await posCounter.createOrder(items);
+      const r = await posCounter.createOrder(items, paraCozinha);
       setOrderId(r.data.order_id);
       setOrderNumber(r.data.order_number);
       setOrderTotal(r.data.total);
-      toast.success('Pedido enviado para a cozinha');
+      toast.success(paraCozinha
+        ? 'Pedido enviado para a cozinha'
+        : 'Pronto a faturar (não foi para a cozinha)');
     } catch (err) {
       console.error('Erro ao criar o pedido de balcão:', err);
       toast.error(err.response?.data?.detail || 'Erro ao enviar o pedido');
@@ -229,6 +247,7 @@ const PosBalcao = ({ onClose }) => {
       const items = cart.map((c) => {
         const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
         if (c.variationName) it.variation_name = c.variationName;
+        if (c.extras?.length) it.extras = c.extras;
         if (c.taxTouched) it.vendus_tax_id = c.tax;
         const dv = Number(String(c.discVal).replace(',', '.')) || 0;
         if (dv > 0) {
@@ -466,7 +485,10 @@ const PosBalcao = ({ onClose }) => {
                   >
                     <span className="min-w-0">
                       <span className="flex items-center gap-1.5">
-                        <span className="truncate">{c.name}{c.variationName ? ` · ${c.variationName}` : ''}</span>
+                        <span className="truncate">
+                          {c.name}{c.variationName ? ` · ${c.variationName}` : ''}
+                          {c.extras?.length ? ` + ${c.extras.map((e) => e.name).join(', ')}` : ''}
+                        </span>
                         <Pencil className="h-3 w-3 shrink-0 text-white/30" />
                       </span>
                       <span className="mt-0.5 flex items-center gap-1.5 text-white/40">
@@ -517,14 +539,28 @@ const PosBalcao = ({ onClose }) => {
             </div>
 
             {!printed && (
-              <Button
-                onClick={imprimirPedido}
-                disabled={!cart.length || printing}
-                className="h-14 w-full bg-white text-base font-semibold text-[#5a1a1a] hover:bg-white/90"
-              >
-                {printing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Printer className="h-5 w-5" />}
-                Imprimir Pedido
-              </Button>
+              <div className="space-y-2">
+                <Button
+                  onClick={() => imprimirPedido(true)}
+                  disabled={!cart.length || printing}
+                  className="h-14 w-full bg-white text-base font-semibold text-[#5a1a1a] hover:bg-white/90"
+                >
+                  {printing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Printer className="h-5 w-5" />}
+                  Imprimir Pedido
+                </Button>
+
+                {/* Venda que não passa pela cozinha (bebida, produto já feito):
+                    salta o talão e vai direto ao pagamento. */}
+                <Button
+                  onClick={() => imprimirPedido(false)}
+                  disabled={!cart.length || printing}
+                  variant="outline"
+                  className="h-12 w-full border-white/30 bg-transparent text-base font-semibold text-white hover:bg-white/10 hover:text-white"
+                >
+                  {printing ? <Loader2 className="h-5 w-5 animate-spin" /> : <Receipt className="h-5 w-5" />}
+                  Faturar direto (sem cozinha)
+                </Button>
+              </div>
             )}
 
             {printed && docNumber == null && (
@@ -703,27 +739,83 @@ const PosBalcao = ({ onClose }) => {
         </div>
       </main>
 
-      {/* Seletor de tamanho — pizzas com variações (Média/Grande). Escolher um
-          tamanho adiciona a linha ao preço dessa variação. */}
+      {/* Opções do produto — tamanho (Média/Grande) e extras (Borda de
+          Catupiry). Sem extras, tocar no tamanho adiciona logo (um só toque);
+          com extras, escolhe-se tudo e confirma-se em baixo. */}
       <Dialog open={sizePick != null} onOpenChange={(v) => !v && setSizePick(null)}>
         <DialogContent className="max-w-sm text-foreground">
           <DialogHeader>
-            <DialogTitle className="pr-6 text-lg">{sizePick?.name || 'Tamanho'}</DialogTitle>
+            <DialogTitle className="pr-6 text-lg">{sizePick?.name || 'Produto'}</DialogTitle>
           </DialogHeader>
-          <p className="text-sm text-muted-foreground">Escolhe o tamanho</p>
-          <div className="grid gap-2">
-            {(sizePick?.variations || []).map((v) => (
-              <button
-                key={v.name}
-                type="button"
-                onClick={() => { addLine(sizePick, v); setSizePick(null); }}
-                className="flex items-center justify-between rounded-lg border border-border bg-white px-4 py-3 text-left transition-all touch-manipulation active:scale-[0.98] hover:border-primary/40 hover:shadow-sm"
+
+          {(sizePick?.variations || []).length > 0 && (
+            <>
+              <p className="text-sm text-muted-foreground">Escolhe o tamanho</p>
+              <div className="grid gap-2">
+                {(sizePick?.variations || []).map((v) => {
+                  const temExtras = (sizePick?.extras || []).length > 0;
+                  const escolhido = pickVar?.name === v.name;
+                  return (
+                    <button
+                      key={v.name}
+                      type="button"
+                      onClick={() => {
+                        if (temExtras) { setPickVar(v); return; }
+                        addLine(sizePick, v); setSizePick(null);
+                      }}
+                      className={[
+                        'flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-all touch-manipulation active:scale-[0.98]',
+                        escolhido ? 'border-[#5a1a1a] bg-[#5a1a1a]/[0.06] ring-1 ring-[#5a1a1a]'
+                                  : 'border-border bg-white hover:border-primary/40 hover:shadow-sm',
+                      ].join(' ')}
+                    >
+                      <span className="text-sm font-medium">{v.name}</span>
+                      <span className="text-sm font-semibold text-[#5a1a1a] tabular-nums">{eur(v.price)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {(sizePick?.extras || []).length > 0 && (
+            <>
+              <p className="mt-1 text-sm text-muted-foreground">Extras</p>
+              <div className="grid gap-2">
+                {(sizePick?.extras || []).map((e) => {
+                  const on = pickExtras.some((x) => x.name === e.name);
+                  return (
+                    <button
+                      key={e.name}
+                      type="button"
+                      onClick={() => setPickExtras((prev) => on
+                        ? prev.filter((x) => x.name !== e.name)
+                        : [...prev, { name: e.name, price: Number(e.price) || 0 }])}
+                      className={[
+                        'flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-all touch-manipulation active:scale-[0.98]',
+                        on ? 'border-[#5a1a1a] bg-[#5a1a1a]/[0.06] ring-1 ring-[#5a1a1a]'
+                           : 'border-border bg-white hover:border-primary/40',
+                      ].join(' ')}
+                    >
+                      <span className="text-sm font-medium">{on ? '✓ ' : ''}{e.name}</span>
+                      <span className="text-sm font-semibold text-[#5a1a1a] tabular-nums">+ {eur(e.price)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <Button
+                disabled={(sizePick?.variations || []).length > 0 && !pickVar}
+                onClick={() => { addLine(sizePick, pickVar || null, pickExtras); setSizePick(null); }}
+                className="mt-2 h-12 w-full bg-[#5a1a1a] text-base font-semibold text-white hover:bg-[#4a1414]"
               >
-                <span className="text-sm font-medium">{v.name}</span>
-                <span className="text-sm font-semibold text-[#5a1a1a] tabular-nums">{eur(v.price)}</span>
-              </button>
-            ))}
-          </div>
+                {(sizePick?.variations || []).length > 0 && !pickVar
+                  ? 'Escolhe o tamanho'
+                  : `Adicionar — ${eur(((pickVar ? Number(pickVar.price) : Number(sizePick?.base_price)) || 0)
+                      + pickExtras.reduce((t, x) => t + (Number(x.price) || 0), 0))}`}
+              </Button>
+            </>
+          )}
         </DialogContent>
       </Dialog>
 

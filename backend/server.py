@@ -3985,6 +3985,10 @@ class CounterOrderItem(BaseModel):
     # Tamanho/variação escolhida no balcão (ex.: "Grande (8 Fatias)"). Vai para
     # o talão da cozinha/caixa e para a FS (convenção `variation:{name}`).
     variation_name: Optional[str] = None
+    # Extras escolhidos (ex.: Borda de Catupiry +3€), no mesmo formato que o
+    # menu do cliente já envia: [{"name","price"}]. Os talões já os imprimem; o
+    # preço do extra vem JÁ somado no `unit_price` (igual ao fluxo do cliente).
+    extras: List[dict] = []
     # Overrides opcionais do staff (diálogo do produto no balcão). Sem eles, usa-se
     # o preço/IVA do produto e sem desconto — comportamento de venda rápida.
     unit_price: Optional[float] = None       # override do preço unitário
@@ -3995,6 +3999,9 @@ class CounterOrderItem(BaseModel):
 
 class CounterOrderRequest(BaseModel):
     items: List[CounterOrderItem]
+    # False = venda que não passa pela cozinha (bebida, produto já feito): cria
+    # o pedido e vai direto à fatura, sem talão de cozinha.
+    print_kitchen: bool = True
 
 
 @api_router.post("/pos/counter/order")
@@ -4050,7 +4057,7 @@ async def create_counter_order(
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
-        "variation_name": i.variation_name,
+        "variation_name": i.variation_name, "extras": i.extras,
     } for i in body.items]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
 
@@ -4077,7 +4084,10 @@ async def create_counter_order(
     }
     await db.orders.insert_one(order_doc)
 
-    await _enqueue_order_prints(order_id)
+    # Venda direta (print_kitchen=False): não manda nada para a cozinha —
+    # é para bebidas/produtos já feitos, que vão direto à fatura.
+    if body.print_kitchen:
+        await _enqueue_order_prints(order_id)
 
     return {
         "order_id": order_id,
@@ -4164,7 +4174,7 @@ async def update_counter_order(
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
-        "variation_name": i.variation_name,
+        "variation_name": i.variation_name, "extras": i.extras,
     } for i in body.items]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
     if not built["items"]:

@@ -11,6 +11,7 @@ O `JWT_SECRET` é lido do ambiente NO MOMENTO DA CHAMADA (não no import), para
 que os testes o possam definir antes de importar o módulo e para partilhar o
 mesmo segredo do JWT de admin em server.py.
 """
+import hashlib
 import os
 from datetime import datetime, timezone, timedelta
 
@@ -31,6 +32,22 @@ def hash_token(raw: str) -> str:
 def verify_token(raw: str, hashed: str) -> bool:
     """Compara um token em claro com o hash guardado."""
     return bcrypt.checkpw(raw.encode("utf-8"), hashed.encode("utf-8"))
+
+
+def token_fingerprint(raw: str) -> str:
+    """Impressão digital (SHA-256) do token, para o ENCONTRAR diretamente.
+
+    O token de dispositivo é uma cadeia aleatória de 256 bits
+    (`secrets.token_urlsafe(32)`), não uma palavra-passe humana: não há
+    dicionário nem palpite possível, por isso uma procura indexada por SHA-256 é
+    a forma certa de chegar ao registo — e é O(1).
+
+    Isto substitui o varrimento que comparava o token com TODOS os dispositivos
+    um a um por bcrypt (~0,5s cada): com 22 terminais registados, cada pedido
+    chegava a gastar 11 segundos de CPU. O bcrypt continua guardado em
+    `token_hash` e serve os registos antigos, que ainda não têm impressão.
+    """
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def create_pos_token(pos_user_id: str, name: str) -> str:

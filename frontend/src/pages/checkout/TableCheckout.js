@@ -81,6 +81,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const [splitRemaining, setSplitRemaining] = useState(0);
   const [cancellingSplit, setCancellingSplit] = useState(false);
   const [globalDiscount, setGlobalDiscount] = useState('');
+  const [globalDiscKind, setGlobalDiscKind] = useState('pct'); // 'pct' | 'eur'
   const [cashReceived, setCashReceived] = useState('');
   const [printingConsulta, setPrintingConsulta] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -322,8 +323,13 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const fullTotal = Math.round(billable.reduce((s, e) => s + (e.price || 0), 0) * 100) / 100;
   const selectedTotal = Math.round(selectedEntries.reduce((s, e) => s + (e.price || 0), 0) * 100) / 100;
   const invoiceTotal = hasSelection ? selectedTotal : fullTotal;
-  const globalPct = Math.max(0, Math.min(100, Number(String(globalDiscount).replace(',', '.')) || 0));
-  const payTotal = Math.round(invoiceTotal * (1 - globalPct / 100) * 100) / 100; // total já com desconto global
+  // Desconto global: em % ou em € (o € nunca passa do total da conta).
+  const globalRaw = Math.max(0, Number(String(globalDiscount).replace(',', '.')) || 0);
+  const globalEur = globalDiscKind === 'eur' ? Math.min(globalRaw, invoiceTotal) : 0;
+  const globalPct = globalDiscKind === 'pct' ? Math.min(100, globalRaw) : 0;
+  const payTotal = globalDiscKind === 'eur'                      // total já com desconto global
+    ? Math.round((invoiceTotal - globalEur) * 100) / 100
+    : Math.round(invoiceTotal * (1 - globalPct / 100) * 100) / 100;
   const splitActive = !isRodizioTable && !hasSelection && splitCount > 1;
   const perPerson = splitActive ? payTotal / splitCount : payTotal;
 
@@ -446,7 +452,8 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     setClosing(true);
     try {
       const body = { payment_method_id: Number(paymentId) };
-      if (globalPct > 0) body.global_discount_pct = globalPct;
+      if (globalDiscKind === 'eur' && globalEur > 0) body.global_discount_amount = globalEur;
+      else if (globalPct > 0) body.global_discount_pct = globalPct;
       const toBill = hasSelection ? selectedEntries : billable;
       if (isRodizioTable) {
         const c = countEntries(toBill);
@@ -584,10 +591,19 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                 {/* Desconto global na conta */}
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm">Desconto na conta {globalPct > 0 ? `(−${eur(Math.round((invoiceTotal - payTotal) * 100) / 100)})` : ''}</span>
-                  <div className="relative w-28">
-                    <Input type="number" inputMode="decimal" min={0} max={100} step="1" className="pr-7 text-right"
-                      placeholder="0" value={globalDiscount} onChange={(e) => setGlobalDiscount(e.target.value)} aria-label="Desconto global %" />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">%</span>
+                  <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 overflow-hidden rounded-md border">
+                      <button type="button" onClick={() => setGlobalDiscKind('pct')}
+                        className={`px-3 py-1.5 text-sm ${globalDiscKind === 'pct' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground'}`}>%</button>
+                      <button type="button" onClick={() => setGlobalDiscKind('eur')}
+                        className={`border-l px-3 py-1.5 text-sm ${globalDiscKind === 'eur' ? 'bg-primary text-primary-foreground' : 'bg-background text-muted-foreground'}`}>€</button>
+                    </div>
+                    <Input type="number" inputMode="decimal" min={0}
+                      max={globalDiscKind === 'pct' ? 100 : undefined}
+                      step={globalDiscKind === 'pct' ? '1' : '0.10'}
+                      className="w-24 text-right" placeholder="0" value={globalDiscount}
+                      onChange={(e) => setGlobalDiscount(e.target.value)}
+                      aria-label={globalDiscKind === 'pct' ? 'Desconto global %' : 'Desconto global €'} />
                   </div>
                 </div>
 

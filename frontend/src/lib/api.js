@@ -315,11 +315,11 @@ export const posCheckout = {
 
 // POS - Balcão (pedido sem mesa: criar + faturar + catálogo p/ picker) via posApi
 export const posCounter = {
-  createOrder: (items) =>
-    posApi.post('/pos/counter/order', { items }),
+  createOrder: (items, printKitchen = true) =>
+    posApi.post('/pos/counter/order', { items, print_kitchen: printKitchen }),
   updateOrder: (orderId, items) =>
     posApi.post(`/pos/counter/${orderId}/update`, { items }),
-  checkout: (orderId, paymentMethodId, nif, splitCount, globalDiscountPct) =>
+  checkout: (orderId, paymentMethodId, nif, splitCount, globalDiscountPct, globalDiscountAmount) =>
     posApi.post('/pos/counter/checkout', {
       order_id: orderId,
       payment_method_id: paymentMethodId,
@@ -327,7 +327,9 @@ export const posCounter = {
       // >1 divide a venda: emite UMA parte por chamada (NIF/pagamento próprios).
       split_count: splitCount && splitCount > 1 ? splitCount : undefined,
       // Desconto global (%) sobre a venda toda, como na mesa.
-      global_discount_pct: globalDiscountPct > 0 ? globalDiscountPct : undefined
+      global_discount_pct: globalDiscountPct > 0 ? globalDiscountPct : undefined,
+      // Desconto global em euros (tem precedência sobre a percentagem).
+      global_discount_amount: globalDiscountAmount > 0 ? globalDiscountAmount : undefined
     }),
   // Cancela uma divisão do balcão ainda sem nenhuma parte emitida.
   cancelSplit: (orderId) =>

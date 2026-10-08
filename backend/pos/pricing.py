@@ -134,3 +134,20 @@ def apply_global_amount(lines: list, amount: float) -> tuple:
             liquidos[i] = novo
             break
     return saidas, liquidos
+
+
+def item_net_total(item: dict) -> tuple:
+    """`(bruto, líquido)` de uma linha da conta, com o desconto do ITEM aplicado.
+
+    Existe porque a conta era calculada em DOIS sítios — `_open_bill_lines`
+    (que descontava) e a consulta de mesa (que não descontava) — e a consulta
+    saía impressa com o valor cheio. Agora os dois chamam isto.
+
+    `discount_pct` e `discount_amount` são mutuamente exclusivos (só um fica
+    gravado), mas subtraem-se os dois por segurança. Nunca devolve negativo.
+    """
+    dpct = float(item.get("discount_pct", 0) or 0)
+    damt = float(item.get("discount_amount", 0) or 0)
+    gross = round(float(item.get("total_price", 0) or 0), 2)
+    net = round(max(0.0, gross * (1 - dpct / 100.0) - damt), 2)
+    return gross, net

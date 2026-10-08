@@ -34,7 +34,7 @@ from pos.cash_math import cash_sales_from_vendus, expected_cash, movements_break
 from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
 from pos.app_products import extract_app_products, is_app_product
-from pos.pricing import line_vendus, combine_global, apply_global_amount
+from pos.pricing import line_vendus, combine_global, apply_global_amount, item_net_total
 from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
@@ -802,6 +802,15 @@ class ESCPOSFormatter:
             # Preference
             if item.get('selected_preference'):
                 data.extend(self._text(f"   {item['selected_preference']}\n"))
+
+            # Desconto da linha — o cliente tem de ver o abatimento, senão a
+            # consulta parece ter a conta errada.
+            _dp = float(item.get('discount_pct', 0) or 0)
+            _da = float(item.get('discount_amount', 0) or 0)
+            _gt = item.get('gross_total')
+            if (_dp or _da) and _gt:
+                _rotulo = f"-{_dp:g}%" if _dp else f"-{_da:.2f}"
+                data.extend(self._text(f"   {_gt:.2f} desconto {_rotulo}\n"))
             
             # Price line
             data.extend(self.RIGHT)
@@ -1598,12 +1607,9 @@ async def _open_bill_lines(table_number: int) -> list:
             if it.get("paid") or it.get("removed"):
                 continue
             dpct = float(it.get("discount_pct", 0) or 0)
-            damt = float(it.get("discount_amount", 0) or 0)
-            gross = round(float(it.get("total_price", 0) or 0), 2)
-            # `pct` e `amount` são mutuamente exclusivos (só um está gravado), mas
-            # subtraímos ambos em segurança. O `net` é o que o ecrã mostra e tem
-            # de bater com a FS real (que também aplica o desconto da linha).
-            net = round(max(0.0, gross * (1 - dpct / 100.0) - damt), 2)
+            # O `net` é o que o ecrã mostra e tem de bater com a FS real (que
+            # também aplica o desconto da linha) — e com a consulta impressa.
+            gross, net = item_net_total(it)
             lines.append({
                 "order_id": o["id"], "idx": idx,
                 "product_id": it.get("product_id"),
@@ -2442,6 +2448,10 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
         for it in o.get("items", []):
             if it.get("paid") or it.get("removed"):
                 continue  # itens já faturados ou removidos NÃO entram na consulta
+            # MESMA regra da conta a sério (`item_net_total`): a consulta tem
+            # de sair com o desconto da linha já aplicado, senão mostra-se ao
+            # cliente um valor que não é o que ele vai pagar.
+            _gross, _net = item_net_total(it)
             items.append({
                 "product_name": it.get("product_name"),
                 "quantity": it.get("quantity", 1),
@@ -2450,9 +2460,12 @@ async def print_table_consulta(table_number: int, authorization: Optional[str] =
                 "selected_complements": it.get("selected_complements", []),
                 "selected_preference": it.get("selected_preference"),
                 "unit_price": it.get("unit_price", 0),
-                "total_price": it.get("total_price", 0),
+                "total_price": _net,
+                "gross_total": _gross,
+                "discount_pct": float(it.get("discount_pct", 0) or 0),
+                "discount_amount": it.get("discount_amount"),
             })
-            total += it.get("total_price", 0) or 0
+            total += _net
     total = round(total, 2)
 
     # Rodízio: a parcela fixa por pessoa vive na SESSÃO, não nas orders. Sem isto

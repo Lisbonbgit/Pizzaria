@@ -1684,7 +1684,9 @@ async def tables_overview(authorization: Optional[str] = Header(None),
     for o in open_orders:
         n = o.get("table_number")
         a = agg.setdefault(n, {"total": 0.0, "count": 0, "last": None})
-        a["total"] += sum((it.get("total_price", 0) or 0)
+        # MESMA regra da conta e da consulta (`item_net_total`): sem isto a
+        # grelha mostrava o valor CHEIO das mesas com desconto.
+        a["total"] += sum(item_net_total(it)[1]
                           for it in o.get("items", []) if not it.get("paid") and not it.get("removed"))
         a["count"] += 1
         ca = o.get("created_at")

@@ -77,3 +77,33 @@ def test_talao_da_consulta_mostra_o_abatimento():
                    "total_price": 15.0, "gross_total": 20.0, "discount_pct": 25}],
     })
     assert b"desconto" in out and b"25%" in out
+
+
+def test_grelha_das_mesas_mostra_o_valor_com_desconto(monkeypatch):
+    """O valor na grelha das mesas era o TERCEIRO sítio a somar a conta — e
+    também ignorava o desconto, por isso a mesa aparecia com o valor cheio."""
+    _tabs = [{"id": "t1", "number": 1, "name": "Mesa 1", "active": True}]
+    _ords = [{"id": "o1", "table_number": 1, "paid": False, "status": "received",
+               "created_at": "2026-10-08T18:00:00+00:00", "items": [
+                   {"product_name": "Pizza", "quantity": 1, "total_price": 20.0,
+                    "discount_pct": 25}]}]
+
+    class _C:
+        def __init__(self, docs): self._docs = docs
+        def find(self, q, p=None):
+            docs = self._docs
+            class R:
+                def sort(self, *a, **k): return self
+                async def to_list(self, n): return docs
+            return R()
+
+    class _D:
+        tables = _C(_tabs); orders = _C(_ords); table_sessions = _C([])
+
+    monkeypatch.setattr(server, "db", _D())
+    async def _cfg(): return {"tiers": {}}
+    monkeypatch.setattr(server, "_rodizio_config", _cfg)
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+    out = asyncio.run(server.tables_overview(
+        authorization=f"Bearer {admin}", x_device_token=None))
+    assert out[0]["open_total"] == 15.0, "a grelha mostrava o valor cheio"

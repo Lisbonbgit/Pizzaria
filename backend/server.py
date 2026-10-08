@@ -301,6 +301,13 @@ class PreferenceOptions(BaseModel):
     label: str = "Preferências"
     required: bool = True
     options: List[str] = []
+    # Quantas o cliente pode escolher. O default (0..1) mantém EXATAMENTE o
+    # comportamento de antes (escolha única), por isso os 7 produtos que já
+    # usam preferências não mudam. Com max > 1 o cliente marca várias e elas
+    # chegam juntas em `selected_preference` ("Com Gelo, Limão") — o talão já
+    # imprime esse campo tal como está, por isso não há mais nada a mudar aqui.
+    min_selections: int = 0
+    max_selections: int = 1
 
 class ProductCreate(BaseModel):
     name: str

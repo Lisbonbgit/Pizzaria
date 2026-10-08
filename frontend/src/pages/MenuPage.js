@@ -53,7 +53,7 @@ const MenuPage = () => {
   const [selectedVariation, setSelectedVariation] = useState(null);
   const [selectedExtras, setSelectedExtras] = useState([]);
   const [selectedComplements, setSelectedComplements] = useState({});
-  const [selectedPreference, setSelectedPreference] = useState(null);
+  const [selectedPrefs, setSelectedPrefs] = useState([]);   // várias preferências
   const [itemNotes, setItemNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -247,7 +247,7 @@ const MenuPage = () => {
     );
     setSelectedExtras([]);
     setSelectedComplements({});
-    setSelectedPreference(null);
+    setSelectedPrefs([]);
     setItemNotes('');
     setProductModalOpen(true);
   };
@@ -267,9 +267,20 @@ const MenuPage = () => {
     
     // Validate preference
     const prefs = selectedProduct.preference_options;
-    if (prefs?.enabled && prefs?.required && !selectedPreference) {
-      toast.error(`Selecione uma opção em "${prefs.label || 'Preferências'}"`);
-      return;
+    if (prefs?.enabled) {
+      const maxPref = Math.max(1, prefs.max_selections ?? 1);
+      const minPref = Math.max(prefs.min_selections ?? 0, prefs.required ? 1 : 0);
+      const nome = prefs.label || 'Preferências';
+      if (selectedPrefs.length < minPref) {
+        toast.error(minPref === 1
+          ? `Selecione uma opção em "${nome}"`
+          : `Selecione pelo menos ${minPref} opções em "${nome}"`);
+        return;
+      }
+      if (selectedPrefs.length > maxPref) {
+        toast.error(`Pode escolher no máximo ${maxPref} em "${nome}"`);
+        return;
+      }
     }
     
     // Build complements array
@@ -288,7 +299,7 @@ const MenuPage = () => {
       selectedExtras,
       itemNotes,
       complementsForCart,
-      selectedPreference,
+      selectedPrefs.join(', ') || null,
       included ? 0 : null
     );
 
@@ -884,22 +895,64 @@ const MenuPage = () => {
                       <span className="text-destructive ml-1">*</span>
                     )}
                   </Label>
-                  <RadioGroup
-                    value={selectedPreference || ''}
-                    onValueChange={(value) => setSelectedPreference(value)}
-                    className="mt-2 grid gap-2"
-                  >
-                    {(selectedProduct.preference_options.options || []).map((opt) => (
-                      <div
-                        key={opt}
-                        className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-secondary/50 cursor-pointer"
-                        onClick={() => setSelectedPreference(opt)}
-                      >
-                        <RadioGroupItem value={opt} id={`pref-${opt}`} />
-                        <Label htmlFor={`pref-${opt}`} className="cursor-pointer flex-1">{opt}</Label>
+                  {(() => {
+                    const maxPref = Math.max(1, selectedProduct.preference_options.max_selections ?? 1);
+                    const opcoes = selectedProduct.preference_options.options || [];
+                    // Uma só escolha: fica exatamente como sempre esteve.
+                    if (maxPref <= 1) {
+                      return (
+                        <RadioGroup
+                          value={selectedPrefs[0] || ''}
+                          onValueChange={(value) => setSelectedPrefs([value])}
+                          className="mt-2 grid gap-2"
+                        >
+                          {opcoes.map((opt) => (
+                            <div
+                              key={opt}
+                              className="flex items-center gap-3 p-3 rounded-lg border border-border hover:bg-secondary/50 cursor-pointer"
+                              onClick={() => setSelectedPrefs([opt])}
+                            >
+                              <RadioGroupItem value={opt} id={`pref-${opt}`} />
+                              <Label htmlFor={`pref-${opt}`} className="cursor-pointer flex-1">{opt}</Label>
+                            </div>
+                          ))}
+                        </RadioGroup>
+                      );
+                    }
+                    // Várias: alternar, com o máximo respeitado.
+                    return (
+                      <div className="mt-2 grid gap-2">
+                        <p className="text-xs text-muted-foreground">
+                          Pode escolher até {maxPref} ({selectedPrefs.length} escolhida{selectedPrefs.length === 1 ? '' : 's'})
+                        </p>
+                        {opcoes.map((opt) => {
+                          const on = selectedPrefs.includes(opt);
+                          const cheio = !on && selectedPrefs.length >= maxPref;
+                          return (
+                            <button
+                              key={opt}
+                              type="button"
+                              disabled={cheio}
+                              onClick={() => setSelectedPrefs((prev) => on
+                                ? prev.filter((x) => x !== opt)
+                                : [...prev, opt])}
+                              className={[
+                                'flex items-center gap-3 p-3 rounded-lg border text-left transition-colors',
+                                on ? 'border-primary bg-primary/[0.06]' : 'border-border',
+                                cheio ? 'opacity-40 cursor-not-allowed' : 'hover:bg-secondary/50 cursor-pointer',
+                              ].join(' ')}
+                            >
+                              <span className={[
+                                'flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs',
+                                on ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/40',
+                              ].join(' ')}>{on ? '✓' : ''}</span>
+                              <span className="flex-1">{opt}</span>
+                            </button>
+                          );
+                        })}
                       </div>
-                    ))}
-                  </RadioGroup>
+                    );
+                  })()}
                 </div>
               )}
 

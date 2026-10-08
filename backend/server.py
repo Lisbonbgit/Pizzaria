@@ -26,7 +26,7 @@ from apscheduler.triggers.cron import CronTrigger
 from pymongo.errors import DuplicateKeyError, BulkWriteError
 from pymongo import ReturnDocument
 from vendus import VendusConfig, VendusClient, VendusError
-from pos.auth import hash_token, verify_token, create_pos_token, decode_pos_token
+from pos.auth import hash_token, verify_token, token_fingerprint, create_pos_token, decode_pos_token
 from pos.cash import pick_open_session
 from pos.sales import build_pos_sales_rows
 from pos.idempotency import stable_ext_ref
@@ -148,6 +148,14 @@ async def lifespan(app: FastAPI):
     # Uma mesa/venda só pode ter UMA divisão a meio. O índice único em `target`
     # ({kind,id}) impede dois planos concorrentes para o mesmo contentor — sem
     # isso, duplo-toque criava duas fotografias da mesma conta.
+    # --- Índice da impressão digital dos tokens de dispositivo ---
+    # É o que torna a validação do terminal uma procura direta em vez de um
+    # varrimento com bcrypt por cada dispositivo registado.
+    try:
+        await db.pos_devices.create_index("token_fingerprint")
+    except Exception as e:
+        logger.error(f"Não foi possível criar o índice de pos_devices: {e}")
+
     try:
         await db.split_plans.create_index("target", unique=True)
     except Exception as e:
@@ -3201,7 +3209,10 @@ async def create_pos_device_token(payload: PosDeviceTokenCreate, authorization: 
         "created_at": now.isoformat(),
         "expires_at": (now + timedelta(days=days)).isoformat(),
     }
-    await db.pos_devices.insert_one(device_doc)
+    # Guarda a impressão digital ao lado do hash: é por ela que o token é
+    # encontrado depois (procura direta), sem varrer todos os dispositivos.
+    await db.pos_devices.insert_one(
+        {**device_doc, "token_fingerprint": token_fingerprint(raw_token)})
     return PosDeviceTokenResponse(**device_doc, token=raw_token)
 
 @api_router.post("/admin/pos/device-token/{device_id}/revoke")
@@ -3214,15 +3225,36 @@ async def revoke_pos_device_token(device_id: str, authorization: Optional[str] =
     return {"message": "Token de dispositivo revogado"}
 
 async def valid_device_token(raw: str) -> bool:
-    """Testa um token de dispositivo em claro contra os `pos_devices` ativos
-    e não expirados. Usado pelo auth-duplo dos terminais POS (tarefa futura)."""
+    """Valida o token de um terminal POS — por PROCURA DIRETA, não por varrimento.
+
+    Antes comparava o token com TODOS os dispositivos ativos usando bcrypt
+    (~0,5s cada). Com 22 terminais registados isso custava até 11 segundos de
+    CPU por pedido, e o POS pergunta pelas mesas de 10 em 10 segundos sozinho:
+    o servidor (1 CPU) ficava saturado e TUDO ficava lento, mesmo sem ninguém a
+    usar. Agora procura-se o registo pela impressão digital indexada do token.
+
+    Os registos antigos (sem impressão digital) continuam a funcionar pelo
+    caminho lento, e ficam convertidos na primeira vez que são usados.
+    """
     now = datetime.now(timezone.utc)
-    devices = await db.pos_devices.find({"active": True}, {"_id": 0}).to_list(1000)
-    for device in devices:
-        expires_at = datetime.fromisoformat(device["expires_at"])
-        if expires_at <= now:
+    fp = token_fingerprint(raw)
+
+    # Caminho rápido: um índice, um registo, sem bcrypt.
+    dev = await db.pos_devices.find_one(
+        {"token_fingerprint": fp, "active": True}, {"_id": 0, "expires_at": 1})
+    if dev:
+        return datetime.fromisoformat(dev["expires_at"]) > now
+
+    # Legado: só os que ainda não têm impressão digital pagam bcrypt, e só até
+    # serem convertidos (depois disso passam pelo caminho rápido).
+    legados = await db.pos_devices.find(
+        {"active": True, "token_fingerprint": {"$exists": False}}, {"_id": 0}).to_list(1000)
+    for device in legados:
+        if datetime.fromisoformat(device["expires_at"]) <= now:
             continue
         if verify_token(raw, device["token_hash"]):
+            await db.pos_devices.update_one(
+                {"id": device["id"]}, {"$set": {"token_fingerprint": fp}})
             return True
     return False
 

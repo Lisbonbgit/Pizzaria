@@ -34,7 +34,7 @@ from pos.cash_math import cash_sales_from_vendus, expected_cash, movements_break
 from pos.z_report import build_z_escpos
 from pos.counter import build_counter_items, counter_ext_ref
 from pos.app_products import extract_app_products, is_app_product
-from pos.pricing import line_vendus, combine_global
+from pos.pricing import line_vendus, combine_global, apply_global_amount
 from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
@@ -1638,6 +1638,9 @@ class CloseTableRequest(BaseModel):
     children_free: int = 0   # crianças grátis (ex.: ≤5 anos) — apenas informativo
     waste_boxes: int = 0     # nº de taxas de desperdício a cobrar
     global_discount_pct: float = 0  # desconto (%) sobre TODA a fatura (0..100)
+    # Desconto global em EUROS. Tem precedência sobre a percentagem e fecha a
+    # conta ao cêntimo (a conversão para % sozinha deixava até 2 cêntimos).
+    global_discount_amount: float = 0
 
 
 @api_router.get("/tables/{table_number}/bill")
@@ -2144,15 +2147,23 @@ async def close_table(table_number: int, req: CloseTableRequest,
         vendus_items = []
         by_tax = {}
         total = 0.0
-        for l in lines:
-            # line_vendus resolve título/qtd/preço/IVA da linha (com os overrides
-            # do item: vendus_tax_id, desconto em €); combine_global funde o
-            # desconto da linha com o desconto GLOBAL num único discount_percentage
-            # e devolve o líquido EXATO que o Vendus calcula (sem desvio).
-            li, amt = combine_global(
-                line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID,
-                            vendus_id=vid_by_prod.get(l.get("product_id"))), g_disc)
-            tax = li["tax_id"]                                  # IVA efetivo (override incluído)
+        # line_vendus resolve título/qtd/preço/IVA de cada linha (com os
+        # overrides do item). Depois aplica-se o desconto GLOBAL: em EUROS
+        # (`apply_global_amount`, que fecha a conta ao cêntimo) ou em
+        # percentagem (`combine_global`). Em ambos o líquido devolvido é o
+        # EXATO que o Vendus calcula, sem desvio.
+        _lis = [line_vendus(l, tax_by_prod.get(l.get("product_id")), VENDUS_DEFAULT_TAX_ID,
+                            vendus_id=vid_by_prod.get(l.get("product_id"))) for l in lines]
+        g_amount = max(0.0, float(req.global_discount_amount or 0))
+        if g_amount > 0:
+            _outs, _amts = apply_global_amount(_lis, g_amount)
+        else:
+            _outs, _amts = [], []
+            for _li in _lis:
+                _o, _a = combine_global(_li, g_disc)
+                _outs.append(_o); _amts.append(_a)
+        for _li, li, amt in zip(_lis, _outs, _amts):
+            tax = _li["tax_id"]                                 # IVA efetivo (override incluído)
             vendus_items.append(li)
             by_tax[tax] = round(by_tax.get(tax, 0.0) + amt, 2)
             total += amt
@@ -4237,6 +4248,8 @@ class CounterCheckoutRequest(BaseModel):
     # desconto próprio de cada linha (`combine_global`) e vai ao Vendus linha a
     # linha — nunca um abatimento por fora.
     global_discount_pct: float = 0
+    # Desconto global em EUROS (tem precedência sobre a percentagem).
+    global_discount_amount: float = 0
 
 
 @api_router.post("/pos/counter/{order_id}/split-cancel")
@@ -4334,14 +4347,24 @@ async def checkout_counter_order(
     # desconto próprio de cada linha (mesma regra e mesmo helper da mesa).
     g_disc = max(0.0, min(100.0, float(body.global_discount_pct or 0)))
 
+    _lis = [line_vendus(l, None, VENDUS_DEFAULT_TAX_ID,
+                        vendus_id=vid_by_prod.get(l.get("product_id")))
+            for l in order.get("items", [])]
+    g_amount = max(0.0, float(body.global_discount_amount or 0))
+    if g_amount > 0:
+        _outs, _liqs = apply_global_amount(_lis, g_amount)
+    else:
+        _outs, _liqs = [], []
+        for _li in _lis:
+            _o, _q = combine_global(_li, g_disc)
+            _outs.append(_o); _liqs.append(_q)
+
     vendus_items = []
     total = 0.0
     by_tax = {}
-    for l in order.get("items", []):
-        li = line_vendus(l, None, VENDUS_DEFAULT_TAX_ID, vendus_id=vid_by_prod.get(l.get("product_id")))
-        out, liquido = combine_global(li, g_disc)
+    for _li, out, liquido in zip(_lis, _outs, _liqs):
         vendus_items.append(out)
-        _tax = li.get("tax_id") or VENDUS_DEFAULT_TAX_ID
+        _tax = _li.get("tax_id") or VENDUS_DEFAULT_TAX_ID
         by_tax[_tax] = round(by_tax.get(_tax, 0.0) + liquido, 2)
         total += liquido
     total = round(total, 2)

@@ -79,6 +79,7 @@ const PosBalcao = ({ onClose }) => {
   const [nif, setNif] = useState('');
   // Desconto GLOBAL (%) sobre a venda toda — só entra na FATURA.
   const [globalDiscount, setGlobalDiscount] = useState('');
+  const [globalDiscKind, setGlobalDiscKind] = useState('pct'); // 'pct' | 'eur'
   const [cashReceived, setCashReceived] = useState('');
   const [checkingOut, setCheckingOut] = useState(false);
   // Divisão da venda: N partes, quantas já saíram e quanto falta.
@@ -167,8 +168,12 @@ const PosBalcao = ({ onClose }) => {
   const cartTotal = Math.round(cart.reduce((s, c) => s + lineNet(c), 0) * 100) / 100;
   // Desconto GLOBAL (%) por cima dos descontos de linha (mesma regra da mesa:
   // o servidor recompõe tudo em `combine_global`, linha a linha, para a FS).
-  const globalPct = Math.max(0, Math.min(100, Number(String(globalDiscount).replace(',', '.')) || 0));
-  const total = Math.round(cartTotal * (1 - globalPct / 100) * 100) / 100;
+  const globalRaw = Math.max(0, Number(String(globalDiscount).replace(',', '.')) || 0);
+  const globalEur = globalDiscKind === 'eur' ? Math.min(globalRaw, cartTotal) : 0;
+  const globalPct = globalDiscKind === 'pct' ? Math.min(100, globalRaw) : 0;
+  const total = globalDiscKind === 'eur'
+    ? Math.round((cartTotal - globalEur) * 100) / 100
+    : Math.round(cartTotal * (1 - globalPct / 100) * 100) / 100;
 
   // Abre o diálogo do produto para a linha `idx` do carrinho (qtd/preço/IVA/desconto).
   const openEdit = (idx) => {
@@ -279,7 +284,7 @@ const PosBalcao = ({ onClose }) => {
     setCheckingOut(true);
     try {
       const r = await posCounter.checkout(orderId, Number(paymentId),
-        nif.trim() || undefined, splitCount, globalPct);
+        nif.trim() || undefined, splitCount, globalPct, globalEur);
       if (r.data.order_paid === false) {
         // Divisão a meio: a venda continua aberta e cada parte seguinte escolhe
         // o SEU método de pagamento e o SEU NIF.
@@ -614,11 +619,20 @@ const PosBalcao = ({ onClose }) => {
                     Desconto na conta{globalPct > 0 ? ` (−${eur(Math.round((cartTotal - total) * 100) / 100)})` : ''}
                   </span>
                   <div className="relative w-28">
-                    <Input type="number" inputMode="decimal" min={0} max={100} step="1"
-                      className="border-white/25 bg-white/10 pr-7 text-right text-white"
-                      placeholder="0" value={globalDiscount} disabled={splitOf > 0}
-                      onChange={(e) => setGlobalDiscount(e.target.value)} aria-label="Desconto global %" />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-white/50">%</span>
+                    <div className="flex items-center gap-2">
+                      <div className="flex shrink-0 overflow-hidden rounded-md border border-white/25">
+                        <button type="button" disabled={splitOf > 0} onClick={() => setGlobalDiscKind('pct')}
+                          className={`px-2.5 py-1.5 text-sm ${globalDiscKind === 'pct' ? 'bg-white text-[#5a1a1a]' : 'bg-transparent text-white/60'}`}>%</button>
+                        <button type="button" disabled={splitOf > 0} onClick={() => setGlobalDiscKind('eur')}
+                          className={`border-l border-white/25 px-2.5 py-1.5 text-sm ${globalDiscKind === 'eur' ? 'bg-white text-[#5a1a1a]' : 'bg-transparent text-white/60'}`}>€</button>
+                      </div>
+                      <Input type="number" inputMode="decimal" min={0}
+                        max={globalDiscKind === 'pct' ? 100 : undefined}
+                        step={globalDiscKind === 'pct' ? '1' : '0.10'}
+                        className="w-20 border-white/25 bg-white/10 text-right text-white"
+                        placeholder="0" value={globalDiscount} disabled={splitOf > 0}
+                        onChange={(e) => setGlobalDiscount(e.target.value)} aria-label="Desconto global" />
+                    </div>
                   </div>
                 </div>
 

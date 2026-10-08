@@ -87,3 +87,50 @@ def combine_global(li: dict, global_pct: float) -> tuple:
         out["discount_percentage"] = eff
     liquido = round(unit * qty * (1 - eff / 100.0), 2)
     return out, liquido
+
+
+def apply_global_amount(lines: list, amount: float) -> tuple:
+    """Desconto GLOBAL em EUROS sobre um conjunto de linhas Vendus.
+
+    O Vendus só aceita percentagem por linha, por isso o valor em € converte-se
+    na percentagem equivalente e passa pelo MESMO `combine_global` (que compõe
+    com o desconto próprio de cada linha). Essa conversão sozinha não fecha a
+    conta: medido em 4000 ensaios, só 70% davam certo ao cêntimo e o desvio ia
+    até 2 cêntimos. Por isso o resto do arredondamento é absorvido na ÚLTIMA
+    linha com valor — a mesma regra da divisão da conta — e o que se cobra passa
+    a ser EXATAMENTE `bruto - desconto`.
+
+    Devolve `(linhas_vendus, liquidos)`, um líquido por linha, na mesma ordem.
+    """
+    def _bruto(l):
+        return round(float(l.get("gross_price", 0) or 0) * (l.get("qty", 1) or 1), 2)
+
+    bruto_total = round(sum(_bruto(l) for l in lines), 2)
+    amount = max(0.0, min(float(amount or 0), bruto_total))
+    if bruto_total <= 0:
+        return [combine_global(l, 0)[0] for l in lines], [0.0 for _ in lines]
+
+    pct = round(100.0 * amount / bruto_total, 4)
+    saidas, liquidos = [], []
+    for l in lines:
+        out, liq = combine_global(l, pct)
+        saidas.append(out)
+        liquidos.append(liq)
+
+    # Resto do arredondamento na ÚLTIMA linha com valor.
+    alvo = round(bruto_total - amount, 2)
+    resto = round(alvo - round(sum(liquidos), 2), 2)
+    if resto:
+        for i in range(len(lines) - 1, -1, -1):
+            g = _bruto(lines[i])
+            novo = round(liquidos[i] + resto, 2)
+            if g <= 0 or novo < 0 or novo > g:
+                continue
+            eff = round(100.0 * (1 - novo / g), 4)
+            if eff > 0:
+                saidas[i]["discount_percentage"] = eff
+            else:
+                saidas[i].pop("discount_percentage", None)
+            liquidos[i] = novo
+            break
+    return saidas, liquidos

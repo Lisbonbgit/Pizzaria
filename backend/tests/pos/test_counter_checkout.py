@@ -52,14 +52,15 @@ class _FakeVendus:
     def close(self): pass
 
 
-def _corre(order, pct, monkeypatch):
+def _corre(order, pct, monkeypatch, euros=0):
     db = _Db(order)
     monkeypatch.setattr(server, "db", db)
     monkeypatch.setattr(server, "_vendus_client", lambda *a, **k: _FakeVendus())
     admin = create_token("a1", "gestor@lenhaebrasa.com")
     pos_token = create_pos_token("op-1", "Ana")
     body = CounterCheckoutRequest(order_id="o1", payment_method_id=1,
-                                  global_discount_pct=pct)
+                                  global_discount_pct=pct,
+                                  global_discount_amount=euros)
     return asyncio.run(checkout_counter_order(
         body, authorization=f"Bearer {admin}", x_device_token=None,
         x_pos_token=pos_token))
@@ -84,3 +85,16 @@ def test_desconto_global_chega_a_fatura(monkeypatch):
     assert _FakeVendus.ultima["payments"][0]["amount"] == 18.0
     # E o desconto vai NA LINHA (o Vendus recebe-o), não por fora.
     assert _FakeVendus.ultima["items"][0].get("discount_percentage") == 10
+
+
+def test_desconto_em_euros_chega_a_fatura(monkeypatch):
+    # 20,00 com 5,00 de desconto = 15,00, tanto no que se cobra como no Vendus.
+    res = _corre(_order(), 0, monkeypatch, euros=5.0)
+    assert res["total"] == 15.0
+    assert _FakeVendus.ultima["payments"][0]["amount"] == 15.0
+
+
+def test_euros_tem_precedencia_sobre_percentagem(monkeypatch):
+    # Se vierem os dois, manda o valor em euros (é o mais explícito).
+    res = _corre(_order(), 50, monkeypatch, euros=2.0)
+    assert res["total"] == 18.0

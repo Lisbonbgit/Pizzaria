@@ -985,7 +985,10 @@ const AdminMenu = () => {
                     setProductForm(prev => ({
                       ...prev,
                       preference_options: checked
-                        ? { enabled: true, label: 'Preferências', required: true, options: prev.preference_options?.options || [] }
+                        ? { enabled: true, label: 'Preferências', required: true,
+                            min_selections: prev.preference_options?.min_selections ?? 0,
+                            max_selections: prev.preference_options?.max_selections ?? 1,
+                            options: prev.preference_options?.options || [] }
                         : null
                     }));
                   }}
@@ -1013,6 +1016,40 @@ const AdminMenu = () => {
                       <Label className="text-xs">Obrigatório</Label>
                     </div>
                   </div>
+
+                  {/* Quantas o cliente pode escolher. Máximo 1 = como sempre
+                      foi (escolha única). Máximo > 1 deixa marcar várias (ex.:
+                      Com Gelo + Limão), sem precisar da opção combinada. */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs">Mínimo a escolher</Label>
+                      <Input type="number" min="0"
+                        value={productForm.preference_options.min_selections ?? 0}
+                        onChange={(e) => setProductForm(prev => ({
+                          ...prev, preference_options: {
+                            ...prev.preference_options,
+                            min_selections: parseInt(e.target.value, 10) || 0,
+                          }
+                        }))}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Máximo a escolher</Label>
+                      <Input type="number" min="1"
+                        value={productForm.preference_options.max_selections ?? 1}
+                        onChange={(e) => setProductForm(prev => ({
+                          ...prev, preference_options: {
+                            ...prev.preference_options,
+                            max_selections: Math.max(1, parseInt(e.target.value, 10) || 1),
+                          }
+                        }))}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Máximo 1 = o cliente escolhe só uma (como até agora). Acima de 1,
+                    pode marcar várias.
+                  </p>
                   <div className="space-y-2">
                     {(productForm.preference_options.options || []).map((opt, oIdx) => (
                       <div key={oIdx} className="flex items-center gap-2 p-2 bg-background rounded">

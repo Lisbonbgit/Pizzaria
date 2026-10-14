@@ -1965,6 +1965,22 @@ async def _delete_split_plan(target: dict) -> None:
     await db.split_plans.delete_one({"target": target})
 
 
+async def _mark_lines_paid(refs, payment_method_id, doc_id) -> None:
+    """Marca as linhas `(order_id, idx)` pagas. Um pedido fica "paid" quando
+    todos os seus itens ficam pagos."""
+    by_order = {}
+    for oid, i in refs:
+        by_order.setdefault(oid, []).append(i)
+    for oid, idxs in by_order.items():
+        await db.orders.update_one({"id": oid}, {"$set": {f"items.{i}.paid": True for i in idxs}})
+        od = await db.orders.find_one({"id": oid}, {"_id": 0, "items": 1})
+        if od and all(it.get("paid") for it in od.get("items", [])):
+            await db.orders.update_one({"id": oid}, {"$set": {
+                "paid": True, "status": "delivered",
+                "payment_method": str(payment_method_id),
+                "vendus_document_id": doc_id}})
+
+
 async def _assert_no_open_split(kind: str, ident):
     """Recusa mutações enquanto há uma divisão a meio (o total fotografado não
     pode mudar). A porta fecha-se no SERVIDOR, não só no ecrã."""
@@ -2286,19 +2302,12 @@ async def close_table(table_number: int, req: CloseTableRequest,
     if not docs:
         raise HTTPException(status_code=502, detail="Vendus não devolveu documento")
 
-    # Marca como pagos SÓ os itens faturados (item a item). Um pedido fica "paid"
-    # quando todos os seus itens ficam pagos.
-    by_order = {}
-    for l in lines:
-        by_order.setdefault(l["order_id"], []).append(l["idx"])
-    for oid, idxs in by_order.items():
-        await db.orders.update_one({"id": oid}, {"$set": {f"items.{i}.paid": True for i in idxs}})
-        od = await db.orders.find_one({"id": oid}, {"_id": 0, "items": 1})
-        if od and all(it.get("paid") for it in od.get("items", [])):
-            await db.orders.update_one({"id": oid}, {"$set": {
-                "paid": True, "status": "delivered",
-                "payment_method": str(req.payment_method_id),
-                "vendus_document_id": docs[0].get("id")}})
+    # Marca como pagos SÓ os itens faturados (item a item). Numa divisão NÃO: as
+    # linhas só ficam pagas na ÚLTIMA parte (mais abaixo) — marcá-las já esvaziava
+    # a conta e a parte 2 dava "Mesa sem conta em aberto" (defeito de 2026-10-09).
+    if plan is None:
+        await _mark_lines_paid([(l["order_id"], l["idx"]) for l in lines],
+                               req.payment_method_id, docs[0].get("id"))
 
     # Regista uma linha de venda POS por documento emitido (fecho Z + reconciliação
     # da Task 10). SÓ no caminho POS com caixa aberta — o admin legado (JWT) não
@@ -2334,10 +2343,10 @@ async def close_table(table_number: int, req: CloseTableRequest,
         split_part, split_of = idx + 1, plan["n"]
         split_done = next_unpaid_index(plan["shares"]) is None
         if split_done:
-            # Última parte: agora sim, marca TODAS as linhas fotografadas pagas.
-            for oid, lidx in plan["finalize"]["line_ids"]:
-                await db.orders.update_one({"id": oid},
-                                           {"$set": {f"items.{lidx}.paid": True}})
+            # Última parte: agora sim, marca TODAS as linhas fotografadas pagas
+            # (e os pedidos, que ficam "paid" como num fecho normal).
+            await _mark_lines_paid(plan["finalize"]["line_ids"],
+                                   req.payment_method_id, docs[0].get("id"))
             await _delete_split_plan(split_target)
         else:
             split_remaining = remaining_amount(plan["shares"])
@@ -2425,6 +2434,9 @@ async def free_table(table_number: int, authorization: Optional[str] = Header(No
     """Liberta a mesa SEM faturar: cancela os pedidos em aberto e fecha a sessão.
     Para quando alguém lê o QR mas não pede, ou o cliente sai sem consumir."""
     await get_pos_or_admin(authorization, x_device_token)
+    # A meio de uma divisão (já há FS emitida) não: cancelava os pedidos e o
+    # plano ficava pendurado — a mesa seguinte pagaria a parte seguinte deste.
+    await _assert_no_open_split("table", table_number)
     orders = await _open_orders_for_table(table_number)
     order_ids = [o["id"] for o in orders]
     cancelled = 0

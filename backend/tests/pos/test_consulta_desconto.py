@@ -107,3 +107,23 @@ def test_grelha_das_mesas_mostra_o_valor_com_desconto(monkeypatch):
     out = asyncio.run(server.tables_overview(
         authorization=f"Bearer {admin}", x_device_token=None))
     assert out[0]["open_total"] == 15.0, "a grelha mostrava o valor cheio"
+
+
+def test_a_linha_da_conta_vale_o_mesmo_que_na_fatura():
+    # 3 × 3,45 com 10%: a conta mostrava 9,31 e a FS saía com 9,32 (a conta
+    # arredondava o bruto antes do desconto, a FS não). O operador cobrava um
+    # valor no terminal e a fatura dizia outro.
+    import random
+    from pos.pricing import combine_global, line_vendus
+    it = {"unit_price": 3.45, "quantity": 3, "total_price": 3.45 * 3, "discount_pct": 10}
+    assert item_net_total(it)[1] == combine_global(line_vendus(it, None, "NOR"), 0)[1] == 9.32
+    random.seed(7)
+    for _ in range(5000):
+        q = random.randint(1, 6)
+        u = random.randint(50, 3000) / 100
+        it = {"unit_price": u, "quantity": q, "total_price": u * q}
+        if random.random() < 0.5:
+            it["discount_pct"] = random.choice([5, 10, 12.5, 15, 25, 33, 50])
+        else:
+            it["discount_amount"] = round(random.uniform(0.1, u * q), 2)
+        assert item_net_total(it)[1] == combine_global(line_vendus(it, None, "NOR"), 0)[1], it

@@ -21,7 +21,8 @@ const lineGross = (c) => Math.round((Number(c.unitPrice) || 0) * c.qty * 100) / 
 const itemToCartLine = (it) => ({
   id: it.product_id, name: it.product_name, variationName: it.variation?.name || null,
   extras: it.extras || [], qty: it.quantity, unitPrice: it.unit_price,
-  tax: it.vendus_tax_id === 'INT' ? 'INT' : 'NOR', taxTouched: false,
+  // O IVA gravado já é o efetivo (override incluído): reenvia-se tal e qual.
+  tax: it.vendus_tax_id === 'INT' ? 'INT' : 'NOR', taxTouched: true,
   discKind: it.discount_amount ? 'eur' : 'pct',
   discVal: String(it.discount_amount || it.discount_pct || ''),
 });
@@ -98,6 +99,9 @@ const PosBalcao = ({ onClose }) => {
   const [splitRemaining, setSplitRemaining] = useState(0);
   // Valor da PRÓXIMA parte, dito pelo servidor (é o que se marca no terminal).
   const [splitNext, setSplitNext] = useState(null);
+  // {total, amount} do SERVIDOR para a venda impressa (a conta feita aqui
+  // arredondava de outra maneira e falhava 1 cêntimo).
+  const [preview, setPreview] = useState(null);
   const [cancellingSplit, setCancellingSplit] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [docNumber, setDocNumber] = useState(null);
@@ -322,7 +326,26 @@ const PosBalcao = ({ onClose }) => {
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
   // Em cêntimos e meio-para-cima, igual ao servidor: as partes 1..N−1 saem
   // EXATAMENTE com este valor (a última leva o resto).
-  const perPerson = splitCount > 1 ? Math.round(Math.round(total * 100) / splitCount) / 100 : total;
+  const perPerson = preview ? preview.amount
+    : splitCount > 1 ? Math.round(Math.round(total * 100) / splitCount) / 100 : total;
+  const shownTotal = preview ? preview.total : total;
+
+  // Antes da 1.ª parte o valor vem do servidor (sem efeitos); a meio da divisão
+  // já vem no `splitNext`.
+  const previewKey = printed && !dirty && splitOf === 0 && docNumber == null
+    ? JSON.stringify([orderId, splitCount, globalPct, globalEur]) : null;
+  useEffect(() => {
+    setPreview(null);
+    if (!previewKey) return undefined;
+    let vivo = true;
+    const t = setTimeout(() => {
+      posCounter.previewCheckout(orderId, splitCount, globalPct, globalEur)
+        .then((r) => { if (vivo) setPreview(r.data); })
+        .catch(() => {});
+    }, 250);
+    return () => { vivo = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey]);
   // O que se cobra AGORA: a meio da divisão, a parte seguinte (do servidor).
   const chargeAmount = splitOf > 0 && splitNext != null ? splitNext : perPerson;
   const troco = Math.round((received - chargeAmount) * 100) / 100;
@@ -538,7 +561,7 @@ const PosBalcao = ({ onClose }) => {
         {/* DIREITA — carrinho + faturação */}
         <div className="flex w-full min-h-0 flex-col bg-[#3a1414] text-white md:w-[40%] md:max-w-md">
           {/* Vendas com divisão a meio — oferecem-se, nunca se impõem. */}
-          {!printed && pendentes.map((v) => (
+          {!printed && !printing && cart.length === 0 && pendentes.map((v) => (
             <div key={v.order_id} className="flex items-center justify-between gap-3 border-b border-amber-400/40 bg-amber-400/15 px-4 py-2.5">
               <div className="min-w-0 text-sm">
                 <p className="font-semibold text-amber-100">Venda nº {v.order_number} dividida</p>
@@ -620,7 +643,7 @@ const PosBalcao = ({ onClose }) => {
           <div className="space-y-3 border-t border-white/10 p-4">
             <div className="flex items-center justify-between text-base font-semibold">
               <span>Total</span>
-              <span className="tabular-nums">{eur(total)}</span>
+              <span className="tabular-nums">{eur(shownTotal)}</span>
             </div>
             {splitOf > 0 && splitNext != null ? (
               <div className="flex items-center justify-between rounded-lg bg-white/10 px-3 py-2 text-base font-semibold">
@@ -707,7 +730,7 @@ const PosBalcao = ({ onClose }) => {
                     (as partes já foram calculadas sobre o total fotografado). */}
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm">
-                    Desconto na conta{globalPct > 0 ? ` (−${eur(Math.round((cartTotal - total) * 100) / 100)})` : ''}
+                    Desconto na conta{globalPct > 0 ? ` (−${eur(Math.round((cartTotal - shownTotal) * 100) / 100)})` : ''}
                   </span>
                   <div className="relative w-28">
                     <div className="flex items-center gap-2">
@@ -778,7 +801,7 @@ const PosBalcao = ({ onClose }) => {
 
                 <Button
                   onClick={emitirDocumento}
-                  disabled={checkingOut || cancelling || !paymentId || dirty}
+                  disabled={checkingOut || cancelling || cancellingSplit || !paymentId || dirty}
                   className="h-14 w-full bg-white text-base font-semibold text-[#5a1a1a] hover:bg-white/90"
                 >
                   {checkingOut ? <Loader2 className="h-5 w-5 animate-spin" /> : <Receipt className="h-5 w-5" />}

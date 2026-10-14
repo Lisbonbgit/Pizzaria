@@ -1654,6 +1654,10 @@ class CloseTableRequest(BaseModel):
     # Desconto global em EUROS. Tem precedência sobre a percentagem e fecha a
     # conta ao cêntimo (a conversão para % sozinha deixava até 2 cêntimos).
     global_discount_amount: float = 0
+    # Só calcula: devolve {total, amount} (o que a próxima fatura vai cobrar) sem
+    # criar divisão nem emitir. O ecrã mostra ESTE valor — a conta feita no
+    # browser arredondava de outra maneira e falhava 1 cêntimo.
+    preview: bool = False
 
 
 @api_router.get("/tables/{table_number}/bill")
@@ -1992,6 +1996,17 @@ def _dedup_dates(sess) -> list:
     return out
 
 
+async def _split_dedup_dates(sess, plan) -> list:
+    """Janela da dedup fiscal. Numa divisão RETOMADA inclui também a caixa onde o
+    plano nasceu: uma parte que o Vendus criou num 503 de ontem tem de ser
+    encontrada hoje (senão saía 2ª FS — e o "Cancelar" mandava carregar em Emitir)."""
+    dias = set(_dedup_dates(sess))
+    if plan is not None:
+        psess = await db.cash_sessions.find_one({"id": plan.get("cash_session_id")}, {"_id": 0})
+        dias |= set(_dedup_dates(psess))
+    return sorted(dias)
+
+
 async def _split_doc_in_vendus(plan):
     """A FS de uma parte que o Vendus CRIOU apesar de responder com erro (503,
     timeout) — a parte ficou por marcar paga. Procura as ext_ref do plano na
@@ -2307,6 +2322,9 @@ async def close_table(table_number: int, req: CloseTableRequest,
         # O plano fotografa a conta na 1ª chamada; as linhas só ficam pagas na
         # última parte (um retry a meio nunca fecha a mesa). Um plano já aberto
         # chegou aqui só se for a mesma divisão (porta no início do fecho).
+        if req.preview:
+            shares = plan["shares"] if plan is not None else compute_shares(by_tax, n_req, "")
+            return {"total": total, "amount": next_amount(shares) or 0.0}
         if plan is None and n_req > 1:
             plan = await _create_split_plan(
                 split_target, n_req, total, by_tax,
@@ -2328,12 +2346,16 @@ async def close_table(table_number: int, req: CloseTableRequest,
         # NIF aceite SEMPRE (antes só quando n==1): cada parte leva o seu.
         client = {"fiscal_id": req.nif} if req.nif else None
 
+    # Uma pré-visualização NUNCA emite (o rodízio também chega aqui).
+    if req.preview:
+        return {"total": total, "amount": round(sum(i["amount"] for i in invoices), 2)}
+
     # Dias (Europe/Lisbon) a consultar na DEDUP fiscal. Tem de cobrir toda a
     # sessão de caixa — NÃO só hoje — senão um retry de um fecho a atravessar a
     # meia-noite (23:59 → 00:0x, a hora a que a pizzaria fecha mesas) não
     # encontrava a FS de ontem e EMITIA 2ª FS (cobrança dupla). Espelha a janela
     # midnight-safe da reconciliação (Task 10).
-    dedup_dates = _dedup_dates(sess)
+    dedup_dates = await _split_dedup_dates(sess, plan)
 
     def _emit_all():
         c = _vendus_client()
@@ -4368,6 +4390,7 @@ class CounterCheckoutRequest(BaseModel):
     global_discount_pct: float = 0
     # Desconto global em EUROS (tem precedência sobre a percentagem).
     global_discount_amount: float = 0
+    preview: bool = False   # só calcula {total, amount}, sem divisão nem FS (como na mesa)
 
 
 @api_router.get("/pos/counter/open-split")
@@ -4540,6 +4563,9 @@ async def checkout_counter_order(
         await _delete_split_plan(split_target)
         return {"doc_number": last, "total": 0.0, "part": plan["n"], "of": plan["n"],
                 "order_paid": True, "remaining_total": 0.0, "next_amount": None}
+    if body.preview:
+        shares = plan["shares"] if plan is not None else compute_shares(by_tax, n_req, "")
+        return {"total": total, "amount": next_amount(shares) or 0.0}
     if plan is None and n_req > 1:
         plan = await _create_split_plan(
             split_target, n_req, total, by_tax, "Venda dividida", base_ext_ref,
@@ -4560,7 +4586,7 @@ async def checkout_counter_order(
     # Janela de dedup (Europe/Lisbon): cobre toda a sessão de caixa — não só hoje
     # — para um retry a atravessar a meia-noite ainda encontrar a FS de ontem
     # (midnight-safe, espelha `close_table` e a reconciliação).
-    dedup_dates = _dedup_dates(sess)
+    dedup_dates = await _split_dedup_dates(sess, plan)
 
     def _emit():
         c = _vendus_client()

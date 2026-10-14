@@ -81,6 +81,9 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const [splitRemaining, setSplitRemaining] = useState(0);
   // Valor da PRÓXIMA parte, dito pelo servidor (é o que se marca no terminal).
   const [splitNext, setSplitNext] = useState(null);
+  // {total, amount} calculados pelo SERVIDOR para o que está no ecrã (a conta
+  // feita aqui arredondava de outra maneira e falhava 1 cêntimo).
+  const [preview, setPreview] = useState(null);
   const [cancellingSplit, setCancellingSplit] = useState(false);
   const [globalDiscount, setGlobalDiscount] = useState('');
   const [globalDiscKind, setGlobalDiscKind] = useState('pct'); // 'pct' | 'eur'
@@ -146,8 +149,10 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
       setSplitRemaining(sp ? sp.remaining : 0);
       setSplitNext(sp ? sp.next_amount : null);
       if (sp) { setSplitCount(sp.of); setMode('edit'); }
+      return sp;
     } catch {
       toast.error('Erro ao carregar a conta da mesa');
+      return null;
     } finally {
       setTableLoading(false);
     }
@@ -167,6 +172,11 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     setPaymentId('');
     setNif('');
     setSplitCount(1);
+    setSplitPart(0);
+    setSplitOf(0);
+    setSplitNext(null);
+    setSplitRemaining(0);
+    setPreview(null);
     setGlobalDiscount('');
     setCashReceived('');
     setAddProductId('');
@@ -336,7 +346,9 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const splitActive = !isRodizioTable && !hasSelection && splitCount > 1;
   // Em cêntimos e meio-para-cima, igual ao servidor: as partes 1..N−1 saem
   // EXATAMENTE com este valor (a última leva o resto).
-  const perPerson = splitActive ? Math.round(Math.round(payTotal * 100) / splitCount) / 100 : payTotal;
+  const perPerson = preview ? preview.amount
+    : splitActive ? Math.round(Math.round(payTotal * 100) / splitCount) / 100 : payTotal;
+  const shownTotal = preview ? preview.total : payTotal;
   // O que se cobra AGORA: a meio da divisão, a parte seguinte (do servidor);
   // senão a parte de cada um ou a conta.
   const chargeAmount = splitOf > 0 && splitNext != null ? splitNext : perPerson;
@@ -455,29 +467,53 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     return { adults, children_half, children_free, waste_boxes, items };
   };
 
+  // Corpo do fecho — o MESMO para emitir e para pré-visualizar.
+  const buildBody = () => {
+    const body = { payment_method_id: Number(paymentId) || 0 };
+    if (globalDiscKind === 'eur' && globalEur > 0) body.global_discount_amount = globalEur;
+    else if (globalPct > 0) body.global_discount_pct = globalPct;
+    const toBill = hasSelection ? selectedEntries : billable;
+    if (isRodizioTable) {
+      const c = countEntries(toBill);
+      body.rodizio_tier = rodizioMode;
+      body.adults = c.adults;
+      body.children_half = c.children_half;
+      body.children_free = c.children_free;
+      body.waste_boxes = c.waste_boxes;
+      body.items = c.items;
+      body.nif = nif.trim() || null;
+    } else if (hasSelection) {
+      body.items = selectedEntries.map((e) => ({ order_id: e.line.order_id, idx: e.line.idx }));
+    } else {
+      body.nif = nif.trim() || null;
+      body.split_count = splitActive ? splitCount : 1;
+    }
+    return body;
+  };
+
+  // Antes da 1.ª parte o valor vem do servidor (sem efeitos). A meio da divisão
+  // já vem no `splitNext`.
+  const previewKey = tableNumber != null && splitOf === 0 && billable.length > 0
+    ? JSON.stringify({ ...buildBody(), payment_method_id: 0, nif: null, preview: true }) : null;
+  useEffect(() => {
+    setPreview(null);
+    if (!previewKey) return undefined;
+    let vivo = true;
+    const t = setTimeout(() => {
+      api.closeTable(tableNumber, JSON.parse(previewKey))
+        .then((r) => { if (vivo) setPreview(r.data); })
+        .catch(() => {});
+    }, 250);
+    return () => { vivo = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey]);
+
   const doClose = async () => {
     setConfirmOpen(false);
     setClosing(true);
+    const parteAntes = splitPart;
     try {
-      const body = { payment_method_id: Number(paymentId) };
-      if (globalDiscKind === 'eur' && globalEur > 0) body.global_discount_amount = globalEur;
-      else if (globalPct > 0) body.global_discount_pct = globalPct;
-      const toBill = hasSelection ? selectedEntries : billable;
-      if (isRodizioTable) {
-        const c = countEntries(toBill);
-        body.rodizio_tier = rodizioMode;
-        body.adults = c.adults;
-        body.children_half = c.children_half;
-        body.children_free = c.children_free;
-        body.waste_boxes = c.waste_boxes;
-        body.items = c.items;
-        body.nif = nif.trim() || null;
-      } else if (hasSelection) {
-        body.items = selectedEntries.map((e) => ({ order_id: e.line.order_id, idx: e.line.idx }));
-      } else {
-        body.nif = nif.trim() || null;
-        body.split_count = splitActive ? splitCount : 1;
-      }
+      const body = buildBody();
       const r = await api.closeTable(tableNumber, body);
       toast.success(r.data.of
         ? `Parte ${r.data.part} de ${r.data.of} (${eur(r.data.amount)}) — fatura ${r.data.vendus.number} emitida`
@@ -527,8 +563,10 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Erro ao faturar');
       // O servidor pode já ter guardado a divisão (o Vendus falhou depois):
-      // recarregar trava o N e mostra "Cancelar divisão".
-      await loadBill(tableNumber);
+      // recarregar trava o N e mostra "Cancelar divisão". Se a parte saiu mesmo
+      // assim (resposta perdida), a seguinte começa sem o NIF/pagamento desta.
+      const sp = await loadBill(tableNumber);
+      if (sp && sp.part > parteAntes) { setPaymentId(''); setNif(''); setCashReceived(''); }
     } finally {
       setClosing(false);
     }
@@ -600,13 +638,13 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                     {globalPct > 0 && splitOf === 0 && (
                       <span className="block text-sm text-muted-foreground line-through tabular-nums">{eur(invoiceTotal)}</span>
                     )}
-                    <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(splitOf > 0 ? chargeAmount : payTotal)}</span>
+                    <span className="font-heading text-4xl font-bold text-primary tabular-nums">{eur(splitOf > 0 ? chargeAmount : shownTotal)}</span>
                   </span>
                 </div>
 
                 {/* Desconto global na conta */}
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm">Desconto na conta {globalPct > 0 ? `(−${eur(Math.round((invoiceTotal - payTotal) * 100) / 100)})` : ''}</span>
+                  <span className="text-sm">Desconto na conta {globalPct > 0 ? `(−${eur(Math.round((invoiceTotal - shownTotal) * 100) / 100)})` : ''}</span>
                   <div className="flex items-center gap-2">
                     <div className="flex shrink-0 overflow-hidden rounded-md border">
                       <button type="button" disabled={splitOf > 0} onClick={() => setGlobalDiscKind('pct')}
@@ -725,10 +763,10 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   onClick={() => {
                     if (!billable.length) { toast.error('Nada para faturar'); return; }
                     if (!paymentId) { toast.error('Escolhe o método de pagamento'); return; }
-                    if (payTotal <= 0) { toast.error('Total a zero — seleciona o que faturar'); return; }
+                    if (shownTotal <= 0) { toast.error('Total a zero — seleciona o que faturar'); return; }
                     setConfirmOpen(true);
                   }}
-                  disabled={closing || !billable.length}
+                  disabled={closing || cancellingSplit || !billable.length}
                   className="w-full h-14 text-base font-semibold bg-[#5a1a1a] hover:bg-[#4a1414]">
                   {closing ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Receipt className="h-5 w-5 mr-2" />}
                   {(splitOf > 0 || splitActive)
@@ -945,12 +983,12 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
             <AlertDialogTitle>Emitir documento — {tableTitle}?</AlertDialogTitle>
             <AlertDialogDescription>
               {hasSelection
-                ? `Vai faturar ${selectedEntries.length} selecionado(s) (${eur(payTotal)}). O resto fica na mesa.`
+                ? `Vai faturar ${selectedEntries.length} selecionado(s) (${eur(shownTotal)}). O resto fica na mesa.`
                 : splitOf > 0
                   ? `Vai emitir a parte ${splitPart + 1} de ${splitOf} (${eur(chargeAmount)}).${splitPart + 1 === splitOf ? ' É a última parte.' : ' A mesa continua aberta para as restantes.'}`
                 : splitActive
                   ? `Vai emitir a parte 1 de ${splitCount} (${eur(perPerson)}). Depois emites as outras, uma a uma, cada uma com o seu pagamento e NIF.`
-                  : `Vai emitir a fatura (${eur(payTotal)})${isRodizioTable ? ` do ${rTierName}` : ''} e libertar a mesa.`}
+                  : `Vai emitir a fatura (${eur(shownTotal)})${isRodizioTable ? ` do ${rTierName}` : ''} e libertar a mesa.`}
               {isCash && received > 0 && change >= 0 ? ` Troco a devolver: ${eur(change)}.` : ''} Esta ação não se desfaz.
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -98,19 +98,21 @@ def apply_global_amount(lines: list, amount: float) -> tuple:
     conta: medido em 4000 ensaios, só 70% davam certo ao cêntimo e o desvio ia
     até 2 cêntimos. Por isso o resto do arredondamento é absorvido na ÚLTIMA
     linha com valor — a mesma regra da divisão da conta — e o que se cobra passa
-    a ser EXATAMENTE `bruto - desconto`.
+    a ser EXATAMENTE `líquido - desconto`, em que o líquido já leva os descontos
+    das linhas (partir do BRUTO desfazia-os: 20 € a −50% + 10 € com 2 € de
+    desconto saía FS de 28,00 para um ecrã de 18,00).
 
     Devolve `(linhas_vendus, liquidos)`, um líquido por linha, na mesma ordem.
     """
     def _bruto(l):
         return round(float(l.get("gross_price", 0) or 0) * (l.get("qty", 1) or 1), 2)
 
-    bruto_total = round(sum(_bruto(l) for l in lines), 2)
-    amount = max(0.0, min(float(amount or 0), bruto_total))
-    if bruto_total <= 0:
+    base = round(sum(combine_global(l, 0)[1] for l in lines), 2)   # já sem os descontos das linhas
+    amount = max(0.0, min(float(amount or 0), base))
+    if base <= 0:
         return [combine_global(l, 0)[0] for l in lines], [0.0 for _ in lines]
 
-    pct = round(100.0 * amount / bruto_total, 4)
+    pct = round(100.0 * amount / base, 4)
     saidas, liquidos = [], []
     for l in lines:
         out, liq = combine_global(l, pct)
@@ -118,7 +120,7 @@ def apply_global_amount(lines: list, amount: float) -> tuple:
         liquidos.append(liq)
 
     # Resto do arredondamento na ÚLTIMA linha com valor.
-    alvo = round(bruto_total - amount, 2)
+    alvo = round(base - amount, 2)
     resto = round(alvo - round(sum(liquidos), 2), 2)
     if resto:
         for i in range(len(lines) - 1, -1, -1):
@@ -144,10 +146,17 @@ def item_net_total(item: dict) -> tuple:
     saía impressa com o valor cheio. Agora os dois chamam isto.
 
     `discount_pct` e `discount_amount` são mutuamente exclusivos (só um fica
-    gravado), mas subtraem-se os dois por segurança. Nunca devolve negativo.
+    gravado); o € ganha, como na FS. Nunca devolve negativo.
     """
-    dpct = float(item.get("discount_pct", 0) or 0)
-    damt = float(item.get("discount_amount", 0) or 0)
     gross = round(float(item.get("total_price", 0) or 0), 2)
-    net = round(max(0.0, gross * (1 - dpct / 100.0) - damt), 2)
-    return gross, net
+    # O líquido é calculado EXATAMENTE como na FS (`line_vendus` + `combine_global`):
+    # arredondar o bruto antes do desconto dava 9,31 na conta e 9,32 na fatura.
+    if item.get("unit_price") is not None:
+        li = line_vendus(item, None, "NOR")
+    else:   # linha sem preço unitário (dados antigos): o total é a base
+        li = {"qty": 1, "gross_price": gross}
+        if item.get("discount_amount"):
+            li["discount_amount"] = round(float(item["discount_amount"]), 2)
+        elif item.get("discount_pct"):
+            li["discount_percentage"] = float(item["discount_pct"])
+    return gross, combine_global(li, 0)[1]

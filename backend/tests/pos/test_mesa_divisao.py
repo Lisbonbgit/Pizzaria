@@ -106,6 +106,7 @@ class _Db:
         self.table_sessions = _Coll([{"table_number": 4, "status": "open"}])
         self.pos_sales = _Coll()
         self.print_jobs = _Coll()
+        self.settings = _Coll()
 
 
 class _FakeVendus:
@@ -397,3 +398,83 @@ def test_balcao_regista_a_venda_mesmo_que_morra_ao_marcar_a_parte(db, monkeypatc
         _cobra(split_count=3)
     assert len(_FakeVendus.emitidas) == 1
     assert len(db.pos_sales.docs) == 1
+
+
+# ---- Divisão retomada noutro dia (outra caixa) ----
+
+class _VendusComDatas(_FakeVendus):
+    """Como o Vendus real: list_app_invoices só devolve os documentos DESSE dia."""
+    def list_app_invoices(self, date=None):
+        return [d for d in _VendusComDatas.docs if d["date"] == date]
+
+
+def _ontem_e_hoje():
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    agora = datetime.now(ZoneInfo("Europe/Lisbon"))
+    ontem = agora - timedelta(days=1)
+    return ontem.isoformat(), ontem.date().isoformat(), agora.isoformat()
+
+
+def _retoma_noutro_dia(db, monkeypatch, kind, ident, finalize):
+    from pos.split_plan import compute_shares
+    aberta_s1, dia_s1, aberta_s2 = _ontem_e_hoje()
+    db.cash_sessions.docs = [{"id": "S1", "status": "closed", "opened_at": aberta_s1},
+                             {"id": "S2", "status": "open", "opened_at": aberta_s2}]
+    shares = compute_shares({"INT": 18.0, "NOR": 9.0}, 2, "t")
+    for i, sh in enumerate(shares):
+        sh.update({"ext_ref": f"ref-{i + 1}de2", "paid": False, "doc_number": None})
+    db.split_plans.docs.append({"target": {"kind": kind, "id": ident}, "n": 2, "total": 27.0,
+                                "cash_session_id": "S1", "finalize": finalize, "shares": shares})
+    # O Vendus CRIOU a parte 1 ontem mas respondeu 503: ficou por marcar.
+    _VendusComDatas.docs = [{"id": "d0", "number": "FS 1/0", "external_reference": "ref-1de2",
+                             "date": dia_s1}]
+    _FakeVendus.emitidas = []
+    monkeypatch.setattr(server, "_vendus_client", lambda *a, **k: _VendusComDatas())
+
+
+def test_mesa_retomada_noutro_dia_nao_duplica_a_parte(db, monkeypatch):
+    # A janela da dedup era só a caixa de HOJE: a FS de ontem não aparecia e a
+    # parte saía duas vezes — e o "Cancelar" mandava carregar em Emitir.
+    _retoma_noutro_dia(db, monkeypatch, "table", 4, {"line_ids": [["o1", 0], ["o1", 1]]})
+    r = _fecha(split_count=2)
+    assert r["part"] == 1 and r["vendus"]["number"] == "FS 1/0"
+    assert _FakeVendus.emitidas == []
+
+
+def test_balcao_retomado_noutro_dia_nao_duplica_a_parte(db, monkeypatch):
+    _balcao(db)
+    _retoma_noutro_dia(db, monkeypatch, "counter", "b1", {"order_id": "b1"})
+    r = _cobra(split_count=2)
+    assert r["part"] == 1 and r["doc_number"] == "FS 1/0"
+    assert _FakeVendus.emitidas == []
+
+
+# ---- O valor da parte 1 vem do servidor (pré-visualização sem efeitos) ----
+
+def test_previsao_da_mesa_da_o_valor_exato_e_nao_mexe_em_nada(db):
+    # Com desconto em % a conta do ecrã arredondava o total de uma vez e a FS
+    # linha a linha: o ecrã dizia 3,31 e a FS saía com 3,32.
+    db.orders.docs[0]["items"] = [{"product_id": "p", "product_name": "X", "quantity": 1,
+                                   "unit_price": 2.45, "total_price": 2.45, "vendus_tax_id": "INT"}
+                                  for _ in range(3)]
+    p = _fecha(split_count=2, preview=True, global_discount_pct=10)
+    assert db.split_plans.docs == [] and _FakeVendus.emitidas == []
+    r = _fecha(split_count=2, global_discount_pct=10)
+    assert p["amount"] == r["amount"] and p["total"] == r["total"]
+
+
+def test_previsao_nunca_emite_nem_no_rodizio(db):
+    db.table_sessions.docs[0].update({"rodizio": "simples", "rodizio_people": {"adults": 2, "children": 0},
+                                      "rodizio_paid": {"adults": 0, "children": 0, "waste": 0}})
+    _fecha(preview=True, rodizio_tier="simples", adults=1)
+    assert _FakeVendus.emitidas == [] and db.orders.docs[0]["paid"] is False
+
+
+def test_previsao_do_balcao_da_o_valor_exato(db):
+    _balcao(db)
+    body = CounterCheckoutRequest(order_id="b1", payment_method_id=0, split_count=7, preview=True)
+    p = asyncio.run(checkout_counter_order(body, authorization=_ADMIN, x_device_token=None,
+                                           x_pos_token=_POS))
+    assert p == {"total": 27.0, "amount": 3.86}
+    assert db.split_plans.docs == [] and _FakeVendus.emitidas == []

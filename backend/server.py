@@ -39,7 +39,7 @@ from pos.report import summarize_products
 from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
 from pos.credit_note import nc_items_from_fs
-from pos.split_plan import compute_shares, next_unpaid_index, remaining_amount
+from pos.split_plan import compute_shares, next_amount, next_unpaid_index, remaining_amount
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1672,7 +1672,8 @@ async def get_table_bill(table_number: int, authorization: Optional[str] = Heade
     if plan:
         pagas = sum(1 for s in plan["shares"] if s.get("paid"))
         split = {"part": pagas, "of": plan["n"],
-                 "remaining": remaining_amount(plan["shares"])}
+                 "remaining": remaining_amount(plan["shares"]),
+                 "next_amount": next_amount(plan["shares"])}
     return {"table_number": table_number, "orders": n_orders,
             "lines": lines, "total": total, "split": split}
 
@@ -1779,7 +1780,8 @@ async def open_table_session(table_number: int, req: OpenTableRequest):
     existing = await _open_session(table_number)
     if existing:
         # Mesa já aberta mas sem rodízio: o cliente pode escolher rodízio agora.
-        if req.rodizio != "none" and existing.get("rodizio", "none") == "none":
+        if (req.rodizio != "none" and existing.get("rodizio", "none") == "none"
+                and not await _get_split_plan(_split_target("table", table_number))):
             rp = {"adults": req.adults, "children": req.children}
             await db.table_sessions.update_one(
                 {"id": existing["id"]},
@@ -1825,6 +1827,9 @@ async def set_table_rodizio(
     tiver uma aberta (staff a iniciar a mesa). Auth-duplo (admin JWT ou device
     token POS). Números são ABSOLUTOS (o total da mesa), não incrementos."""
     await get_pos_or_admin(authorization, x_device_token)
+    # A meio de uma divisão o fecho passava a rodízio e cobrava DE NOVO as linhas
+    # já divididas (e o plano ficava pendurado na mesa).
+    await _assert_no_open_split("table", table_number)
     tier = req.tier if req.tier in ("none", "simples", "completo") else "none"
     adults = max(0, int(req.adults or 0))
     children = max(0, int(req.children or 0))
@@ -1965,20 +1970,75 @@ async def _delete_split_plan(target: dict) -> None:
     await db.split_plans.delete_one({"target": target})
 
 
+def _dedup_dates(sess) -> list:
+    """Dias (Europe/Lisbon) a consultar na DEDUP fiscal: toda a sessão de caixa,
+    não só hoje — um retry a atravessar a meia-noite tem de encontrar a FS de
+    ontem. Sem caixa (admin legado) cobre a viragem do dia."""
+    _lisbon = ZoneInfo("Europe/Lisbon")
+    _hoje = datetime.now(_lisbon).date()
+    try:
+        _inicio = datetime.fromisoformat(sess["opened_at"]).astimezone(_lisbon).date()
+    except Exception:
+        _inicio = _hoje - timedelta(days=1)
+    out = []
+    while _inicio <= _hoje:
+        out.append(_inicio.isoformat())
+        _inicio += timedelta(days=1)
+    return out
+
+
+async def _split_doc_in_vendus(plan):
+    """A FS de uma parte que o Vendus CRIOU apesar de responder com erro (503,
+    timeout) — a parte ficou por marcar paga. Procura as ext_ref do plano na
+    caixa da app. Levanta VendusError se a consulta falhar."""
+    sess = await db.cash_sessions.find_one({"id": plan.get("cash_session_id")}, {"_id": 0})
+    refs = {s["ext_ref"] for s in plan["shares"]}
+    dates = _dedup_dates(sess)
+
+    def _procura():
+        c = _vendus_client()
+        try:
+            for d in dates:
+                for doc in c.list_app_invoices(date=d):
+                    if str(doc.get("external_reference") or "") in refs:
+                        return doc
+        finally:
+            c.close()
+        return None
+    return await asyncio.to_thread(_procura)
+
+
+async def _assert_split_cancellable(plan):
+    """Uma divisão só se cancela se NENHUMA parte saiu — nem na app, nem no
+    Vendus (cancelar com a FS lá e fechar por inteiro faturava duas vezes)."""
+    if any(s.get("paid") for s in plan["shares"]):
+        raise HTTPException(status_code=409,
+                            detail="Já foi emitida uma parte — não é possível cancelar")
+    try:
+        doc = await _split_doc_in_vendus(plan)
+    except VendusError:
+        raise HTTPException(status_code=503,
+                            detail="Não consegui confirmar no Vendus se a 1.ª parte saiu — tenta de novo")
+    if doc is not None:
+        raise HTTPException(status_code=409, detail=(
+            f"A fatura {doc.get('number')} desta divisão já existe no Vendus — "
+            "não se pode cancelar. Carrega em Emitir para continuar."))
+
+
 async def _mark_lines_paid(refs, payment_method_id, doc_id) -> None:
     """Marca as linhas `(order_id, idx)` pagas. Um pedido fica "paid" quando
-    todos os seus itens ficam pagos."""
+    todos os seus itens ficam pagos (os anulados não contam)."""
     by_order = {}
     for oid, i in refs:
         by_order.setdefault(oid, []).append(i)
     for oid, idxs in by_order.items():
         await db.orders.update_one({"id": oid}, {"$set": {f"items.{i}.paid": True for i in idxs}})
         od = await db.orders.find_one({"id": oid}, {"_id": 0, "items": 1})
-        if od and all(it.get("paid") for it in od.get("items", [])):
-            await db.orders.update_one({"id": oid}, {"$set": {
-                "paid": True, "status": "delivered",
-                "payment_method": str(payment_method_id),
-                "vendus_document_id": doc_id}})
+        if od and all(it.get("paid") or it.get("removed") for it in od.get("items", [])):
+            upd = {"paid": True, "status": "delivered", "payment_method": str(payment_method_id)}
+            if doc_id is not None:
+                upd["vendus_document_id"] = doc_id
+            await db.orders.update_one({"id": oid}, {"$set": upd})
 
 
 async def _assert_no_open_split(kind: str, ident):
@@ -2001,11 +2061,28 @@ async def cancel_table_split(table_number: int,
     plan = await _get_split_plan(target)
     if not plan:
         raise HTTPException(status_code=404, detail="Não há divisão em curso")
-    if any(s.get("paid") for s in plan["shares"]):
-        raise HTTPException(status_code=409,
-                            detail="Já foi emitida uma parte — não é possível cancelar")
+    await _assert_split_cancellable(plan)
     await _delete_split_plan(target)
     return {"cancelled": True}
+
+
+async def _finish_table_split(table_number: int, plan: dict, payment_method_id) -> dict:
+    """Todas as partes já saíram mas o fecho da última morreu a meio (entre marcar
+    a parte e marcar as linhas): acaba o trabalho SEM nova FS. Sem isto a mesa
+    ficava travada para sempre ("Divisão já concluída")."""
+    await _mark_lines_paid(plan["finalize"]["line_ids"], payment_method_id, None)
+    await _delete_split_plan(_split_target("table", table_number))
+    remaining = await _open_bill_lines(table_number)
+    if not remaining:
+        await db.table_sessions.update_many(
+            {"table_number": table_number, "status": "open"},
+            {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}})
+    last = plan["shares"][-1].get("doc_number")
+    return {"table_number": table_number, "total": plan["total"], "invoices": 0,
+            "split": plan["n"], "partial": False, "part": plan["n"], "of": plan["n"],
+            "amount": 0.0, "next_amount": None, "table_free": not remaining,
+            "remaining_total": round(sum((l.get("total_price", 0) or 0) for l in remaining), 2),
+            "vendus": {"id": None, "number": last, "atcud": None}, "numbers": []}
 
 
 @api_router.post("/tables/{table_number}/close")
@@ -2042,6 +2119,19 @@ async def close_table(table_number: int, req: CloseTableRequest,
         pos_cfg = await _pos_settings_config()
         if pos_cfg.get("require_open_cash", True) and not sess:
             raise HTTPException(status_code=409, detail="Abra a caixa primeiro")
+
+    # Divisão em curso: só se continua a MESMA divisão, parte a parte. Separar
+    # itens, fechar como rodízio ou pedir outro N (ecrã dessincronizado depois
+    # de um erro) emitiam uma parte errada ou cobravam de novo o já dividido.
+    plan = await _get_split_plan(split_target)
+    if plan is not None:
+        if req.rodizio_tier or req.items:
+            raise HTTPException(status_code=409, detail="Divisão em curso — emite as partes que faltam")
+        if max(1, int(req.split_count or 1)) != plan["n"]:
+            raise HTTPException(status_code=409, detail=(
+                f"Há uma divisão por {plan['n']} em curso nesta mesa — continua-a ou cancela-a"))
+        if next_unpaid_index(plan["shares"]) is None:
+            return await _finish_table_split(table_number, plan, req.payment_method_id)
 
     all_lines = await _open_bill_lines(table_number)
     if not all_lines and not req.rodizio_tier:
@@ -2158,10 +2248,6 @@ async def close_table(table_number: int, req: CloseTableRequest,
         else:
             lines = all_lines
         partial = len(lines) < len(all_lines)
-        # Com uma divisão a meio não se pode cobrar itens à parte: mudaria o que
-        # falta pagar face à conta já fotografada. Termina ou cancela a divisão.
-        if partial:
-            await _assert_no_open_split("table", table_number)
 
         # IVA por produto (do que foi importado do Vendus); fallback ao default
         prod_ids = list({l.get("product_id") for l in lines if l.get("product_id")})
@@ -2212,11 +2298,8 @@ async def close_table(table_number: int, req: CloseTableRequest,
         # DIVISÃO SEQUENCIAL: em vez de emitir as N faturas de uma vez, emite
         # UMA parte por chamada — cada uma com o SEU NIF e método de pagamento.
         # O plano fotografa a conta na 1ª chamada; as linhas só ficam pagas na
-        # última parte (um retry a meio nunca fecha a mesa).
-        # Um fecho POR ITENS nunca pega num plano de divisão aberto (senão
-        # emitia uma parte da divisão em vez dos itens selecionados). O
-        # `_assert_no_open_split` recusa-o mais cedo; isto é a segunda tranca.
-        plan = None if partial else await _get_split_plan(split_target)
+        # última parte (um retry a meio nunca fecha a mesa). Um plano já aberto
+        # chegou aqui só se for a mesma divisão (porta no início do fecho).
         if plan is None and n_req > 1:
             plan = await _create_split_plan(
                 split_target, n_req, total, by_tax,
@@ -2243,20 +2326,7 @@ async def close_table(table_number: int, req: CloseTableRequest,
     # meia-noite (23:59 → 00:0x, a hora a que a pizzaria fecha mesas) não
     # encontrava a FS de ontem e EMITIA 2ª FS (cobrança dupla). Espelha a janela
     # midnight-safe da reconciliação (Task 10).
-    _lisbon = ZoneInfo("Europe/Lisbon")
-    _hoje = datetime.now(_lisbon).date()
-    if sess and sess.get("opened_at"):
-        try:
-            _inicio = datetime.fromisoformat(sess["opened_at"]).astimezone(_lisbon).date()
-        except Exception:
-            _inicio = _hoje - timedelta(days=1)
-    else:
-        _inicio = _hoje - timedelta(days=1)   # legado (sem caixa): cobre a viragem do dia
-    dedup_dates = []
-    _d = _inicio
-    while _d <= _hoje:
-        dedup_dates.append(_d.isoformat())
-        _d += timedelta(days=1)
+    dedup_dates = _dedup_dates(sess)
 
     def _emit_all():
         c = _vendus_client()
@@ -2421,6 +2491,10 @@ async def close_table(table_number: int, req: CloseTableRequest,
     return {"table_number": table_number, "total": total,
             "invoices": len(docs), "split": (split_of or 1), "partial": partial,
             "part": split_part, "of": split_of,
+            # O que ESTA chamada faturou e o que a próxima parte vai cobrar —
+            # o operador marca o valor no terminal à mão.
+            "amount": round(sum(i["amount"] for i in invoices), 2),
+            "next_amount": next_amount(plan["shares"]) if plan is not None and not split_done else None,
             "table_free": settled,
             "remaining_total": remaining_total,
             "vendus": {"id": docs[0].get("id"), "number": docs[0].get("number"),
@@ -4159,6 +4233,9 @@ async def cancel_counter_order(
         raise HTTPException(status_code=404, detail="Pedido de balcão não encontrado")
     if order.get("paid"):
         raise HTTPException(status_code=400, detail="Pedido já faturado — não pode ser cancelado")
+    # A meio de uma divisão (pode já haver FS) as partes seguintes nunca mais
+    # saíam e o plano ficava órfão. Termina ou cancela a divisão primeiro.
+    await _assert_no_open_split("counter", order_id)
     await db.orders.update_one({"id": order_id}, {"$set": {"status": "cancelled"}})
     return {"ok": True, "order_id": order_id, "cancelled": True}
 
@@ -4286,6 +4363,27 @@ class CounterCheckoutRequest(BaseModel):
     global_discount_amount: float = 0
 
 
+@api_router.get("/pos/counter/open-split")
+async def counter_open_split(authorization: Optional[str] = Header(None),
+                             x_device_token: Optional[str] = Header(None)):
+    """Venda de balcão com uma divisão a meio, para o ecrã a RETOMAR quando é
+    remontado (recarregar o tablet, bloqueio) — o estado vivia só no ecrã e as
+    partes seguintes ficavam impossíveis de emitir. Espelha o `split` do
+    GET /tables/{n}/bill. `null` se não houver nenhuma."""
+    await get_pos_or_admin(authorization, x_device_token)
+    async for plan in db.split_plans.find({"target.kind": "counter"}, {"_id": 0}):
+        order = await db.orders.find_one(
+            {"id": plan["target"]["id"], "source": "balcao", "paid": False,
+             "status": {"$ne": "cancelled"}}, {"_id": 0})
+        if order:
+            return {"order_id": order["id"], "order_number": order.get("order_number"),
+                    "items": order.get("items", []), "total": order.get("total"),
+                    "split": {"part": sum(1 for s in plan["shares"] if s.get("paid")),
+                              "of": plan["n"], "remaining": remaining_amount(plan["shares"]),
+                              "next_amount": next_amount(plan["shares"])}}
+    return None
+
+
 @api_router.post("/pos/counter/{order_id}/split-cancel")
 async def cancel_counter_split(order_id: str,
                                authorization: Optional[str] = Header(None),
@@ -4297,9 +4395,7 @@ async def cancel_counter_split(order_id: str,
     plan = await _get_split_plan(target)
     if not plan:
         raise HTTPException(status_code=404, detail="Não há divisão em curso")
-    if any(sh.get("paid") for sh in plan["shares"]):
-        raise HTTPException(status_code=409,
-                            detail="Já foi emitida uma parte — não é possível cancelar")
+    await _assert_split_cancellable(plan)
     await _delete_split_plan(target)
     return {"cancelled": True}
 
@@ -4414,6 +4510,20 @@ async def checkout_counter_order(
     split_target = _split_target("counter", body.order_id)
     plan = await _get_split_plan(split_target)
     n_req = max(1, min(int(body.split_count or 1), 50))
+    if plan is not None and n_req != plan["n"]:
+        raise HTTPException(status_code=409, detail=(
+            f"Há uma divisão por {plan['n']} em curso nesta venda — continua-a ou cancela-a"))
+    if plan is not None and next_unpaid_index(plan["shares"]) is None:
+        # Todas as partes já saíram mas a última morreu antes de fechar a venda:
+        # acaba o trabalho SEM nova FS (senão ficava "Divisão já concluída" para sempre).
+        last = plan["shares"][-1].get("doc_number")
+        await db.orders.update_one({"id": body.order_id}, {"$set": {
+            "paid": True, "status": "delivered",
+            "payment_method": str(body.payment_method_id),
+            "vendus_document_number": last}})
+        await _delete_split_plan(split_target)
+        return {"doc_number": last, "total": 0.0, "part": plan["n"], "of": plan["n"],
+                "order_paid": True, "remaining_total": 0.0, "next_amount": None}
     if plan is None and n_req > 1:
         plan = await _create_split_plan(
             split_target, n_req, total, by_tax, "Venda dividida", base_ext_ref,
@@ -4434,20 +4544,7 @@ async def checkout_counter_order(
     # Janela de dedup (Europe/Lisbon): cobre toda a sessão de caixa — não só hoje
     # — para um retry a atravessar a meia-noite ainda encontrar a FS de ontem
     # (midnight-safe, espelha `close_table` e a reconciliação).
-    _lisbon = ZoneInfo("Europe/Lisbon")
-    _hoje = datetime.now(_lisbon).date()
-    if sess and sess.get("opened_at"):
-        try:
-            _inicio = datetime.fromisoformat(sess["opened_at"]).astimezone(_lisbon).date()
-        except Exception:
-            _inicio = _hoje - timedelta(days=1)
-    else:
-        _inicio = _hoje - timedelta(days=1)   # legado (sem caixa): cobre a viragem do dia
-    dedup_dates = []
-    _d = _inicio
-    while _d <= _hoje:
-        dedup_dates.append(_d.isoformat())
-        _d += timedelta(days=1)
+    dedup_dates = _dedup_dates(sess)
 
     def _emit():
         c = _vendus_client()
@@ -4495,9 +4592,7 @@ async def checkout_counter_order(
         plan = await _mark_share_paid(split_target, idx, doc.get("number"))
         split_part, split_of = idx + 1, plan["n"]
         order_paid = next_unpaid_index(plan["shares"]) is None
-        if order_paid:
-            await _delete_split_plan(split_target)
-        else:
+        if not order_paid:
             split_remaining = remaining_amount(plan["shares"])
 
     # Marca o pedido pago com o documento (id + número, para a reconsulta
@@ -4511,6 +4606,8 @@ async def checkout_counter_order(
             "vendus_document_id": doc.get("id"),
             "vendus_document_number": doc.get("number"),
         }})
+        if plan is not None:
+            await _delete_split_plan(split_target)
 
     # Regista a venda POS (fecho Z + reconciliação). SÓ com caixa aberta. A FS JÁ
     # está emitida e válida neste ponto, por isso uma falha aqui NUNCA pode
@@ -4556,7 +4653,8 @@ async def checkout_counter_order(
 
     return {"doc_number": doc.get("number"), "total": emit_amount,
             "part": split_part, "of": split_of,
-            "order_paid": order_paid, "remaining_total": split_remaining}
+            "order_paid": order_paid, "remaining_total": split_remaining,
+            "next_amount": next_amount(plan["shares"]) if plan is not None and not order_paid else None}
 
 
 # ==================== POS: NOTA DE CRÉDITO ====================

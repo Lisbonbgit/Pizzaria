@@ -17,6 +17,16 @@ const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 
 // Líquido de uma linha do carrinho (bruto − desconto; € tem precedência sobre %).
 const lineGross = (c) => Math.round((Number(c.unitPrice) || 0) * c.qty * 100) / 100;
+// Item gravado no pedido → linha do carrinho (para retomar uma divisão).
+const itemToCartLine = (it) => ({
+  id: it.product_id, name: it.product_name, variationName: it.variation?.name || null,
+  extras: it.extras || [], qty: it.quantity, unitPrice: it.unit_price,
+  // O IVA gravado já é o efetivo (override incluído): reenvia-se tal e qual.
+  tax: it.vendus_tax_id === 'INT' ? 'INT' : 'NOR', taxTouched: true,
+  discKind: it.discount_amount ? 'eur' : 'pct',
+  discVal: String(it.discount_amount || it.discount_pct || ''),
+});
+
 const lineNet = (c) => {
   const gross = lineGross(c);
   const dv = Number(String(c.discVal).replace(',', '.')) || 0;
@@ -87,6 +97,11 @@ const PosBalcao = ({ onClose }) => {
   const [splitPart, setSplitPart] = useState(0);
   const [splitOf, setSplitOf] = useState(0);
   const [splitRemaining, setSplitRemaining] = useState(0);
+  // Valor da PRÓXIMA parte, dito pelo servidor (é o que se marca no terminal).
+  const [splitNext, setSplitNext] = useState(null);
+  // {total, amount} do SERVIDOR para a venda impressa (a conta feita aqui
+  // arredondava de outra maneira e falhava 1 cêntimo).
+  const [preview, setPreview] = useState(null);
   const [cancellingSplit, setCancellingSplit] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [docNumber, setDocNumber] = useState(null);
@@ -111,6 +126,38 @@ const PosBalcao = ({ onClose }) => {
   }, []);
 
   const printed = orderId != null;
+
+  // Vendas com divisão a meio (recarregar o tablet, bloqueio, Voltar a meio):
+  // OFERECEM-SE para retomar — carregar à força trancava o balcão inteiro até
+  // alguém pagar as partes que faltam.
+  const [pendentes, setPendentes] = useState([]);
+  const buscarPendentes = useCallback(async () => {
+    try {
+      const lista = (await posCounter.openSplit()).data || [];
+      setPendentes(lista);
+      return lista;
+    } catch {
+      return [];
+    }
+  }, []);
+  useEffect(() => { buscarPendentes(); }, [buscarPendentes]);
+
+  const retomar = (v) => {
+    setOrderId(v.order_id);
+    setOrderNumber(v.order_number);
+    setOrderTotal(v.total);
+    setCart((v.items || []).map(itemToCartLine));
+    setDirty(false);
+    setDocNumber(null);
+    setPaymentId('');
+    setNif('');
+    setCashReceived('');
+    setSplitCount(v.split.of);
+    setSplitOf(v.split.of);
+    setSplitPart(v.split.part);
+    setSplitRemaining(v.split.remaining);
+    setSplitNext(v.split.next_amount);
+  };
 
   // Adiciona uma linha ao carrinho. `variation` = {name,price} da variação
   // escolhida (pizza Grande, etc.) ou null (preço base). Funde por (produto +
@@ -277,7 +324,31 @@ const PosBalcao = ({ onClose }) => {
   const selectedMethod = methods.find((m) => String(m.id) === String(paymentId));
   const isCash = !!selectedMethod && /dinheiro|numer|cash/i.test(selectedMethod.title || '');
   const received = Number(String(cashReceived).replace(',', '.')) || 0;
-  const troco = Math.round((received - total) * 100) / 100;
+  // Em cêntimos e meio-para-cima, igual ao servidor: as partes 1..N−1 saem
+  // EXATAMENTE com este valor (a última leva o resto).
+  const perPerson = preview ? preview.amount
+    : splitCount > 1 ? Math.round(Math.round(total * 100) / splitCount) / 100 : total;
+  const shownTotal = preview ? preview.total : total;
+
+  // Antes da 1.ª parte o valor vem do servidor (sem efeitos); a meio da divisão
+  // já vem no `splitNext`.
+  const previewKey = printed && !dirty && splitOf === 0 && docNumber == null
+    ? JSON.stringify([orderId, splitCount, globalPct, globalEur]) : null;
+  useEffect(() => {
+    setPreview(null);
+    if (!previewKey) return undefined;
+    let vivo = true;
+    const t = setTimeout(() => {
+      posCounter.previewCheckout(orderId, splitCount, globalPct, globalEur)
+        .then((r) => { if (vivo) setPreview(r.data); })
+        .catch(() => {});
+    }, 250);
+    return () => { vivo = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey]);
+  // O que se cobra AGORA: a meio da divisão, a parte seguinte (do servidor).
+  const chargeAmount = splitOf > 0 && splitNext != null ? splitNext : perPerson;
+  const troco = Math.round((received - chargeAmount) * 100) / 100;
 
   const emitirDocumento = async () => {
     if (!orderId || !paymentId) return;
@@ -291,18 +362,27 @@ const PosBalcao = ({ onClose }) => {
         setSplitPart(r.data.part || 0);
         setSplitOf(r.data.of || 0);
         setSplitRemaining(r.data.remaining_total || 0);
+        setSplitNext(r.data.next_amount ?? null);
+        setSplitCount(r.data.of || splitCount);
         setPaymentId('');
         setNif('');
         setCashReceived('');
-        toast.success(`Parte ${r.data.part} de ${r.data.of} — fatura ${r.data.doc_number} emitida`);
+        toast.success(`Parte ${r.data.part} de ${r.data.of} (${eur(r.data.total)}) — fatura ${r.data.doc_number} emitida`);
       } else {
-        setSplitPart(0); setSplitOf(0); setSplitRemaining(0);
+        setSplitPart(0); setSplitOf(0); setSplitRemaining(0); setSplitNext(null);
         setDocNumber(r.data.doc_number);
-        toast.success('Fatura emitida');
+        toast.success(r.data.of
+          ? `Parte ${r.data.part} de ${r.data.of} (${eur(r.data.total)}) — fatura emitida`
+          : 'Fatura emitida');
       }
     } catch (err) {
       console.error('Erro ao faturar o balcão:', err);
       toast.error(err.response?.data?.detail || 'Erro ao emitir o documento');
+      // O servidor pode já ter guardado a divisão DESTA venda (o Vendus falhou
+      // depois): retomá-la trava o N e mostra "Cancelar divisão". Só esta —
+      // nunca trocar o ecrã para outra venda.
+      const v = (await buscarPendentes()).find((x) => x.order_id === orderId);
+      if (v) retomar(v);
     } finally {
       setCheckingOut(false);
     }
@@ -315,6 +395,7 @@ const PosBalcao = ({ onClose }) => {
     setSplitPart(0);
     setSplitOf(0);
     setSplitRemaining(0);
+    setSplitNext(null);
     setEditIdx(null);
     setOrderId(null);
     setOrderNumber(null);
@@ -324,6 +405,7 @@ const PosBalcao = ({ onClose }) => {
     setNif('');
     setCashReceived('');
     setDocNumber(null);
+    buscarPendentes();
   };
 
   // Cancela o pedido já enviado à cozinha mas ainda não faturado (cliente
@@ -348,6 +430,12 @@ const PosBalcao = ({ onClose }) => {
   // sair (não deixa um pedido na cozinha sem documento). Antes de imprimir, ou
   // já faturado, sai direto.
   const handleBack = () => {
+    if (splitOf > 0) {
+      // Com partes por emitir NÃO se cancela: a venda fica guardada e retoma-se.
+      toast.info('A divisão fica guardada — volta ao Balcão para emitir as partes que faltam');
+      onClose();
+      return;
+    }
     if (printed && docNumber == null) {
       const ok = window.confirm(
         `Tens o pedido nº ${orderNumber} por faturar. Sair vai CANCELAR este pedido `
@@ -472,6 +560,21 @@ const PosBalcao = ({ onClose }) => {
 
         {/* DIREITA — carrinho + faturação */}
         <div className="flex w-full min-h-0 flex-col bg-[#3a1414] text-white md:w-[40%] md:max-w-md">
+          {/* Vendas com divisão a meio — oferecem-se, nunca se impõem. */}
+          {!printed && !printing && cart.length === 0 && pendentes.map((v) => (
+            <div key={v.order_id} className="flex items-center justify-between gap-3 border-b border-amber-400/40 bg-amber-400/15 px-4 py-2.5">
+              <div className="min-w-0 text-sm">
+                <p className="font-semibold text-amber-100">Venda nº {v.order_number} dividida</p>
+                <p className="text-xs text-amber-200/90">
+                  {v.split.part} de {v.split.of} partes emitidas · falta {eur(v.split.remaining)}
+                </p>
+              </div>
+              <Button size="sm" onClick={() => retomar(v)}
+                className="shrink-0 bg-amber-400 font-semibold text-[#3a1414] hover:bg-amber-300">
+                Retomar
+              </Button>
+            </div>
+          ))}
           <div className="grid grid-cols-[1fr_5.5rem_5rem] gap-2 border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-wide text-white/50">
             <span>Produto</span><span className="text-center">Qtd</span><span className="text-right">Total</span>
           </div>
@@ -540,8 +643,19 @@ const PosBalcao = ({ onClose }) => {
           <div className="space-y-3 border-t border-white/10 p-4">
             <div className="flex items-center justify-between text-base font-semibold">
               <span>Total</span>
-              <span className="tabular-nums">{eur(total)}</span>
+              <span className="tabular-nums">{eur(shownTotal)}</span>
             </div>
+            {splitOf > 0 && splitNext != null ? (
+              <div className="flex items-center justify-between rounded-lg bg-white/10 px-3 py-2 text-base font-semibold">
+                <span>Parte {splitPart + 1} de {splitOf}</span>
+                <span className="text-2xl tabular-nums">{eur(splitNext)}</span>
+              </div>
+            ) : printed && docNumber == null && splitCount > 1 && (
+              <div className="flex items-center justify-between rounded-lg bg-white/10 px-3 py-2 text-sm">
+                <span>Cada pessoa paga</span>
+                <span className="text-lg font-semibold tabular-nums">{eur(perPerson)}</span>
+              </div>
+            )}
 
             {!printed && (
               <div className="space-y-2">
@@ -616,7 +730,7 @@ const PosBalcao = ({ onClose }) => {
                     (as partes já foram calculadas sobre o total fotografado). */}
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-sm">
-                    Desconto na conta{globalPct > 0 ? ` (−${eur(Math.round((cartTotal - total) * 100) / 100)})` : ''}
+                    Desconto na conta{globalPct > 0 ? ` (−${eur(Math.round((cartTotal - shownTotal) * 100) / 100)})` : ''}
                   </span>
                   <div className="relative w-28">
                     <div className="flex items-center gap-2">
@@ -687,7 +801,7 @@ const PosBalcao = ({ onClose }) => {
 
                 <Button
                   onClick={emitirDocumento}
-                  disabled={checkingOut || cancelling || !paymentId || dirty}
+                  disabled={checkingOut || cancelling || cancellingSplit || !paymentId || dirty}
                   className="h-14 w-full bg-white text-base font-semibold text-[#5a1a1a] hover:bg-white/90"
                 >
                   {checkingOut ? <Loader2 className="h-5 w-5 animate-spin" /> : <Receipt className="h-5 w-5" />}
@@ -705,7 +819,7 @@ const PosBalcao = ({ onClose }) => {
                       setCancellingSplit(true);
                       try {
                         await posCounter.cancelSplit(orderId);
-                        setSplitOf(0); setSplitPart(0); setSplitRemaining(0); setSplitCount(1);
+                        setSplitOf(0); setSplitPart(0); setSplitRemaining(0); setSplitNext(null); setSplitCount(1);
                         toast.success('Divisão cancelada');
                       } catch (err) {
                         toast.error(err.response?.data?.detail || 'Não foi possível cancelar');
@@ -720,17 +834,20 @@ const PosBalcao = ({ onClose }) => {
                   </Button>
                 )}
 
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    if (window.confirm(`Cancelar o pedido nº ${orderNumber} sem faturar?`)) cancelSale(false);
-                  }}
-                  disabled={cancelling || checkingOut}
-                  className="h-10 w-full text-sm text-white/60 hover:bg-white/10 hover:text-white"
-                >
-                  {cancelling ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
-                  Cancelar venda
-                </Button>
+                {/* Cancelar a venda — nunca com uma divisão a meio (pode já haver FS). */}
+                {splitOf === 0 && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      if (window.confirm(`Cancelar o pedido nº ${orderNumber} sem faturar?`)) cancelSale(false);
+                    }}
+                    disabled={cancelling || checkingOut}
+                    className="h-10 w-full text-sm text-white/60 hover:bg-white/10 hover:text-white"
+                  >
+                    {cancelling ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                    Cancelar venda
+                  </Button>
+                )}
               </>
             )}
 

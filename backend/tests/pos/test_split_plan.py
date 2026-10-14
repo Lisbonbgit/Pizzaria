@@ -4,7 +4,7 @@ Alimenta a divisão sequencial da mesa (`close_table`) e do balcão
 (`checkout_counter_order`): cada parte é uma FS própria, com o seu NIF e
 método de pagamento.
 """
-from pos.split_plan import compute_shares, next_unpaid_index, remaining_amount
+from pos.split_plan import compute_shares, next_amount, next_unpaid_index, remaining_amount
 
 
 def test_duas_partes_somam_exatamente_o_total():
@@ -63,3 +63,37 @@ def test_progressao_das_partes():
     shares[1]["paid"] = True
     assert next_unpaid_index(shares) is None
     assert remaining_amount(shares) == 0.0
+
+
+def test_cada_parte_vale_o_que_o_ecra_mostra():
+    # O ecrã mostra "Cada pessoa paga" = total/N. Com dois IVAs, arredondar cada
+    # taxa à parte dava 3,66 na fatura e 3,67 no ecrã (o operador cobrava um no
+    # terminal e a FS dizia outro). As N−1 primeiras partes valem EXATAMENTE
+    # total/N; a última leva o resto.
+    shares = compute_shares({"INT": 10.0, "NOR": 1.0}, 3, "Mesa 1")
+    assert [s["amount"] for s in shares[:-1]] == [3.67, 3.67]
+    assert round(sum(s["amount"] for s in shares), 2) == 11.0
+    # 184,09 / 2 = 92,045 → o ecrã (Math.round) mostra 92,05. Somar os IVAs em
+    # float dava 184,08999… e a FS saía com 92,04.
+    shares = compute_shares({"INT": 183.95, "NOR": 0.14}, 2, "Mesa 1")
+    assert shares[0]["amount"] == 92.05
+
+
+def test_nunca_cobra_a_mais_com_um_iva_pequeno():
+    # 0,05 € a 23% dividido por 9: arredondar para cima dava partes de 0,01 que
+    # somavam 0,08 — as FS somavam MAIS do que a venda.
+    for sub in (0.05, 0.14, 0.15, 0.23):
+        shares = compute_shares({"INT": 40.0, "NOR": sub}, 9, "Mesa 1")
+        assert round(sum(s["amount"] for s in shares), 2) == round(40.0 + sub, 2)
+        for s in shares:
+            assert all(i["gross_price"] > 0 for i in s["items"])
+
+
+def test_proxima_parte_e_o_valor_a_cobrar():
+    shares = compute_shares({"INT": 27.0}, 7, "Mesa 1")
+    assert next_amount(shares) == shares[0]["amount"]
+    for s in shares[:-1]:
+        s["paid"] = True
+    assert next_amount(shares) == shares[-1]["amount"]
+    shares[-1]["paid"] = True
+    assert next_amount(shares) is None

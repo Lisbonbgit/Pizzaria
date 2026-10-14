@@ -331,6 +331,17 @@ export const posCounter = {
       // Desconto global em euros (tem precedência sobre a percentagem).
       global_discount_amount: globalDiscountAmount > 0 ? globalDiscountAmount : undefined
     }),
+  // Só calcula {total, amount} da próxima fatura (sem divisão nem FS) — o ecrã
+  // mostra o valor do servidor, que arredonda linha a linha como a FS.
+  previewCheckout: (orderId, splitCount, globalDiscountPct, globalDiscountAmount) =>
+    posApi.post('/pos/counter/checkout', {
+      order_id: orderId, payment_method_id: 0, preview: true,
+      split_count: splitCount && splitCount > 1 ? splitCount : undefined,
+      global_discount_pct: globalDiscountPct > 0 ? globalDiscountPct : undefined,
+      global_discount_amount: globalDiscountAmount > 0 ? globalDiscountAmount : undefined
+    }),
+  // Venda com uma divisão a meio (para o ecrã a retomar depois de recarregar).
+  openSplit: () => posApi.get('/pos/counter/open-split'),
   // Cancela uma divisão do balcão ainda sem nenhuma parte emitida.
   cancelSplit: (orderId) =>
     posApi.post(`/pos/counter/${orderId}/split-cancel`),

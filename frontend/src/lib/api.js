@@ -331,6 +331,8 @@ export const posCounter = {
       // Desconto global em euros (tem precedência sobre a percentagem).
       global_discount_amount: globalDiscountAmount > 0 ? globalDiscountAmount : undefined
     }),
+  // Venda com uma divisão a meio (para o ecrã a retomar depois de recarregar).
+  openSplit: () => posApi.get('/pos/counter/open-split'),
   // Cancela uma divisão do balcão ainda sem nenhuma parte emitida.
   cancelSplit: (orderId) =>
     posApi.post(`/pos/counter/${orderId}/split-cancel`),

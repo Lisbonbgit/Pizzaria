@@ -327,16 +327,16 @@ def test_balcao_nao_cancela_a_venda_a_meio_da_divisao(db):
 
 def test_balcao_retoma_a_divisao_depois_de_recarregar(db):
     _balcao(db)
-    assert asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None)) is None
+    assert asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None)) == []
     _cobra(split_count=3)
-    v = asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None))
+    [v] = asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None))
     assert v["order_id"] == "b1" and v["order_number"] == 42 and len(v["items"]) == 2
     assert v["split"] == {"part": 1, "of": 3, "remaining": 18.0, "next_amount": 9.0}
     _cobra(split_count=3)
     r = _cobra(split_count=3)
     assert r["order_paid"] is True and r["next_amount"] is None
     assert db.orders.docs[0]["paid"] is True
-    assert asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None)) is None
+    assert asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None)) == []
 
 
 def test_balcao_nao_retoma_venda_ja_paga_ou_cancelada(db):
@@ -345,7 +345,7 @@ def test_balcao_nao_retoma_venda_ja_paga_ou_cancelada(db):
     _cobra(split_count=3)
     for estado in ({"paid": True}, {"status": "cancelled"}):
         db.orders.docs[0].update(estado)
-        assert asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None)) is None
+        assert asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None)) == []
         db.orders.docs[0].update({"paid": False, "status": "received"})
 
 
@@ -359,3 +359,41 @@ def test_balcao_ultima_parte_que_morreu_a_meio_acaba_sem_nova_fatura(db):
     assert r["order_paid"] is True and r["doc_number"] == "FS 1/2"
     assert _FakeVendus.emitidas == []
     assert db.orders.docs[0]["paid"] is True and db.split_plans.docs == []
+
+
+def _plano_todo_pago(kind, ident, finalize):
+    return {"target": {"kind": kind, "id": ident}, "n": 2, "total": 27.0, "finalize": finalize,
+            "shares": [{"amount": 13.5, "paid": True, "doc_number": "FS 1/1", "ext_ref": "a"},
+                       {"amount": 13.5, "paid": True, "doc_number": "FS 1/2", "ext_ref": "b"}]}
+
+
+def test_abrir_a_conta_acaba_divisao_que_morreu_na_ultima_parte(db):
+    # Sem isto o ecrã mostrava "Parte 3 de 2" com um valor para cobrar a alguém.
+    db.split_plans.docs.append(_plano_todo_pago("table", 4, {"line_ids": [["o1", 0], ["o1", 1]]}))
+    conta = _conta()
+    assert conta["split"] is None and conta["lines"] == []
+    assert db.orders.docs[0]["paid"] is True and db.split_plans.docs == []
+    assert db.table_sessions.docs[0]["status"] == "closed"
+    assert _FakeVendus.emitidas == []
+
+
+def test_balcao_lista_de_retoma_acaba_divisao_que_morreu_na_ultima_parte(db):
+    _balcao(db)
+    db.split_plans.docs.append(_plano_todo_pago("counter", "b1", {"order_id": "b1"}))
+    assert asyncio.run(counter_open_split(authorization=_ADMIN, x_device_token=None)) == []
+    assert db.orders.docs[0]["paid"] is True and db.split_plans.docs == []
+
+
+def test_balcao_regista_a_venda_mesmo_que_morra_ao_marcar_a_parte(db, monkeypatch):
+    # O registo da venda (fecho Z) vinha DEPOIS de marcar a parte: um crash aí
+    # deixava uma FS real sem linha em pos_sales.
+    _balcao(db)
+    db.cash_sessions.docs.append({"id": "cx", "status": "open", "opened_at": "2026-10-14T08:00:00+00:00"})
+
+    async def morre(*a, **k):
+        raise RuntimeError("crash")
+    monkeypatch.setattr(server, "_mark_share_paid", morre)
+    with pytest.raises(RuntimeError):
+        _cobra(split_count=3)
+    assert len(_FakeVendus.emitidas) == 1
+    assert len(db.pos_sales.docs) == 1

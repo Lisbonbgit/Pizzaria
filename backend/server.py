@@ -1661,6 +1661,12 @@ async def get_table_bill(table_number: int, authorization: Optional[str] = Heade
                           x_device_token: Optional[str] = Header(None)):
     """Conta em aberto da mesa (linhas por faturar, item a item)."""
     await get_pos_or_admin(authorization, x_device_token)
+    plan = await _get_split_plan(_split_target("table", table_number))
+    if plan and next_unpaid_index(plan["shares"]) is None:
+        # Todas as partes saíram mas o fecho da última morreu a meio: acaba-se
+        # aqui, para o ecrã nunca mostrar uma "parte N+1 de N" para cobrar.
+        await _finish_table_split(table_number, plan, None)
+        plan = None
     lines = await _open_bill_lines(table_number)
     total = round(sum((l.get("total_price", 0) or 0) for l in lines), 2)
     n_orders = len({l["order_id"] for l in lines})
@@ -1668,7 +1674,6 @@ async def get_table_bill(table_number: int, authorization: Optional[str] = Heade
     # fechar e reabrir a conta (o servidor continua a saber, o ecrã tem de saber
     # também: quantas partes já saíram e quanto falta).
     split = None
-    plan = await _get_split_plan(_split_target("table", table_number))
     if plan:
         pagas = sum(1 for s in plan["shares"] if s.get("paid"))
         split = {"part": pagas, "of": plan["n"],
@@ -2035,7 +2040,9 @@ async def _mark_lines_paid(refs, payment_method_id, doc_id) -> None:
         await db.orders.update_one({"id": oid}, {"$set": {f"items.{i}.paid": True for i in idxs}})
         od = await db.orders.find_one({"id": oid}, {"_id": 0, "items": 1})
         if od and all(it.get("paid") or it.get("removed") for it in od.get("items", [])):
-            upd = {"paid": True, "status": "delivered", "payment_method": str(payment_method_id)}
+            upd = {"paid": True, "status": "delivered"}
+            if payment_method_id is not None:
+                upd["payment_method"] = str(payment_method_id)
             if doc_id is not None:
                 upd["vendus_document_id"] = doc_id
             await db.orders.update_one({"id": oid}, {"$set": upd})
@@ -4366,22 +4373,31 @@ class CounterCheckoutRequest(BaseModel):
 @api_router.get("/pos/counter/open-split")
 async def counter_open_split(authorization: Optional[str] = Header(None),
                              x_device_token: Optional[str] = Header(None)):
-    """Venda de balcão com uma divisão a meio, para o ecrã a RETOMAR quando é
-    remontado (recarregar o tablet, bloqueio) — o estado vivia só no ecrã e as
-    partes seguintes ficavam impossíveis de emitir. Espelha o `split` do
-    GET /tables/{n}/bill. `null` se não houver nenhuma."""
+    """Vendas de balcão com uma divisão a meio, para o ecrã as oferecer para
+    RETOMAR (recarregar o tablet, bloqueio, Voltar a meio) — o estado vivia só no
+    ecrã e as partes seguintes ficavam impossíveis de emitir. Espelha o `split`
+    do GET /tables/{n}/bill. Lista vazia se não houver nenhuma."""
     await get_pos_or_admin(authorization, x_device_token)
+    out = []
     async for plan in db.split_plans.find({"target.kind": "counter"}, {"_id": 0}):
         order = await db.orders.find_one(
             {"id": plan["target"]["id"], "source": "balcao", "paid": False,
              "status": {"$ne": "cancelled"}}, {"_id": 0})
-        if order:
-            return {"order_id": order["id"], "order_number": order.get("order_number"),
+        if not order:
+            continue
+        if next_unpaid_index(plan["shares"]) is None:
+            # Todas as partes saíram mas a última morreu antes de fechar a venda.
+            await db.orders.update_one({"id": order["id"]}, {"$set": {
+                "paid": True, "status": "delivered",
+                "vendus_document_number": plan["shares"][-1].get("doc_number")}})
+            await _delete_split_plan(plan["target"])
+            continue
+        out.append({"order_id": order["id"], "order_number": order.get("order_number"),
                     "items": order.get("items", []), "total": order.get("total"),
                     "split": {"part": sum(1 for s in plan["shares"] if s.get("paid")),
                               "of": plan["n"], "remaining": remaining_amount(plan["shares"]),
-                              "next_amount": next_amount(plan["shares"])}}
-    return None
+                              "next_amount": next_amount(plan["shares"])}})
+    return out
 
 
 @api_router.post("/pos/counter/{order_id}/split-cancel")
@@ -4584,6 +4600,25 @@ async def checkout_counter_order(
     if not doc:
         raise HTTPException(status_code=502, detail="Vendus não devolveu documento")
 
+    # Regista a venda POS (fecho Z + reconciliação) LOGO a seguir à FS, antes de
+    # marcar a parte — como na mesa: um crash a meio não deixa a FS sem registo
+    # (o retry reaproveita a FS e o índice único em `vendus_document_id` absorve
+    # o duplicado — proteção nº3). SÓ com caixa aberta. A FS JÁ está emitida e
+    # válida, por isso uma falha aqui NUNCA pode derrubar o checkout (500) —
+    # senão o cliente refaturava = cobrança dupla.
+    if sess:
+        try:
+            rows = build_pos_sales_rows(
+                [{"amount": emit_amount}], [doc], body.payment_method_id,
+                sess["id"], pos_user_id, "balcao", None,
+            )
+            if rows:
+                await db.pos_sales.insert_many(rows, ordered=False)
+        except (BulkWriteError, DuplicateKeyError) as e:
+            logger.warning(f"pos_sales balcão: documento já registado, ignorado (idempotente): {e}")
+        except Exception as e:
+            logger.error(f"pos_sales balcão: falha a gravar, ignorado (FS já emitida e válida): {e}")
+
     # DIVISÃO: marca a parte que acabou de sair e só finaliza na ÚLTIMA.
     split_part = split_of = None
     split_remaining = 0.0
@@ -4608,24 +4643,6 @@ async def checkout_counter_order(
         }})
         if plan is not None:
             await _delete_split_plan(split_target)
-
-    # Regista a venda POS (fecho Z + reconciliação). SÓ com caixa aberta. A FS JÁ
-    # está emitida e válida neste ponto, por isso uma falha aqui NUNCA pode
-    # derrubar o checkout (500) — senão o cliente refaturava = cobrança dupla. O
-    # índice único em `vendus_document_id` absorve duplicados de um retry
-    # (proteção nº3).
-    if sess:
-        try:
-            rows = build_pos_sales_rows(
-                [{"amount": emit_amount}], [doc], body.payment_method_id,
-                sess["id"], pos_user_id, "balcao", None,
-            )
-            if rows:
-                await db.pos_sales.insert_many(rows, ordered=False)
-        except (BulkWriteError, DuplicateKeyError) as e:
-            logger.warning(f"pos_sales balcão: documento já registado, ignorado (idempotente): {e}")
-        except Exception as e:
-            logger.error(f"pos_sales balcão: falha a gravar, ignorado (FS já emitida e válida): {e}")
 
     # Imprime o recibo (ESC/POS certificado do Vendus, com corte) na CAIXA. Um
     # documento reutilizado no dedup pode não trazer `output` — impressão

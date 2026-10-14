@@ -123,31 +123,37 @@ const PosBalcao = ({ onClose }) => {
 
   const printed = orderId != null;
 
-  // Retoma uma venda com divisão a meio (o ecrã foi remontado: recarregar o
-  // tablet, bloqueio) — senão as partes que faltam ficavam impossíveis de emitir.
-  const retomar = useCallback(async () => {
+  // Vendas com divisão a meio (recarregar o tablet, bloqueio, Voltar a meio):
+  // OFERECEM-SE para retomar — carregar à força trancava o balcão inteiro até
+  // alguém pagar as partes que faltam.
+  const [pendentes, setPendentes] = useState([]);
+  const buscarPendentes = useCallback(async () => {
     try {
-      const v = (await posCounter.openSplit()).data;
-      if (!v) return false;
-      setOrderId(v.order_id);
-      setOrderNumber(v.order_number);
-      setOrderTotal(v.total);
-      setCart((v.items || []).map(itemToCartLine));
-      setDirty(false);
-      setSplitCount(v.split.of);
-      setSplitOf(v.split.of);
-      setSplitPart(v.split.part);
-      setSplitRemaining(v.split.remaining);
-      setSplitNext(v.split.next_amount);
-      return true;
+      const lista = (await posCounter.openSplit()).data || [];
+      setPendentes(lista);
+      return lista;
     } catch {
-      return false;
+      return [];
     }
   }, []);
+  useEffect(() => { buscarPendentes(); }, [buscarPendentes]);
 
-  useEffect(() => {
-    retomar().then((ok) => ok && toast.info('Divisão em curso retomada — emite as partes que faltam'));
-  }, [retomar]);
+  const retomar = (v) => {
+    setOrderId(v.order_id);
+    setOrderNumber(v.order_number);
+    setOrderTotal(v.total);
+    setCart((v.items || []).map(itemToCartLine));
+    setDirty(false);
+    setDocNumber(null);
+    setPaymentId('');
+    setNif('');
+    setCashReceived('');
+    setSplitCount(v.split.of);
+    setSplitOf(v.split.of);
+    setSplitPart(v.split.part);
+    setSplitRemaining(v.split.remaining);
+    setSplitNext(v.split.next_amount);
+  };
 
   // Adiciona uma linha ao carrinho. `variation` = {name,price} da variação
   // escolhida (pizza Grande, etc.) ou null (preço base). Funde por (produto +
@@ -349,9 +355,11 @@ const PosBalcao = ({ onClose }) => {
     } catch (err) {
       console.error('Erro ao faturar o balcão:', err);
       toast.error(err.response?.data?.detail || 'Erro ao emitir o documento');
-      // O servidor pode já ter guardado a divisão (o Vendus falhou depois):
-      // retomá-la trava o N e mostra "Cancelar divisão".
-      await retomar();
+      // O servidor pode já ter guardado a divisão DESTA venda (o Vendus falhou
+      // depois): retomá-la trava o N e mostra "Cancelar divisão". Só esta —
+      // nunca trocar o ecrã para outra venda.
+      const v = (await buscarPendentes()).find((x) => x.order_id === orderId);
+      if (v) retomar(v);
     } finally {
       setCheckingOut(false);
     }
@@ -374,6 +382,7 @@ const PosBalcao = ({ onClose }) => {
     setNif('');
     setCashReceived('');
     setDocNumber(null);
+    buscarPendentes();
   };
 
   // Cancela o pedido já enviado à cozinha mas ainda não faturado (cliente
@@ -528,6 +537,21 @@ const PosBalcao = ({ onClose }) => {
 
         {/* DIREITA — carrinho + faturação */}
         <div className="flex w-full min-h-0 flex-col bg-[#3a1414] text-white md:w-[40%] md:max-w-md">
+          {/* Vendas com divisão a meio — oferecem-se, nunca se impõem. */}
+          {!printed && pendentes.map((v) => (
+            <div key={v.order_id} className="flex items-center justify-between gap-3 border-b border-amber-400/40 bg-amber-400/15 px-4 py-2.5">
+              <div className="min-w-0 text-sm">
+                <p className="font-semibold text-amber-100">Venda nº {v.order_number} dividida</p>
+                <p className="text-xs text-amber-200/90">
+                  {v.split.part} de {v.split.of} partes emitidas · falta {eur(v.split.remaining)}
+                </p>
+              </div>
+              <Button size="sm" onClick={() => retomar(v)}
+                className="shrink-0 bg-amber-400 font-semibold text-[#3a1414] hover:bg-amber-300">
+                Retomar
+              </Button>
+            </div>
+          ))}
           <div className="grid grid-cols-[1fr_5.5rem_5rem] gap-2 border-b border-white/10 px-4 py-3 text-[11px] uppercase tracking-wide text-white/50">
             <span>Produto</span><span className="text-center">Qtd</span><span className="text-right">Total</span>
           </div>

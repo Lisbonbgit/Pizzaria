@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Loader2, Receipt, Printer, Plus, Users, Store, X, ChevronsUpDown, Trash2, Pencil, Scissors,
+  Loader2, Receipt, Printer, Plus, Minus, Users, Store, X, Trash2, Pencil, Scissors,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,14 +11,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
-  Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem,
-} from '@/components/ui/command';
-import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { ordersAPI, productsAPI, categoriesAPI, rodizioAPI } from '@/lib/api';
+import CatalogoProdutos from '@/components/pos/CatalogoProdutos';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const lineKey = (l) => `${l.order_id}:${l.idx}`;
@@ -65,9 +63,10 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
   const [rodizioCfg, setRodizioCfg] = useState(null);
 
   // Adicionar produto manual
-  const [addProductId, setAddProductId] = useState('');
-  const [addQty, setAddQty] = useState(1);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // "Adicionar produtos" (como no Balcão): grelha + lista do que vai entrar, e
+  // UM pedido no fim (um talão na cozinha, não um por toque).
+  const [addOpen, setAddOpen] = useState(false);
+  const [pend, setPend] = useState([]);   // [{product, variation, extras, qty, unitPrice}]
   const [adding, setAdding] = useState(false);
 
   // Fecho
@@ -179,8 +178,8 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     setPreview(null);
     setGlobalDiscount('');
     setCashReceived('');
-    setAddProductId('');
-    setAddQty(1);
+    setAddOpen(false);
+    setPend([]);
     setSelected(new Set());
     setBillLines([]);
     // Rodízio: gera pessoas AINDA por pagar = lotação − já faturado.
@@ -241,30 +240,44 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     } catch { toast.error('Erro ao reimprimir'); }
   };
 
-  const addProduct = async () => {
-    const p = products.find((x) => x.id === addProductId);
-    if (!p) { toast.error('Escolhe um produto'); return; }
-    const qty = Math.max(1, Number(addQty) || 1);
+  // Junta um toque à lista (mesmo produto + tamanho + extras soma a quantidade).
+  // O preço da unidade já leva o tamanho e os extras, como no menu do cliente.
+  const addPend = (p, variation, extras = []) => {
+    const base = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
+    const unitPrice = Math.round((base + extras.reduce((t, e) => t + (Number(e.price) || 0), 0)) * 100) / 100;
+    const chave = `${p.id}|${variation?.name || ''}|${extras.map((e) => e.name).sort().join(',')}`;
+    setPend((prev) => {
+      const i = prev.findIndex((c) => c.chave === chave);
+      if (i >= 0) return prev.map((c, k) => (k === i ? { ...c, qty: c.qty + 1 } : c));
+      return [...prev, { chave, product: p, variation, extras, qty: 1, unitPrice }];
+    });
+  };
+  const changePend = (i, delta) => setPend((prev) => prev
+    .map((c, k) => (k === i ? { ...c, qty: c.qty + delta } : c)).filter((c) => c.qty > 0));
+  const pendTotal = Math.round(pend.reduce((t, c) => t + c.unitPrice * c.qty, 0) * 100) / 100;
+
+  const confirmAdd = async () => {
+    if (!pend.length) return;
     setAdding(true);
     try {
-      const price = Number(p.base_price) || 0;
+      const items = pend.map((c) => ({
+        product_id: c.product.id, product_name: c.product.name, quantity: c.qty,
+        ...(c.variation ? { variation: { name: c.variation.name, price: Number(c.variation.price) || 0 } } : {}),
+        extras: c.extras,
+        unit_price: c.unitPrice, total_price: Math.round(c.unitPrice * c.qty * 100) / 100,
+      }));
       await ordersAPI.create({
-        table_id: openTableId,
-        table_number: tableNumber,
-        source: 'manual',
-        items: [{
-          product_id: p.id, product_name: p.name, quantity: qty,
-          unit_price: price, total_price: +(price * qty).toFixed(2),
-        }],
-        total: +(price * qty).toFixed(2),
+        table_id: openTableId, table_number: tableNumber, source: 'manual',
+        items, total: pendTotal,
       });
-      setAddProductId('');
-      setAddQty(1);
-      toast.success(`${qty}× ${p.name} adicionado à mesa`);
+      const n = pend.reduce((t, c) => t + c.qty, 0);
+      setPend([]);
+      setAddOpen(false);
+      toast.success(`${n} produto${n !== 1 ? 's' : ''} adicionado${n !== 1 ? 's' : ''} à mesa`);
       loadBill(tableNumber);
       onChanged && onChanged();
     } catch {
-      toast.error('Erro ao adicionar o produto');
+      toast.error('Erro ao adicionar os produtos');
     } finally {
       setAdding(false);
     }
@@ -493,14 +506,20 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
 
   // Antes da 1.ª parte o valor vem do servidor (sem efeitos). A meio da divisão
   // já vem no `splitNext`.
+  // As LINHAS da conta entram na chave: sem elas, adicionar/remover/descontar um
+  // item com a mesa aberta deixava o "Total a pagar" com o valor antigo (o corpo
+  // do fecho não leva as linhas quando é a conta toda).
   const previewKey = tableNumber != null && splitOf === 0 && billable.length > 0
-    ? JSON.stringify({ ...buildBody(), payment_method_id: 0, nif: null, preview: true }) : null;
+    ? JSON.stringify({
+      corpo: { ...buildBody(), payment_method_id: 0, nif: null, preview: true },
+      linhas: billLines.map((l) => [l.order_id, l.idx, l.quantity, l.total_price]),
+    }) : null;
   useEffect(() => {
     setPreview(null);
     if (!previewKey) return undefined;
     let vivo = true;
     const t = setTimeout(() => {
-      api.closeTable(tableNumber, JSON.parse(previewKey))
+      api.closeTable(tableNumber, JSON.parse(previewKey).corpo)
         .then((r) => { if (vivo) setPreview(r.data); })
         .catch(() => {});
     }, 250);
@@ -609,7 +628,6 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
       .map(([cid, items]) => ({ cid, name: cid === '__none' ? 'Outros' : catName(cid), items }))
       .sort((a, b) => (order.has(a.cid) ? order.get(a.cid) : 999) - (order.has(b.cid) ? order.get(b.cid) : 999));
   })();
-  const selectedProductName = availableProducts.find((p) => p.id === addProductId)?.name || '';
 
   return (
     <>
@@ -884,41 +902,10 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
 
               {/* Rodapé direito — ações */}
               <div className="border-t border-white/10 p-3 space-y-2">
-                <div className="flex gap-2">
-                  <Button variant="outline" role="combobox"
-                    onClick={() => setPickerOpen(true)}
-                    className="flex-1 justify-between bg-white/10 border-white/20 text-white hover:bg-white/15 hover:text-white h-9 font-normal">
-                    <span className="truncate">{selectedProductName || 'Procurar produto…'}</span>
-                    <ChevronsUpDown className="h-4 w-4 opacity-60 shrink-0" />
-                  </Button>
-                  <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
-                    <DialogContent className="p-0 gap-0 max-w-md overflow-hidden">
-                      <DialogHeader className="sr-only"><DialogTitle>Adicionar produto</DialogTitle></DialogHeader>
-                      <Command>
-                        <CommandInput placeholder="Escreve o nome do produto…" className="pr-10" />
-                        <CommandList ref={pickerListRef} className="max-h-[60vh]">
-                          <CommandEmpty>Nenhum produto encontrado.</CommandEmpty>
-                          {productGroups.map((g) => (
-                            <CommandGroup key={g.cid} heading={g.name}>
-                              {g.items.map((p) => (
-                                <CommandItem key={p.id} value={`${p.name} ${g.name} ${p.id}`}
-                                  onSelect={() => { setAddProductId(p.id); setPickerOpen(false); }}>
-                                  <span className="flex-1 truncate">{p.name}</span>
-                                  <span className="text-muted-foreground tabular-nums">{eur(p.base_price)}</span>
-                                </CommandItem>
-                              ))}
-                            </CommandGroup>
-                          ))}
-                        </CommandList>
-                      </Command>
-                    </DialogContent>
-                  </Dialog>
-                  <Input type="number" min={1} value={addQty} onChange={(e) => setAddQty(e.target.value)}
-                    className="w-14 bg-white/10 border-white/20 text-white h-9" aria-label="Quantidade" />
-                  <Button variant="secondary" size="icon" className="h-9 w-9 shrink-0" onClick={addProduct} disabled={adding || !addProductId}>
-                    {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                  </Button>
-                </div>
+                <Button onClick={() => setAddOpen(true)}
+                  className="w-full h-10 bg-white text-[#5a1a1a] font-semibold hover:bg-white/90">
+                  <Plus className="h-4 w-4 mr-1" /> Adicionar produtos
+                </Button>
                 {isRodizioTable && (
                   <div className="flex items-center justify-between text-sm text-white/80 px-1">
                     <span>Taxa de desperdício <span className="text-white/50">({eur(wasteFee)}/box)</span></span>
@@ -969,6 +956,67 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   onClick={() => setFreeOpen(true)} disabled={freeing || splitOf > 0}>
                   {freeing ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <X className="h-3.5 w-3.5 mr-1" />}
                   Libertar mesa (sem faturar)
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Adicionar produtos — como no Balcão: grelha à esquerda, o que vai entrar
+          à direita, e UM pedido no fim (um talão na cozinha). */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent className="max-w-5xl w-[96vw] h-[85vh] p-0 gap-0 overflow-hidden">
+          <DialogHeader className="sr-only"><DialogTitle>Adicionar produtos — {tableTitle}</DialogTitle></DialogHeader>
+          <div className="flex flex-col md:flex-row h-full min-h-0">
+            <div className="flex-1 flex flex-col min-h-0 bg-background px-5 py-5">
+              {productGroups.length === 0 ? (
+                <p className="py-12 text-center text-sm text-muted-foreground">Sem produtos disponíveis.</p>
+              ) : (
+                <CatalogoProdutos groups={productGroups} onAdd={addPend} gridRef={pickerListRef} />
+              )}
+            </div>
+            <div className="w-full md:w-80 flex flex-col min-h-0 bg-[#3a1414] text-white">
+              <div className="px-4 py-3 border-b border-white/10">
+                <p className="font-heading text-lg">{tableTitle}</p>
+                <p className="text-xs text-white/60">A adicionar à mesa</p>
+              </div>
+              <div className="flex-1 overflow-y-auto" ref={pickerListRef}>
+                {pend.length === 0 ? (
+                  <p className="text-center text-white/50 py-8 text-sm px-4">Toca nos produtos para os juntar.</p>
+                ) : pend.map((c, i) => (
+                  <div key={c.chave} className="px-4 py-2.5 border-b border-white/10">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium leading-snug">{c.product.name}</p>
+                        {(c.variation || c.extras.length > 0) && (
+                          <p className="text-xs text-white/60">
+                            {[c.variation?.name, ...c.extras.map((e) => `+ ${e.name}`)].filter(Boolean).join(' · ')}
+                          </p>
+                        )}
+                      </div>
+                      <span className="text-sm tabular-nums shrink-0">{eur(c.unitPrice * c.qty)}</span>
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <Button variant="outline" size="icon" aria-label={`Menos ${c.product.name}`}
+                        className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
+                        onClick={() => changePend(i, -1)}><Minus className="h-3.5 w-3.5" /></Button>
+                      <span className="w-6 text-center tabular-nums">{c.qty}</span>
+                      <Button variant="outline" size="icon" aria-label={`Mais ${c.product.name}`}
+                        className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
+                        onClick={() => changePend(i, 1)}><Plus className="h-3.5 w-3.5" /></Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="border-t border-white/10 p-3 space-y-2">
+                <div className="flex items-center justify-between font-semibold">
+                  <span>Total</span><span className="tabular-nums">{eur(pendTotal)}</span>
+                </div>
+                <Button onClick={confirmAdd} disabled={adding || !pend.length}
+                  className="w-full h-12 bg-white text-[#5a1a1a] text-base font-semibold hover:bg-white/90">
+                  {adding ? <Loader2 className="h-5 w-5 animate-spin mr-2" /> : <Plus className="h-5 w-5 mr-1" />}
+                  {pend.length ? `Adicionar à mesa (${pend.reduce((t, c) => t + c.qty, 0)})` : 'Adicionar à mesa'}
                 </Button>
               </div>
             </div>

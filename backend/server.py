@@ -579,6 +579,20 @@ async def verify_print_agent_key(x_api_key: Optional[str] = Header(None)) -> boo
 
 # ==================== ESC/POS FORMATTING ====================
 
+def _escpos_mais_alto(raw: bytes) -> bytes:
+    """Fatura do Vendus com ALTURA dupla (pedido do dono: letra maior no balcão).
+    Só a altura: as colunas ficam as mesmas, por isso o desenho e o conteúdo
+    fiscal não mudam. Mexe apenas nos comandos de tamanho, nunca no texto; o que
+    era largo fica largo E alto. O Vendus usa `ESC ! n` (bit 0x10 = altura) e o
+    nosso fecho de caixa `GS ! n` (bit 0x01): vale o último recebido, por isso
+    os dois têm de levar a altura (só o `GS !` deixava a FS igual)."""
+    raw = re.sub(rb"\x1d!(.)", lambda m: b"\x1d!" + bytes([m.group(1)[0] | 0x01]), raw, flags=re.S)
+    raw = re.sub(rb"\x1b!(.)", lambda m: b"\x1b!" + bytes([m.group(1)[0] | 0x10]), raw, flags=re.S)
+    i = raw.find(b"\x1b@")
+    j = i + 2 if i >= 0 else 0
+    return raw[:j] + b"\x1d!\x01" + raw[j:]
+
+
 class ESCPOSFormatter:
     """Format orders for ESC/POS thermal printers"""
     ESC = b'\x1b'
@@ -750,28 +764,21 @@ class ESCPOSFormatter:
         data = bytearray()
         data.extend(self.INIT)
         
-        # Header
+        # Letra maior em tudo (pedido do dono, 2026-10-20): pedido/mesa, artigos
+        # e preços 2×2, pormenores em altura dupla e o TOTAL o maior de todos.
         data.extend(self.CENTER)
         data.extend(self.BOLD_ON)
-        data.extend(self._text(f"[{printer_name}]\n"))
-        data.extend(self.BOLD_OFF)
-        
+        data.extend(self._big(f"[{printer_name}]", 1, 2))
+
         data.extend(self._line('='))
-        
-        # Order number
-        data.extend(self.DOUBLE_HEIGHT)
-        data.extend(self.BOLD_ON)
-        data.extend(self._text(f"PEDIDO #{order['order_number']}\n"))
-        data.extend(self.NORMAL_SIZE)
-        data.extend(self.BOLD_OFF)
-        
-        # Table (balcão não tem mesa: imprime "BALCAO" em vez de "MESA: None")
+
+        data.extend(self._big(f"PEDIDO #{order['order_number']}", 2, 2))
+        # Mesa (balcão não tem mesa: imprime "BALCAO" em vez de "MESA: None")
         table_number = order.get('table_number')
-        data.extend(self.BOLD_ON)
         if table_number and order.get('source') != 'balcao':
-            data.extend(self._text(f"MESA: {table_number}\n"))
+            data.extend(self._big(f"MESA: {table_number}", 2, 2))
         else:
-            data.extend(self._text("BALCAO\n"))
+            data.extend(self._big("BALCAO", 2, 2))
         data.extend(self.BOLD_OFF)
         
         data.extend(self._line('-'))
@@ -791,24 +798,22 @@ class ESCPOSFormatter:
             if variation and variation.get('name'):
                 item_desc += f" ({variation['name']})"
             
-            data.extend(self._text(f"{item_desc}\n"))
-            
-            # Extras with price
+            data.extend(self.BOLD_ON)
+            data.extend(self._big(item_desc, 2, 2, indent="   "))
+            data.extend(self.BOLD_OFF)
+
+            # Extras, complementos e preferência — altura dupla
             for extra in item.get('extras', []):
-                data.extend(self._text(f"   + {extra.get('name', '')} (+{extra.get('price', 0):.2f})\n"))
-            
-            # Complement groups with price
+                data.extend(self._big(f"   + {extra.get('name', '')} (+{extra.get('price', 0):.2f})", 1, 2, indent="     "))
             for comp_group in item.get('selected_complements', []):
                 for comp_item in comp_group.get('items', []):
                     price = comp_item.get('price', 0)
                     if price > 0:
-                        data.extend(self._text(f"   + {comp_item.get('name', '')} (+{price:.2f})\n"))
+                        data.extend(self._big(f"   + {comp_item.get('name', '')} (+{price:.2f})", 1, 2, indent="     "))
                     else:
-                        data.extend(self._text(f"   + {comp_item.get('name', '')}\n"))
-            
-            # Preference
+                        data.extend(self._big(f"   + {comp_item.get('name', '')}", 1, 2, indent="     "))
             if item.get('selected_preference'):
-                data.extend(self._text(f"   {item['selected_preference']}\n"))
+                data.extend(self._big(f"   {item['selected_preference']}", 1, 2, indent="   "))
 
             # Desconto da linha — o cliente tem de ver o abatimento, senão a
             # consulta parece ter a conta errada.
@@ -817,32 +822,29 @@ class ESCPOSFormatter:
             _gt = item.get('gross_total')
             if (_dp or _da) and _gt:
                 _rotulo = f"-{_dp:g}%" if _dp else f"-{_da:.2f}"
-                data.extend(self._text(f"   {_gt:.2f} desconto {_rotulo}\n"))
-            
-            # Price line
+                data.extend(self._big(f"   {_gt:.2f} desconto {_rotulo}", 1, 2))
+
+            # Preço da linha
             data.extend(self.RIGHT)
-            data.extend(self._text(f"EUR {total_price:.2f}\n"))
+            data.extend(self._big(f"EUR {total_price:.2f}", 2, 2))
             data.extend(self.LEFT)
             
             data.extend(self._text("\n"))
         
         data.extend(self._line('-'))
         
-        # Total - BIG
+        # TOTAL — o maior do talão (2 de largura para caber "TOTAL: EUR 132.67")
         data.extend(self.CENTER)
-        data.extend(self.DOUBLE_HEIGHT)
         data.extend(self.BOLD_ON)
-        data.extend(self._text(f"TOTAL: EUR {order.get('total', 0):.2f}\n"))
-        data.extend(self.NORMAL_SIZE)
+        data.extend(self._big(f"TOTAL: EUR {order.get('total', 0):.2f}", 2, 3))
         data.extend(self.BOLD_OFF)
-        
+
         data.extend(self._line('-'))
-        
-        # Footer info
+
         data.extend(self.LEFT)
         dt = self._get_datetime(order)
-        data.extend(self._text(f"Data: {dt.strftime('%d/%m/%Y %H:%M')}\n"))
-        data.extend(self._text(f"ID: {order.get('id', '')[:8]}\n"))
+        data.extend(self._big(f"Data: {dt.strftime('%d/%m/%Y %H:%M')}", 1, 2))
+        data.extend(self._big(f"ID: {order.get('id', '')[:8]}", 1, 2))
 
         data.extend(self._line('='))
         data.extend(self._text("\n\n\n"))
@@ -3011,6 +3013,13 @@ async def get_pending_jobs_for_agent(x_api_key: Optional[str] = Header(None)):
         # Jobs de fatura trazem o ESC/POS já pronto do Vendus (escpos_direct_b64);
         # os restantes são renderizados aqui a partir do pedido/snapshot.
         escpos_b64 = job.get("escpos_direct_b64") or ""
+        if escpos_b64 and printer_type == "cashier":
+            try:
+                escpos_b64 = base64.b64encode(
+                    _escpos_mais_alto(base64.b64decode(escpos_b64))).decode("ascii")
+            except Exception as e:   # nunca deixar uma fatura por imprimir por isto
+                logger.warning(f"Altura dupla falhou no job {job.get('id')}, imprime normal: {e}")
+                escpos_b64 = job.get("escpos_direct_b64")
         if not escpos_b64:
             try:
                 fmt = ESCPOSFormatter()

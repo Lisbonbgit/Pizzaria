@@ -21,6 +21,7 @@ import qrcode
 import io
 import base64
 import secrets
+import textwrap
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from pymongo.errors import DuplicateKeyError, BulkWriteError
@@ -592,6 +593,9 @@ class ESCPOSFormatter:
     CENTER = ESC + b'a\x01'
     LEFT = ESC + b'a\x00'
     RIGHT = ESC + b'a\x02'
+    # ATENÇÃO: estes nomes vêm do `ESC !`; com `GS !` o 0x10 é só LARGURA ×2 (letra
+    # larga e baixa) e o 0x30 é largura ×4. Ficam assim para não mexer no talão da
+    # caixa; o da cozinha usa `_size(largura, altura)`.
     DOUBLE_HEIGHT = GS + b'!\x10'
     DOUBLE_WIDTH = GS + b'!\x20'
     DOUBLE_SIZE = GS + b'!\x30'
@@ -623,6 +627,20 @@ class ESCPOSFormatter:
         except:
             return text.encode('ascii', errors='replace')
     
+    def _size(self, w: int, h: int) -> bytes:
+        """`GS !` com largura e altura (1 a 8)."""
+        return self.GS + b'!' + bytes([((w - 1) << 4) | (h - 1)])
+
+    def _big(self, text: str, w: int, h: int, indent: str = "") -> bytes:
+        """Texto em letra w×h, partido nas PALAVRAS para caber na linha (sozinha, a
+        impressora partia a meio: "CEBOL" / "A")."""
+        out = bytearray(self._size(w, h))
+        largura = max(1, self.chars_per_line // w)
+        for linha in textwrap.wrap(text, largura, subsequent_indent=indent) or [""]:
+            out.extend(self._text(linha + "\n"))
+        out.extend(self.NORMAL_SIZE)
+        return bytes(out)
+
     def _get_datetime(self, order: dict) -> datetime:
         created_at = order.get('created_at', datetime.now(timezone.utc).isoformat())
         if isinstance(created_at, str):
@@ -639,40 +657,32 @@ class ESCPOSFormatter:
         # deve descartar o talão anterior deste pedido.
         data.extend(self.CENTER)
         data.extend(self.BOLD_ON)
-        data.extend(self.DOUBLE_HEIGHT)
         if order.get("is_update"):
-            data.extend(self._text("PEDIDO ATUALIZADO\n"))
-            data.extend(self.NORMAL_SIZE)
+            data.extend(self._big("PEDIDO ATUALIZADO", 2, 2))
             data.extend(self.BOLD_OFF)
-            data.extend(self._text("(substitui o pedido anterior)\n"))
+            data.extend(self._big("(substitui o pedido anterior)", 1, 2))
         else:
-            data.extend(self._text("NOVO PEDIDO\n"))
-            data.extend(self.NORMAL_SIZE)
+            data.extend(self._big("NOVO PEDIDO", 2, 2))
             data.extend(self.BOLD_OFF)
         
         data.extend(self._line('='))
         
         # Order number - BIG
         data.extend(self.CENTER)
-        data.extend(self.DOUBLE_SIZE)
         data.extend(self.BOLD_ON)
-        data.extend(self._text(f"PEDIDO #{order['order_number']}\n"))
-        data.extend(self.NORMAL_SIZE)
-        data.extend(self.BOLD_OFF)
-        
-        # Table number - BIG (balcão não tem mesa: imprime "BALCAO" em vez de
-        # "MESA: None")
+        data.extend(self._big(f"PEDIDO #{order['order_number']}", 3, 3))
+
+        # Mesa (balcão não tem mesa: imprime "BALCAO" em vez de "MESA: None")
         table_number = order.get('table_number')
-        data.extend(self.DOUBLE_SIZE)
         if table_number and order.get('source') != 'balcao':
-            data.extend(self._text(f"MESA: {table_number}\n"))
+            data.extend(self._big(f"MESA: {table_number}", 3, 3))
         else:
-            data.extend(self._text("BALCAO\n"))
-        data.extend(self.NORMAL_SIZE)
-        
+            data.extend(self._big("BALCAO", 3, 3))
+        data.extend(self.BOLD_OFF)
+
         # Date/time
         dt = self._get_datetime(order)
-        data.extend(self._text(f"{dt.strftime('%d/%m/%Y %H:%M')}\n"))
+        data.extend(self._big(dt.strftime('%d/%m/%Y %H:%M'), 1, 2))
         
         data.extend(self._line('='))
         
@@ -684,43 +694,35 @@ class ESCPOSFormatter:
             name = item.get('product_name', 'Item')
             variation = item.get('variation', {})
             
-            # Item name with quantity - BOLD
+            # Artigo com quantidade — letra 2×2, negrito
             data.extend(self.BOLD_ON)
-            data.extend(self.DOUBLE_HEIGHT)
-            data.extend(self._text(f"{qty}x {name}\n"))
-            data.extend(self.NORMAL_SIZE)
+            data.extend(self._big(f"{qty}x {name}", 2, 2, indent="   "))
             data.extend(self.BOLD_OFF)
-            
-            # Size/Variation
+
+            # Tamanho, extras, complementos e preferência — altura dupla
             if variation and variation.get('name'):
-                data.extend(self._text(f"   Tamanho: {variation['name']}\n"))
-            
-            # Extras
+                data.extend(self._big(f"   Tamanho: {variation['name']}", 1, 2, indent="   "))
             for extra in item.get('extras', []):
-                data.extend(self._text(f"   + {extra.get('name', '')}\n"))
-            
-            # Complements
+                data.extend(self._big(f"   + {extra.get('name', '')}", 1, 2, indent="     "))
             for comp_group in item.get('selected_complements', []):
                 group_name = comp_group.get('group_name', '')
                 if group_name:
                     data.extend(self.BOLD_ON)
-                    data.extend(self._text(f"   [{group_name}]\n"))
+                    data.extend(self._big(f"   [{group_name}]", 1, 2, indent="   "))
                     data.extend(self.BOLD_OFF)
                 for comp_item in comp_group.get('items', []):
-                    data.extend(self._text(f"   + {comp_item.get('name', '')}\n"))
-            
-            # Preference
+                    data.extend(self._big(f"   + {comp_item.get('name', '')}", 1, 2, indent="     "))
             if item.get('selected_preference'):
                 data.extend(self.BOLD_ON)
-                data.extend(self._text(f"   >> {item['selected_preference'].upper()} <<\n"))
+                data.extend(self._big(f"   >> {item['selected_preference'].upper()} <<", 1, 2, indent="   "))
                 data.extend(self.BOLD_OFF)
-            
-            # Item notes - HIGHLIGHTED
+
+            # Observação do artigo — a MAIOR do talão (3×3), para não escapar
             if item.get('notes'):
                 data.extend(self.BOLD_ON)
-                data.extend(self._text(f"   >>> {item['notes'].upper()} <<<\n"))
+                data.extend(self._big(f"OBS: {item['notes'].upper()}", 3, 3))
                 data.extend(self.BOLD_OFF)
-            
+
             data.extend(self._text("\n"))
         
         data.extend(self._line('-'))
@@ -729,10 +731,8 @@ class ESCPOSFormatter:
         if order.get('notes'):
             data.extend(self.CENTER)
             data.extend(self.BOLD_ON)
-            data.extend(self.DOUBLE_SIZE)
-            data.extend(self._text("OBSERVACOES:\n"))
-            data.extend(self.NORMAL_SIZE)
-            data.extend(self._text(f"{order['notes'].upper()}\n"))
+            data.extend(self._big("OBSERVACOES:", 2, 2))
+            data.extend(self._big(order['notes'].upper(), 3, 3))
             data.extend(self.BOLD_OFF)
             data.extend(self._line('-'))
         

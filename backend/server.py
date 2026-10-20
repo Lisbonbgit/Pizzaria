@@ -41,6 +41,8 @@ from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
 from pos.credit_note import nc_items_from_fs
 from pos.split_plan import compute_shares, next_amount, next_unpaid_index, remaining_amount
+from pos.meia_meia import (MeiaMeiaInvalida, incluida_no_rodizio, montar_meia_meia,
+                           preco_unitario)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -393,6 +395,9 @@ class OrderItemCreate(BaseModel):
     notes: Optional[str] = None
     unit_price: float
     total_price: float
+    # Meia-meia: o 2.º sabor. O servidor valida, calcula o preço e monta o nome
+    # e as metades (`halves`); este campo NÃO fica gravado.
+    half_product_id: Optional[str] = None
 
 class OrderCreate(BaseModel):
     table_id: str
@@ -1367,8 +1372,57 @@ async def _enqueue_order_prints(order_id: str):
         logger.info(f"Order {order_id}: sem impressoras registadas — criados jobs cozinha + caixa")
 
 
+async def _montar_meia(a_id: str, b_id: str, tamanho):
+    """Carrega os dois sabores e a categoria do 1.º e aplica a regra pura.
+    Devolve (A, B, montar_meia_meia(...)); 400 com a mensagem em português."""
+    a = await db.products.find_one({"id": a_id}, {"_id": 0})
+    if a is None:
+        raise HTTPException(status_code=400, detail="Esta pizza já não existe no menu")
+    b = await db.products.find_one({"id": b_id}, {"_id": 0})
+    cat = await db.categories.find_one({"id": a.get("category_id")}, {"_id": 0})
+    try:
+        return a, b, montar_meia_meia(a, b, cat, tamanho)
+    except MeiaMeiaInvalida as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def _aplicar_meias_meias(items: list, table_number) -> None:
+    """Rota PÚBLICA (QR e "Adicionar produtos" da mesa): numa meia-meia é o
+    SERVIDOR que faz a conta — metade mais cara no tamanho + extras/complementos
+    de A a preços do catálogo — e monta nome e metades. O preço do browser é
+    ignorado. A 0 € só no rodízio, com as DUAS metades incluídas no nível."""
+    sess = None
+    for it in items:
+        b_id = it.pop("half_product_id", None)
+        if not b_id:
+            continue
+        tamanho = (it.get("variation") or {}).get("name")
+        a, b, m = await _montar_meia(it["product_id"], b_id, tamanho)
+        try:
+            if float(it.get("unit_price") or 0) == 0:
+                if sess is None:
+                    sess = await _open_session(table_number) or {}
+                nivel = sess.get("rodizio", "none")
+                if not (incluida_no_rodizio(a, nivel) and incluida_no_rodizio(b, nivel)):
+                    raise MeiaMeiaInvalida("Esta meia-meia não está incluída no rodízio desta mesa")
+                unit = 0.0
+            else:
+                unit = preco_unitario(m["base_price"], a, it.get("extras"), it.get("selected_complements"))
+        except MeiaMeiaInvalida as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        it.update({"product_name": m["product_name"], "halves": m["halves"],
+                   "unit_price": unit, "total_price": round(unit * it["quantity"], 2)})
+
+
 @api_router.post("/orders", response_model=OrderResponse)
 async def create_order(order: OrderCreate):
+    items = [item.model_dump() for item in order.items]
+    total = order.total
+    if any(i.get("half_product_id") for i in items):
+        await _aplicar_meias_meias(items, order.table_number)
+        total = round(sum(float(i.get("total_price") or 0) for i in items), 2)
+    for i in items:
+        i.pop("half_product_id", None)
     order_number = await get_next_order_number()
     order_id = str(uuid.uuid4())
     
@@ -1377,9 +1431,9 @@ async def create_order(order: OrderCreate):
         "order_number": order_number,
         "table_id": order.table_id,
         "table_number": order.table_number,
-        "items": [item.model_dump() for item in order.items],
+        "items": items,
         "notes": order.notes,
-        "total": order.total,
+        "total": total,
         "status": "received",
         "paid": False,
         "print_status": "pending",

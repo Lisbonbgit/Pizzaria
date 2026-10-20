@@ -37,3 +37,13 @@ def test_observacao_comprida_parte_por_palavras():
         texto = l.split(GS + b"\x22")[-1]
         assert len(texto) <= 16, texto
     assert b"OREGAOS" in out and b"CEBOLA" in out
+
+
+def test_meia_meia_sai_com_uma_metade_por_linha():
+    out = _cozinha({"product_name": "1/2 Margherita + 1/2 Frango Com Catupiry", "quantity": 1,
+                    "variation": {"name": "Grande (8 Fatias)"},
+                    "halves": [{"product_id": "a", "product_name": "Margherita"},
+                               {"product_id": "b", "product_name": "Frango Com Catupiry"}]})
+    assert GS + b"\x11" + b"1x MEIA-MEIA" in out
+    assert b"1/2 MARGHERITA" in out and b"1/2 FRANGO COM" in out and b"CATUPIRY" in out
+    assert b"1x 1/2" not in out          # o nome composto não sai como linha do artigo

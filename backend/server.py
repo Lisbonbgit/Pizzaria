@@ -715,7 +715,15 @@ class ESCPOSFormatter:
             
             # Artigo com quantidade — letra 2×2, negrito
             data.extend(self.BOLD_ON)
-            data.extend(self._big(f"{qty}x {name}", 2, 2, indent="   "))
+            halves = item.get('halves') or []
+            if len(halves) == 2:
+                # Meia-meia: uma metade por linha (o nome composto partia-se a meio).
+                # "1/2" em ASCII — a página de código da impressora não está fixada.
+                data.extend(self._big(f"{qty}x MEIA-MEIA", 2, 2))
+                for h in halves:
+                    data.extend(self._big(f"   1/2 {h.get('product_name', '').upper()}", 2, 2, indent="   "))
+            else:
+                data.extend(self._big(f"{qty}x {name}", 2, 2, indent="   "))
             data.extend(self.BOLD_OFF)
 
             # Tamanho, extras, complementos e preferência — altura dupla

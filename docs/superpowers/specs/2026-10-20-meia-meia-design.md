@@ -71,9 +71,12 @@ de lógica nova. Dividir a conta, "Separar Conta" e editar a linha funcionam com
   tamanho inexistente);
 - `incluida_no_rodizio(produto, nivel) -> bool` (mesma regra do menu: `ambos` ou o nível).
 
-**Onde é chamada:** `POST /orders` (cliente QR e "Adicionar produtos" da mesa) e
-`POST /pos/counter/order` + `/update` (balcão, via `pos/counter.build_counter_items`, que
-hoje impõe o nome do catálogo). Para cada item com `half_product_id`, o servidor:
+**Onde é chamada:** `POST /orders` (cliente QR e "Adicionar produtos" da mesa — rota
+pública) e `POST /pos/counter/order` + `/update` (balcão, via
+`pos/counter.build_counter_items`, que hoje impõe o nome do catálogo). **No balcão** (POS
+autenticado) o servidor valida os sabores e monta nome e metades, mas **mantém o preço
+que o POS manda**, como já faz hoje com tamanhos, extras e alterações do staff no
+diálogo da linha. **Na rota pública**, para cada item com `half_product_id`, o servidor:
 
 1. carrega A e B do catálogo e valida (erros → **400** com mensagem em português);
 2. **calcula o preço**: `max(preço A, preço B no tamanho) + extras e complementos de A

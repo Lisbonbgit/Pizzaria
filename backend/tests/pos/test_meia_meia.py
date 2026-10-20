@@ -31,6 +31,7 @@ def test_paga_se_a_metade_mais_cara_no_tamanho():
     m = montar_meia_meia(MARG, FRANGO, PIZZAS, GRANDE)
     assert m["base_price"] == 18.9
     assert montar_meia_meia(MARG, FRANGO, PIZZAS, MEDIA)["base_price"] == 14.9
+    assert montar_meia_meia(FRANGO, MARG, PIZZAS, GRANDE)["base_price"] == 18.9
     assert m["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
     assert m["halves"] == [{"product_id": "p-marg", "product_name": "Margherita"},
                            {"product_id": "p-frango", "product_name": "Frango Com Catupiry"}]
@@ -99,3 +100,16 @@ def test_rodizio_so_com_sabores_incluidos_no_nivel():
 
 def test_nome():
     assert nome_meia_meia("A", "B") == "1/2 A + 1/2 B"
+
+
+def test_sem_tamanho_pede_o_tamanho():
+    with pytest.raises(MeiaMeiaInvalida) as e:
+        montar_meia_meia(MARG, FRANGO, PIZZAS, None)
+    assert "Escolhe o tamanho" in str(e.value)
+
+
+def test_primeiro_sabor_tambem_tem_de_existir_no_tamanho():
+    so_media = dict(MARG, variations=[{"name": MEDIA, "price": 12.9}])
+    with pytest.raises(MeiaMeiaInvalida) as e:
+        montar_meia_meia(so_media, FRANGO, PIZZAS, GRANDE)
+    assert "Margherita" in str(e.value)

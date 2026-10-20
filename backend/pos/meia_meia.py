@@ -52,6 +52,8 @@ def montar_meia_meia(prod_a: dict, prod_b, cat_a, nome_tamanho) -> dict:
         raise MeiaMeiaInvalida("Os dois sabores têm de ser da mesma categoria")
     if prod_b.get("available") is False:
         raise MeiaMeiaInvalida(f"{prod_b.get('name')} está esgotada")
+    if not nome_tamanho and prod_a.get("variations"):
+        raise MeiaMeiaInvalida("Escolhe o tamanho")
     preco_a = preco_no_tamanho(prod_a, nome_tamanho)
     preco_b = preco_no_tamanho(prod_b, nome_tamanho)
     for prod, preco in ((prod_a, preco_a), (prod_b, preco_b)):

@@ -18,6 +18,16 @@ def summarize_products(orders, default_tax_id, top=15):
             name = item.get("product_name", "Desconhecido")
             qty = item.get("quantity", 1) or 1
             _, net = combine_global(line_vendus(item, None, default_tax_id), 0)
+            halves = item.get("halves") or []
+            if len(halves) == 2:
+                # Meia-meia: meia pizza para cada sabor; o valor reparte-se em dois
+                # que somam EXATAMENTE o da linha.
+                metade = round(net / 2, 2)
+                for h, valor in ((halves[0], metade), (halves[1], round(net - metade, 2))):
+                    sabor = h.get("product_name", name)
+                    qty_by[sabor] = qty_by.get(sabor, 0) + qty * 0.5
+                    rev_by[sabor] = round(rev_by.get(sabor, 0.0) + valor, 2)
+                continue
             qty_by[name] = qty_by.get(name, 0) + qty
             rev_by[name] = round(rev_by.get(name, 0.0) + net, 2)
     rows = [

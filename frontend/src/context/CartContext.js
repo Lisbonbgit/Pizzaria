@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { nomeMeiaMeia, precoBaseMeia } from '@/lib/meiaMeia';
 
 const CartContext = createContext();
 
@@ -52,17 +53,20 @@ export const CartProvider = ({ children }) => {
     }
   }, [tableNumber, tableId]);
 
-  const addItem = (product, quantity, variation, extras, notes, selectedComplements = [], selectedPreference = null, priceOverride = null) => {
+  const addItem = (product, quantity, variation, extras, notes, selectedComplements = [], selectedPreference = null, priceOverride = null, segundaMetade = null) => {
     const compKey = selectedComplements.map(g => g.items.map(i => i.name).join(',')).join('|');
     const prefKey = selectedPreference || '';
-    const itemId = `${product.id}-${variation?.name || 'base'}-${extras.map(e => e.name).join('-')}-${compKey}-${prefKey}`;
+    const itemId = `${product.id}-${segundaMetade?.id || ''}-${variation?.name || 'base'}-${extras.map(e => e.name).join('-')}-${compKey}-${prefKey}`;
 
     // Calculate prices (priceOverride força um valor, ex.: €0 nos incluídos do rodízio)
     let unitPrice;
     if (priceOverride != null) {
       unitPrice = priceOverride;
     } else {
-      unitPrice = variation?.price || product.base_price;
+      // Meia-meia: a metade mais cara no tamanho (o servidor confere e recalcula).
+      unitPrice = segundaMetade
+        ? precoBaseMeia(product, segundaMetade, variation?.name || null)
+        : (variation?.price || product.base_price);
       unitPrice += extras.reduce((sum, e) => sum + e.price, 0);
       unitPrice += selectedComplements.reduce((sum, group) =>
         sum + group.items.reduce((gs, item) => gs + (item.price || 0), 0), 0);
@@ -72,7 +76,8 @@ export const CartProvider = ({ children }) => {
     const newItem = {
       id: itemId,
       product_id: product.id,
-      product_name: product.name,
+      product_name: segundaMetade ? nomeMeiaMeia(product.name, segundaMetade.name) : product.name,
+      half_product_id: segundaMetade ? segundaMetade.id : null,
       product_image: product.image_url,
       quantity,
       variation,

@@ -12,6 +12,7 @@ usada pela integração fiscal (idempotência, mesmo espírito do
 `external_reference` do fecho de mesa).
 """
 from pos.pricing import line_vendus, combine_global
+from pos.meia_meia import nome_meia_meia
 
 
 def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NOR") -> dict:
@@ -78,6 +79,12 @@ def build_counter_items(products_by_id: dict, cart: list, default_tax: str = "NO
         extras = entry.get("extras") or []
         if extras:
             item["extras"] = extras
+        # Meia-meia: o servidor já validou as metades (`_meias_do_balcao`); aqui só
+        # se guardam e o nome passa a "1/2 A + 1/2 B" (talões, conta e FS leem-no).
+        halves = entry.get("halves")
+        if halves:
+            item["halves"] = halves
+            item["product_name"] = nome_meia_meia(halves[0]["product_name"], halves[1]["product_name"])
         items.append(item)
         # Líquido do item pela MESMA via da faturação (`line_vendus` +
         # `combine_global`, sem desconto global) → o `total` do pedido bate ao

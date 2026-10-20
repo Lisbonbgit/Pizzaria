@@ -4200,6 +4200,9 @@ class CounterOrderItem(BaseModel):
     # menu do cliente já envia: [{"name","price"}]. Os talões já os imprimem; o
     # preço do extra vem JÁ somado no `unit_price` (igual ao fluxo do cliente).
     extras: List[dict] = []
+    # Meia-meia: o 2.º sabor. O servidor valida e monta nome/metades; o preço é o
+    # do POS (`unit_price`), como para tamanhos, extras e alterações do staff.
+    half_product_id: Optional[str] = None
     # Overrides opcionais do staff (diálogo do produto no balcão). Sem eles, usa-se
     # o preço/IVA do produto e sem desconto — comportamento de venda rápida.
     unit_price: Optional[float] = None       # override do preço unitário
@@ -4213,6 +4216,16 @@ class CounterOrderRequest(BaseModel):
     # False = venda que não passa pela cozinha (bebida, produto já feito): cria
     # o pedido e vai direto à fatura, sem talão de cozinha.
     print_kitchen: bool = True
+
+
+async def _meias_do_balcao(items) -> dict:
+    """Valida as meia-meias do carrinho do balcão. Devolve {índice: halves}."""
+    out = {}
+    for idx, i in enumerate(items):
+        if i.half_product_id:
+            _, _, m = await _montar_meia(i.product_id, i.half_product_id, i.variation_name)
+            out[idx] = m["halves"]
+    return out
 
 
 @api_router.post("/pos/counter/order")
@@ -4264,12 +4277,14 @@ async def create_counter_order(
         if i.discount_amount is not None and i.discount_amount < 0:
             raise HTTPException(status_code=400, detail="Desconto € inválido")
 
+    meias = await _meias_do_balcao(body.items)
     cart = [{
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
         "variation_name": i.variation_name, "extras": i.extras,
-    } for i in body.items]
+        "halves": meias.get(idx),
+    } for idx, i in enumerate(body.items)]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
 
     if not built["items"]:
@@ -4384,12 +4399,14 @@ async def update_counter_order(
         p["id"]: p for p in prods
         if not p.get("rodizio_only", False) and p.get("available", True)
     }
+    meias = await _meias_do_balcao(body.items)
     cart = [{
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
         "variation_name": i.variation_name, "extras": i.extras,
-    } for i in body.items]
+        "halves": meias.get(idx),
+    } for idx, i in enumerate(body.items)]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
     if not built["items"]:
         raise HTTPException(status_code=400, detail="Nada para faturar")

@@ -12,6 +12,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { posCounter, posCheckout } from '@/lib/api';
+import CatalogoProdutos from '@/components/pos/CatalogoProdutos';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 
@@ -63,11 +64,6 @@ const PosBalcao = ({ onClose }) => {
 
   // Carrinho: [{id, name, qty, unitPrice, tax, taxTouched, discKind, discVal}]
   const [cart, setCart] = useState([]);
-  const [selectedCat, setSelectedCat] = useState(null);
-  // Produto cujas opções estão a ser escolhidas (tamanho e/ou extras), ou null.
-  const [sizePick, setSizePick] = useState(null);
-  const [pickVar, setPickVar] = useState(null);      // variação escolhida
-  const [pickExtras, setPickExtras] = useState([]);  // extras escolhidos
 
   // Diálogo do produto (editar qtd/preço/IVA/desconto de uma linha do carrinho,
   // antes de "Imprimir Pedido").
@@ -189,20 +185,6 @@ const PosBalcao = ({ onClose }) => {
     });
     if (printed) setDirty(true);
   }, [printed, splitOf]);
-
-  // Toque num produto: com variações (tamanhos), abre o seletor; senão adiciona
-  // logo ao preço base.
-  const addToCart = useCallback((p) => {
-    const temVar = Array.isArray(p.variations) && p.variations.length > 0;
-    const temExtras = Array.isArray(p.extras) && p.extras.length > 0;
-    if (temVar || temExtras) {
-      setSizePick(p);
-      setPickVar(temVar ? null : undefined);
-      setPickExtras([]);
-      return;
-    }
-    addLine(p, null);
-  }, [addLine]);
 
   const changeQty = useCallback((i, delta) => {
     if (splitOf > 0) { toast.error('Divisão em curso — termina ou cancela a divisão'); return; }
@@ -465,16 +447,6 @@ const PosBalcao = ({ onClose }) => {
       .sort((a, b) => (order.has(a.cid) ? order.get(a.cid) : 999) - (order.has(b.cid) ? order.get(b.cid) : 999));
   })();
 
-  // Separador (tab) ativo por omissão: o primeiro grupo com produtos, assim
-  // que o catálogo chega — mesma UX do POS Vendus (separadores no topo, em
-  // vez de secções empilhadas).
-  useEffect(() => {
-    if (selectedCat == null && productGroups.length > 0) {
-      setSelectedCat(productGroups[0].cid);
-    }
-  }, [productGroups, selectedCat]);
-
-  const activeGroup = productGroups.find((g) => g.cid === selectedCat) || productGroups[0] || null;
 
   // Só pode sair antes de imprimir, ou depois de a venda estar concluída
   // (documento emitido) — nunca a meio, com um pedido já na cozinha e sem
@@ -518,43 +490,8 @@ const PosBalcao = ({ onClose }) => {
           ) : productGroups.length === 0 ? (
             <p className="py-12 text-center text-sm text-muted-foreground">Sem produtos disponíveis.</p>
           ) : (
-            <>
-              {/* Separadores por categoria (estilo POS Vendus) — um clique troca
-                  o grupo visível; a grelha mostra só a categoria ativa. */}
-              <div className="mb-4 flex gap-1.5 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {productGroups.map((g) => (
-                  <button
-                    key={g.cid}
-                    type="button"
-                    onClick={() => setSelectedCat(g.cid)}
-                    className={[
-                      'shrink-0 whitespace-nowrap rounded-lg px-4 py-2.5 text-sm font-semibold transition-colors touch-manipulation',
-                      g.cid === selectedCat
-                        ? 'bg-[#5a1a1a] text-white shadow-sm'
-                        : 'bg-muted text-muted-foreground hover:bg-muted/70',
-                    ].join(' ')}
-                  >
-                    {g.name}
-                  </button>
-                ))}
-              </div>
-
-              {activeGroup && (
-                <div className="grid gap-2 [grid-template-columns:repeat(auto-fill,minmax(140px,1fr))]">
-                  {activeGroup.items.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => addToCart(p)}
-                      className="flex min-h-[76px] flex-col items-start justify-between rounded-lg border border-border bg-white p-3 text-left transition-all touch-manipulation active:scale-[0.97] cursor-pointer hover:border-primary/40 hover:shadow-sm"
-                    >
-                      <span className="text-sm font-medium leading-snug line-clamp-2">{p.name}</span>
-                      <span className="mt-2 text-sm font-semibold text-[#5a1a1a] tabular-nums">{eur(p.base_price)}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
+            // Separadores, grelha e janela de tamanho/extras — partilhados com a mesa.
+            <CatalogoProdutos groups={productGroups} onAdd={addLine} />
           )}
         </div>
 
@@ -869,86 +806,6 @@ const PosBalcao = ({ onClose }) => {
           </div>
         </div>
       </main>
-
-      {/* Opções do produto — tamanho (Média/Grande) e extras (Borda de
-          Catupiry). Sem extras, tocar no tamanho adiciona logo (um só toque);
-          com extras, escolhe-se tudo e confirma-se em baixo. */}
-      <Dialog open={sizePick != null} onOpenChange={(v) => !v && setSizePick(null)}>
-        <DialogContent className="max-w-sm text-foreground">
-          <DialogHeader>
-            <DialogTitle className="pr-6 text-lg">{sizePick?.name || 'Produto'}</DialogTitle>
-          </DialogHeader>
-
-          {(sizePick?.variations || []).length > 0 && (
-            <>
-              <p className="text-sm text-muted-foreground">Escolhe o tamanho</p>
-              <div className="grid gap-2">
-                {(sizePick?.variations || []).map((v) => {
-                  const temExtras = (sizePick?.extras || []).length > 0;
-                  const escolhido = pickVar?.name === v.name;
-                  return (
-                    <button
-                      key={v.name}
-                      type="button"
-                      onClick={() => {
-                        if (temExtras) { setPickVar(v); return; }
-                        addLine(sizePick, v); setSizePick(null);
-                      }}
-                      className={[
-                        'flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-all touch-manipulation active:scale-[0.98]',
-                        escolhido ? 'border-[#5a1a1a] bg-[#5a1a1a]/[0.06] ring-1 ring-[#5a1a1a]'
-                                  : 'border-border bg-white hover:border-primary/40 hover:shadow-sm',
-                      ].join(' ')}
-                    >
-                      <span className="text-sm font-medium">{v.name}</span>
-                      <span className="text-sm font-semibold text-[#5a1a1a] tabular-nums">{eur(v.price)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </>
-          )}
-
-          {(sizePick?.extras || []).length > 0 && (
-            <>
-              <p className="mt-1 text-sm text-muted-foreground">Extras</p>
-              <div className="grid gap-2">
-                {(sizePick?.extras || []).map((e) => {
-                  const on = pickExtras.some((x) => x.name === e.name);
-                  return (
-                    <button
-                      key={e.name}
-                      type="button"
-                      onClick={() => setPickExtras((prev) => on
-                        ? prev.filter((x) => x.name !== e.name)
-                        : [...prev, { name: e.name, price: Number(e.price) || 0 }])}
-                      className={[
-                        'flex items-center justify-between rounded-lg border px-4 py-3 text-left transition-all touch-manipulation active:scale-[0.98]',
-                        on ? 'border-[#5a1a1a] bg-[#5a1a1a]/[0.06] ring-1 ring-[#5a1a1a]'
-                           : 'border-border bg-white hover:border-primary/40',
-                      ].join(' ')}
-                    >
-                      <span className="text-sm font-medium">{on ? '✓ ' : ''}{e.name}</span>
-                      <span className="text-sm font-semibold text-[#5a1a1a] tabular-nums">+ {eur(e.price)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <Button
-                disabled={(sizePick?.variations || []).length > 0 && !pickVar}
-                onClick={() => { addLine(sizePick, pickVar || null, pickExtras); setSizePick(null); }}
-                className="mt-2 h-12 w-full bg-[#5a1a1a] text-base font-semibold text-white hover:bg-[#4a1414]"
-              >
-                {(sizePick?.variations || []).length > 0 && !pickVar
-                  ? 'Escolhe o tamanho'
-                  : `Adicionar — ${eur(((pickVar ? Number(pickVar.price) : Number(sizePick?.base_price)) || 0)
-                      + pickExtras.reduce((t, x) => t + (Number(x.price) || 0), 0))}`}
-              </Button>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
 
       {/* Diálogo do produto — editar qtd/preço/IVA/desconto de uma linha */}
       <Dialog open={editIdx != null} onOpenChange={(v) => !v && setEditIdx(null)}>

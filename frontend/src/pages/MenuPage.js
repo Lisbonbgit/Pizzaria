@@ -1093,7 +1093,9 @@ const MenuPage = () => {
             </div>
           ) : (
             <>
-              <ScrollArea className="flex-1 -mx-6 px-6">
+              {/* O Radix põe o conteúdo num display:table que cresce com o texto; em bloco,
+                  o truncate do nome segura e o preço da linha não sai do ecrã. */}
+              <ScrollArea className="flex-1 -mx-6 px-6 [&>[data-radix-scroll-area-viewport]>div]:!block">
                 <div className="space-y-4 py-4">
                   {cartItems.map((item) => (
                     <div 

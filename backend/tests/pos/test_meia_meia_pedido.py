@@ -89,6 +89,9 @@ def test_rodizio_a_zero_so_com_os_dois_incluidos(db):
     with pytest.raises(HTTPException) as e:                     # Frango só no completo
         _pede([_item(b=FRANGO, tamanho=MEDIA, preco=0.0)])
     assert "rodízio" in e.value.detail
+    with pytest.raises(HTTPException) as e:                     # e também quando é o 1.º sabor
+        _pede([_item(a=FRANGO, b=CALAB, tamanho=MEDIA, preco=0.0)])
+    assert "rodízio" in e.value.detail
 
 
 def test_zero_euros_fora_do_rodizio_e_recusado(db):

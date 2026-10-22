@@ -71,6 +71,7 @@ def test_pedido_sem_meia_meia_fica_como_hoje(db):
     _pede([normal], total=12.9)
     it = db.orders.docs[0]["items"][0]
     assert it["product_name"] == "Margherita" and "halves" not in it
+    assert "half_product_id" not in it                 # sem campo a None na linha
     assert db.orders.docs[0]["total"] == 12.9
 
 
@@ -125,6 +126,7 @@ def test_pedido_misto_o_total_soma_todas_as_linhas(db):
     _pede([_item(), normal], total=1.0)
     itens = db.orders.docs[0]["items"]
     assert itens[0]["unit_price"] == 18.9 and itens[1]["total_price"] == 12.9
+    assert "half_product_id" not in itens[1]           # a linha normal também
     assert db.orders.docs[0]["total"] == round(sum(i["total_price"] for i in itens), 2) == 31.8
 
 

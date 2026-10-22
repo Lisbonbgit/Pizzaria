@@ -17,6 +17,7 @@ import {
 import { toast } from 'sonner';
 import { ordersAPI, productsAPI, categoriesAPI, rodizioAPI } from '@/lib/api';
 import CatalogoProdutos from '@/components/pos/CatalogoProdutos';
+import { nomeMeiaMeia, precoBaseMeia } from '@/lib/meiaMeia';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const lineKey = (l) => `${l.order_id}:${l.idx}`;
@@ -240,16 +241,18 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     } catch { toast.error('Erro ao reimprimir'); }
   };
 
-  // Junta um toque à lista (mesmo produto + tamanho + extras soma a quantidade).
-  // O preço da unidade já leva o tamanho e os extras, como no menu do cliente.
-  const addPend = (p, variation, extras = []) => {
-    const base = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
+  // Junta um toque à lista (mesmo produto + 2.ª metade + tamanho + extras soma
+  // a quantidade). O preço da unidade já leva o tamanho e os extras, como no
+  // menu do cliente (meia-meia: a metade mais cara; o servidor recalcula).
+  const addPend = (p, variation, extras = [], metade = null) => {
+    const base = metade ? precoBaseMeia(p, metade, variation?.name || null)
+      : (variation ? Number(variation.price) || 0 : Number(p.base_price) || 0);
     const unitPrice = Math.round((base + extras.reduce((t, e) => t + (Number(e.price) || 0), 0)) * 100) / 100;
-    const chave = `${p.id}|${variation?.name || ''}|${extras.map((e) => e.name).sort().join(',')}`;
+    const chave = `${p.id}|${metade?.id || ''}|${variation?.name || ''}|${extras.map((e) => e.name).sort().join(',')}`;
     setPend((prev) => {
       const i = prev.findIndex((c) => c.chave === chave);
       if (i >= 0) return prev.map((c, k) => (k === i ? { ...c, qty: c.qty + 1 } : c));
-      return [...prev, { chave, product: p, variation, extras, qty: 1, unitPrice }];
+      return [...prev, { chave, product: p, variation, extras, metade, qty: 1, unitPrice }];
     });
   };
   const changePend = (i, delta) => setPend((prev) => prev
@@ -261,9 +264,12 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     setAdding(true);
     try {
       const items = pend.map((c) => ({
-        product_id: c.product.id, product_name: c.product.name, quantity: c.qty,
+        product_id: c.product.id,
+        product_name: c.metade ? nomeMeiaMeia(c.product.name, c.metade.name) : c.product.name,
+        quantity: c.qty,
         ...(c.variation ? { variation: { name: c.variation.name, price: Number(c.variation.price) || 0 } } : {}),
         extras: c.extras,
+        ...(c.metade ? { half_product_id: c.metade.id } : {}),
         unit_price: c.unitPrice, total_price: Math.round(c.unitPrice * c.qty * 100) / 100,
       }));
       await ordersAPI.create({
@@ -988,7 +994,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   <div key={c.chave} className="px-4 py-2.5 border-b border-white/10">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium leading-snug">{c.product.name}</p>
+                        <p className="text-sm font-medium leading-snug">{c.metade ? nomeMeiaMeia(c.product.name, c.metade.name) : c.product.name}</p>
                         {(c.variation || c.extras.length > 0) && (
                           <p className="text-xs text-white/60">
                             {[c.variation?.name, ...c.extras.map((e) => `+ ${e.name}`)].filter(Boolean).join(' · ')}

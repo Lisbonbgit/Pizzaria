@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog';
 import { posCounter, posCheckout } from '@/lib/api';
 import CatalogoProdutos from '@/components/pos/CatalogoProdutos';
+import { nomeMeiaMeia, precoBaseMeia } from '@/lib/meiaMeia';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 
@@ -22,6 +23,7 @@ const lineGross = (c) => Math.round((Number(c.unitPrice) || 0) * c.qty * 100) / 
 const itemToCartLine = (it) => ({
   id: it.product_id, name: it.product_name, variationName: it.variation?.name || null,
   extras: it.extras || [], qty: it.quantity, unitPrice: it.unit_price,
+  halfId: it.halves?.[1]?.product_id || null,
   // O IVA gravado já é o efetivo (override incluído): reenvia-se tal e qual.
   tax: it.vendus_tax_id === 'INT' ? 'INT' : 'NOR', taxTouched: true,
   discKind: it.discount_amount ? 'eur' : 'pct',
@@ -157,19 +159,24 @@ const PosBalcao = ({ onClose }) => {
 
   // Adiciona uma linha ao carrinho. `variation` = {name,price} da variação
   // escolhida (pizza Grande, etc.) ou null (preço base). Funde por (produto +
-  // variação): a mesma pizza em tamanhos diferentes fica em linhas separadas.
-  const addLine = useCallback((p, variation, extras = []) => {
+  // variação + 2.ª metade + extras): a mesma pizza em tamanhos diferentes fica
+  // em linhas separadas. `metade` = 2.º sabor da meia-meia (ou null).
+  const addLine = useCallback((p, variation, extras = [], metade = null) => {
     if (splitOf > 0) { toast.error('Divisão em curso — termina ou cancela a divisão'); return; }
     const vname = variation?.name || null;
     // O preço do extra (ex.: Borda de Catupiry +3€) soma-se ao da linha, tal
     // como no menu do cliente — o servidor recebe o unit_price já somado.
     const extrasTotal = extras.reduce((s, e) => s + (Number(e.price) || 0), 0);
-    const base = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
+    // Meia-meia: a metade mais cara no tamanho (o servidor valida as metades).
+    const base = metade ? precoBaseMeia(p, metade, vname)
+      : (variation ? Number(variation.price) || 0 : Number(p.base_price) || 0);
     const price = Math.round((base + extrasTotal) * 100) / 100;
     const chave = extras.map((e) => e.name).sort().join('|');
+    const halfId = metade?.id || null;
     setCart((prev) => {
       const idx = prev.findIndex((c) => c.id === p.id
         && (c.variationName || null) === vname
+        && (c.halfId || null) === halfId
         && (c.extras || []).map((e) => e.name).sort().join('|') === chave);
       if (idx >= 0) {
         const next = [...prev];
@@ -177,7 +184,8 @@ const PosBalcao = ({ onClose }) => {
         return next;
       }
       return [...prev, {
-        id: p.id, name: p.name, variationName: vname, extras, qty: 1,
+        id: p.id, name: metade ? nomeMeiaMeia(p.name, metade.name) : p.name,
+        variationName: vname, extras, qty: 1, halfId,
         unitPrice: price,
         tax: p.vendus_tax_id === 'INT' ? 'INT' : 'NOR',
         taxTouched: false, discKind: 'pct', discVal: '',
@@ -250,6 +258,7 @@ const PosBalcao = ({ onClose }) => {
         const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
         if (c.variationName) it.variation_name = c.variationName;
         if (c.extras?.length) it.extras = c.extras;
+        if (c.halfId) it.half_product_id = c.halfId;
         // IVA só vai se o staff o mudou (senão o backend usa o do produto).
         if (c.taxTouched) it.vendus_tax_id = c.tax;
         const dv = Number(String(c.discVal).replace(',', '.')) || 0;
@@ -282,6 +291,7 @@ const PosBalcao = ({ onClose }) => {
         const it = { product_id: c.id, quantity: c.qty, unit_price: c.unitPrice };
         if (c.variationName) it.variation_name = c.variationName;
         if (c.extras?.length) it.extras = c.extras;
+        if (c.halfId) it.half_product_id = c.halfId;
         if (c.taxTouched) it.vendus_tax_id = c.tax;
         const dv = Number(String(c.discVal).replace(',', '.')) || 0;
         if (dv > 0) {
@@ -523,7 +533,7 @@ const PosBalcao = ({ onClose }) => {
                 const dv = Number(String(c.discVal).replace(',', '.')) || 0;
                 return (
                   <div
-                    key={`${c.id}|${c.variationName || ''}`}
+                    key={`${c.id}|${c.variationName || ''}|${c.halfId || ''}|${(c.extras || []).map((e) => e.name).join(',')}`}
                     onClick={() => openEdit(i)}
                     title="Tocar para editar (qtd/preço/IVA/desconto)"
                     className="grid grid-cols-[1fr_5.5rem_5rem] items-center gap-2 border-b border-white/5 px-4 py-3 cursor-pointer hover:bg-white/5"

@@ -31,13 +31,16 @@ export default function CatalogoProdutos({ groups, onAdd, gridRef }) {
   const activeGroup = groups.find((g) => g.cid === selectedCat) || groups[0] || null;
 
   const grupoDe = (p) => groups.find((g) => g.items.some((x) => x.id === p.id));
+  // O POS vende sempre a preço: pizzas só-de-rodízio não servem de metade (o
+  // servidor recusa-as fora do rodízio a 0 €).
+  const metadesDe = (p) => (grupoDe(p)?.items || []).filter((x) => !x.rodizio_only);
   const podeMeia = (p) => {
     const g = grupoDe(p);
-    return !!g && categoriaElegivel({ name: g.name })
-      && g.items.some((x) => x.id !== p.id && x.available !== false);
+    return !!g && !p.rodizio_only && categoriaElegivel({ name: g.name })
+      && metadesDe(p).some((x) => x.id !== p.id && x.available !== false);
   };
   const candidatos = sizePick && meiaOn
-    ? candidatosMeia(sizePick, pickVar?.name || null, grupoDe(sizePick)?.items || [])
+    ? candidatosMeia(sizePick, pickVar?.name || null, metadesDe(sizePick))
     : [];
 
   // Toque num produto: com tamanhos ou extras abre a janela; senão adiciona logo.

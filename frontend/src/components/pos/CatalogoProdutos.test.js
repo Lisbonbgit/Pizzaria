@@ -32,7 +32,8 @@ const pz = (id, name, m, g) => ({ id, name, category_id: 'c-piz', base_price: m,
 const marg = pz('a', 'Margherita', 12.9, 16.9);
 const frango = pz('b', 'Frango', 14.9, 18.9);
 const doDia = { id: 'g', name: 'Pizza do Dia', category_id: 'c-piz', base_price: 9, available: true, variations: [], extras: [] };
-const groups = [{ cid: 'c-piz', name: 'Pizzas', items: [marg, frango, doDia] }];
+const picanha = { ...pz('r', 'Picanha', 0, 0), rodizio_only: true };
+const groups = [{ cid: 'c-piz', name: 'Pizzas', items: [marg, frango, doDia, picanha] }];
 
 let root; let host; let onAdd;
 beforeEach(async () => {
@@ -66,6 +67,12 @@ test('meia-meia: com tamanho escolhido lista a outra metade', async () => {
   await clicar('Margherita'); await clicar('Fazer meia-meia'); await clicar('Grande');
   expect(dialogo().textContent).toContain('Outra metade');
   expect(dialogo().textContent).toContain('Frango');
+});
+
+test('meia-meia no POS: pizza só-de-rodízio não aparece como outra metade', async () => {
+  await clicar('Margherita'); await clicar('Fazer meia-meia'); await clicar('Grande');
+  expect(dialogo().textContent).toContain('Frango');
+  expect(dialogo().textContent).not.toContain('Picanha');
 });
 
 test('meia-meia ligada → tamanho → desligada: continua a haver botão Adicionar', async () => {

@@ -8,6 +8,9 @@ const frango = pz('b', 'Frango', 14.9, 18.9);
 const esgotada = pz('c', 'Calabresa', 13.9, 17.9, { available: false });
 const soMedia = pz('d', 'Atum', 12, 0, { variations: [{ name: M, price: 12 }] });
 const coca = { id: 'e', name: 'Coca', category_id: 'c-beb', base_price: 3, variations: [] };
+const lasanha = pz('f', 'Lasanha', 9, 12, { category_id: 'c-mas' }); // outra categoria, mesmos tamanhos
+const doDia = { id: 'g', name: 'Pizza do Dia', category_id: 'c-piz', base_price: 9, available: true, variations: [] };
+const doDia2 = { ...doDia, id: 'h', name: 'Pizza da Casa' };
 
 test('categorias de pizza, ativas, não pos_only', () => {
   expect(categoriaElegivel({ name: 'Pizzas' })).toBe(true);
@@ -29,4 +32,15 @@ test('preço é o da mais cara no tamanho', () => {
   expect(precoNoTamanho(marg, 'Gigante')).toBeNull();
   expect(precoNoTamanho(coca, null)).toBe(3);
   expect(nomeMeiaMeia('A', 'B')).toBe('1/2 A + 1/2 B');
+});
+
+test('candidatos: outra categoria com o mesmo tamanho fica de fora', () => {
+  expect(candidatosMeia(marg, G, [marg, frango, lasanha]).map((p) => p.id)).toEqual(['b']);
+});
+
+test('candidatos: pizza com tamanhos sem tamanho escolhido não mostra as sem tamanho', () => {
+  const todos = [marg, frango, doDia, doDia2];
+  expect(candidatosMeia(marg, null, todos)).toEqual([]);
+  expect(candidatosMeia(marg, 'Gigante', todos)).toEqual([]);
+  expect(candidatosMeia(doDia, null, todos).map((p) => p.id)).toEqual(['h']);
 });

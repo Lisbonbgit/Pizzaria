@@ -96,7 +96,7 @@ export default function CatalogoProdutos({ groups, onAdd, gridRef }) {
       {/* Opções do produto — tamanho e extras. Sem extras, tocar no tamanho
           adiciona logo (um só toque); com extras, escolhe-se tudo e confirma-se. */}
       <Dialog open={sizePick != null} onOpenChange={(v) => !v && setSizePick(null)}>
-        <DialogContent className="max-w-sm text-foreground">
+        <DialogContent className="max-h-[90vh] max-w-sm overflow-y-auto text-foreground">
           <DialogHeader>
             <DialogTitle className="pr-6 text-lg">
               {sizePick && pickHalf ? nomeMeiaMeia(sizePick.name, pickHalf.name) : (sizePick?.name || 'Produto')}
@@ -142,7 +142,9 @@ export default function CatalogoProdutos({ groups, onAdd, gridRef }) {
           {meiaOn && (
             <>
               <p className="mt-1 text-sm text-muted-foreground">
-                {(sizePick?.variations || []).length > 0 && !pickVar ? 'Escolhe primeiro o tamanho' : 'Outra metade'}
+                {(sizePick?.variations || []).length > 0 && !pickVar ? 'Escolhe primeiro o tamanho'
+                  : candidatos.length ? 'Outra metade'
+                    : `Nenhum outro sabor disponível${pickVar ? ' neste tamanho' : ''}`}
               </p>
               <div className="grid max-h-56 gap-2 overflow-y-auto">
                 {candidatos.map((p) => {
@@ -191,8 +193,11 @@ export default function CatalogoProdutos({ groups, onAdd, gridRef }) {
           )}
 
           {/* Sem tamanhos não há botão de tamanho para tocar: a pizza que só abriu
-              a janela por causa da meia-meia também se adiciona inteira aqui. */}
-          {((sizePick?.extras || []).length > 0 || meiaOn || !(sizePick?.variations || []).length) && (() => {
+              a janela por causa da meia-meia também se adiciona inteira aqui. Com o
+              tamanho já escolhido (ex.: meia-meia ligada e desligada) também.
+              Sem sizePick (a janela a fechar) não há botão: tocar-lhe adicionava null. */}
+          {sizePick && ((sizePick.extras || []).length > 0 || meiaOn || pickVar
+            || !(sizePick.variations || []).length) && (() => {
             const falta = (sizePick?.variations || []).length > 0 && !pickVar
               ? 'Escolhe o tamanho' : (meiaOn && !pickHalf ? 'Escolhe a outra metade' : null);
             const base = pickHalf

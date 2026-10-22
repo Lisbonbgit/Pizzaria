@@ -387,7 +387,7 @@ class TableResponse(BaseModel):
 class OrderItemCreate(BaseModel):
     product_id: str
     product_name: str
-    quantity: int
+    quantity: int = Field(gt=0)  # rota pública: 0 ou negativo baixava o total
     variation: Optional[dict] = None
     extras: List[dict] = []
     selected_complements: List[dict] = []

@@ -105,6 +105,20 @@ def test_pedido_misto_o_total_soma_todas_as_linhas(db):
     assert db.orders.docs[0]["total"] == round(sum(i["total_price"] for i in itens), 2) == 31.8
 
 
+@pytest.mark.parametrize("qtd", [0, -2])
+def test_quantidade_zero_ou_negativa_e_recusada_422(db, qtd):
+    # rota pública: uma quantidade 0/negativa multiplicava o preço do servidor e
+    # baixava o total do pedido (com outra pizza a pagar, ficava "de borla")
+    from fastapi.testclient import TestClient
+    item = {"product_id": "p-marg", "product_name": "Margherita", "quantity": qtd,
+            "variation": {"name": GRANDE, "price": 0}, "unit_price": 18.9,
+            "total_price": 18.9 * qtd, "half_product_id": "p-frango"}
+    r = TestClient(server.app).post("/api/orders", json={
+        "table_id": "t-4", "table_number": 4, "items": [item], "total": 0})
+    assert r.status_code == 422
+    assert db.orders.docs == []
+
+
 # --- Balcão (POS autenticado): valida as metades, o preço é o do POS -------------
 
 def test_build_counter_items_monta_nome_e_guarda_metades():

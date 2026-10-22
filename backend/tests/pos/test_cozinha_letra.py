@@ -47,3 +47,15 @@ def test_meia_meia_sai_com_uma_metade_por_linha():
     assert GS + b"\x11" + b"1x MEIA-MEIA" in out
     assert b"1/2 MARGHERITA" in out and b"1/2 FRANGO COM" in out and b"CATUPIRY" in out
     assert b"1x 1/2" not in out          # o nome composto não sai como linha do artigo
+
+
+def test_maiusculas_acentuadas_saem_sem_acento():
+    # as metades e a OBS vão em maiúsculas; Â/Ê/Ô/À iam crus (cp860) para uma
+    # impressora sem página de código fixada e saíam como lixo
+    out = _cozinha({"product_name": "1/2 Frango à Brás + 1/2 Pêssego", "quantity": 1,
+                    "notes": "sem côco nem pão",
+                    "halves": [{"product_id": "a", "product_name": "Frango à Brás"},
+                               {"product_id": "b", "product_name": "Pêssego Ìmpar Ûnico"}]})
+    assert b"1/2 FRANGO A BRAS" in out and b"1/2 PESSEGO IMPAR" in out and b"UNICO" in out
+    assert b"OBS: SEM COCO" in out and b"NEM PAO" in out
+    assert max(out) < 0x80, "byte fora do ASCII no talão"

@@ -144,3 +144,18 @@ def test_extras_mal_formados_sao_recusados_sem_rebentar(extras, complementos):
         preco_unitario(18.9, a, extras, complementos)
     assert "inválidos" in str(e.value) or "não existe" in str(e.value)
 
+
+def test_primeiro_sabor_esgotado_e_recusado():
+    with pytest.raises(MeiaMeiaInvalida) as e:
+        montar_meia_meia(dict(MARG, available=False), FRANGO, PIZZAS, GRANDE)
+    assert "Margherita está esgotada" in str(e.value)
+
+
+def test_metade_so_de_rodizio_so_entra_no_rodizio():
+    # duas pizzas só-de-rodízio a 0 € numa mesa normal davam uma pizza de borla
+    so_rodizio = dict(FRANGO, rodizio_only=True)
+    for a, b in ((MARG, so_rodizio), (dict(MARG, rodizio_only=True), FRANGO)):
+        with pytest.raises(MeiaMeiaInvalida) as e:
+            montar_meia_meia(a, b, PIZZAS, GRANDE)
+        assert "rodízio" in str(e.value)
+    assert montar_meia_meia(MARG, so_rodizio, PIZZAS, GRANDE, rodizio=True)["base_price"] == 18.9

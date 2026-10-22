@@ -1380,7 +1380,7 @@ async def _enqueue_order_prints(order_id: str):
         logger.info(f"Order {order_id}: sem impressoras registadas — criados jobs cozinha + caixa")
 
 
-async def _montar_meia(a_id: str, b_id: str, tamanho):
+async def _montar_meia(a_id: str, b_id: str, tamanho, rodizio: bool = False):
     """Carrega os dois sabores e a categoria do 1.º e aplica a regra pura.
     Devolve (A, B, montar_meia_meia(...)); 400 com a mensagem em português."""
     a = await db.products.find_one({"id": a_id}, {"_id": 0})
@@ -1389,7 +1389,7 @@ async def _montar_meia(a_id: str, b_id: str, tamanho):
     b = await db.products.find_one({"id": b_id}, {"_id": 0})
     cat = await db.categories.find_one({"id": a.get("category_id")}, {"_id": 0})
     try:
-        return a, b, montar_meia_meia(a, b, cat, tamanho)
+        return a, b, montar_meia_meia(a, b, cat, tamanho, rodizio)
     except MeiaMeiaInvalida as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1405,9 +1405,10 @@ async def _aplicar_meias_meias(items: list, table_number) -> None:
         if not b_id:
             continue
         tamanho = (it.get("variation") or {}).get("name")
-        a, b, m = await _montar_meia(it["product_id"], b_id, tamanho)
+        zero_euros = float(it.get("unit_price") or 0) == 0
+        a, b, m = await _montar_meia(it["product_id"], b_id, tamanho, rodizio=zero_euros)
         try:
-            if float(it.get("unit_price") or 0) == 0:
+            if zero_euros:
                 if sess is None:
                     sess = await _open_session(table_number) or {}
                 nivel = sess.get("rodizio", "none")

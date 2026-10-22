@@ -95,6 +95,29 @@ def test_zero_euros_fora_do_rodizio_e_recusado(db):
         _pede([_item(b=CALAB, preco=0.0)])
 
 
+def test_metades_so_de_rodizio_fora_do_rodizio_sao_recusadas(db):
+    # duas pizzas só-de-rodízio (0 € no catálogo) numa mesa normal: a "metade mais
+    # cara" dava 0 € e saía uma pizza de borla
+    r1 = pizza("p-r1", "Picanha", 0, 0, inc="ambos", rodizio_only=True)
+    r2 = pizza("p-r2", "Costela", 0, 0, inc="ambos", rodizio_only=True)
+    db.products.docs += [r1, r2]
+    with pytest.raises(HTTPException) as e:
+        _pede([_item(a=r1, b=r2, preco=1.0)])
+    assert e.value.status_code == 400 and "rodízio" in e.value.detail
+    assert db.orders.docs == []
+    # no rodízio (0 €, as duas incluídas no nível) continuam a entrar
+    db.table_sessions.docs.append({"table_number": 4, "status": "open", "rodizio": "simples"})
+    _pede([_item(a=r1, b=r2, tamanho=MEDIA, preco=0.0)])
+    assert db.orders.docs[0]["items"][0]["product_name"] == "1/2 Picanha + 1/2 Costela"
+
+
+def test_primeiro_sabor_esgotado_da_400(db):
+    next(p for p in db.products.docs if p["id"] == "p-marg")["available"] = False
+    with pytest.raises(HTTPException) as e:
+        _pede([_item()])
+    assert e.value.status_code == 400 and "Margherita está esgotada" in e.value.detail
+
+
 def test_pedido_misto_o_total_soma_todas_as_linhas(db):
     # meia-meia + pizza normal no mesmo pedido: o total é a soma das DUAS linhas
     normal = OrderItemCreate(product_id="p-marg", product_name="Margherita", quantity=1,

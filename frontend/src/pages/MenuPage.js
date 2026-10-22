@@ -12,7 +12,9 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { useCart } from '@/context/CartContext';
+import { categoriaElegivel, candidatosMeia, nomeMeiaMeia, precoBaseMeia, precoNoTamanho } from '@/lib/meiaMeia';
 import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, settingsAPI, rodizioAPI } from '@/lib/api';
+import { detalheErro } from '@/lib/utils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -55,6 +57,8 @@ const MenuPage = () => {
   const [selectedComplements, setSelectedComplements] = useState({});
   const [selectedPrefs, setSelectedPrefs] = useState([]);   // várias preferências
   const [itemNotes, setItemNotes] = useState('');
+  const [segundaMetade, setSegundaMetade] = useState(null);   // meia-meia: o 2.º sabor
+  const [meiaAberta, setMeiaAberta] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   // Sessão de mesa (nº de pessoas + conta)
@@ -237,6 +241,23 @@ const MenuPage = () => {
     }))
     .filter(group => group.products.length > 0);
 
+  // Meia-meia: só pizzas (categoria elegível); no rodízio, só entre incluídos.
+  const catDoProduto = selectedProduct && categories.find((c) => c.id === selectedProduct.category_id);
+  const tamanhoAtual = selectedVariation?.name || null;
+  const candidatosMeiaMeia = (selectedProduct && categoriaElegivel(catDoProduto)
+    && (!isRodizio || isIncluded(selectedProduct)))
+    ? candidatosMeia(selectedProduct, tamanhoAtual,
+        products.filter((p) => (isRodizio ? isIncluded(p) : !p.rodizio_only)))
+    : [];
+
+  // Mudar de tamanho: a 2.ª metade fica se existir nesse tamanho; senão sai.
+  useEffect(() => {
+    if (segundaMetade && precoNoTamanho(segundaMetade, tamanhoAtual) == null) {
+      toast.info(`${segundaMetade.name} não existe nesse tamanho — escolhe outro 2.º sabor`);
+      setSegundaMetade(null);
+    }
+  }, [tamanhoAtual]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const openProductModal = (product) => {
     setSelectedProduct(product);
     setProductQuantity(1);
@@ -249,6 +270,8 @@ const MenuPage = () => {
     setSelectedComplements({});
     setSelectedPrefs([]);
     setItemNotes('');
+    setSegundaMetade(null);
+    setMeiaAberta(false);
     setProductModalOpen(true);
   };
 
@@ -300,7 +323,8 @@ const MenuPage = () => {
       itemNotes,
       complementsForCart,
       selectedPrefs.join(', ') || null,
-      included ? 0 : null
+      included ? 0 : null,
+      segundaMetade
     );
 
     toast.success(included ? 'Incluído no rodízio' : 'Adicionado ao carrinho');
@@ -309,7 +333,9 @@ const MenuPage = () => {
 
   const calculateItemPrice = () => {
     if (!selectedProduct) return 0;
-    let price = selectedVariation?.price || selectedProduct.base_price;
+    let price = segundaMetade
+      ? precoBaseMeia(selectedProduct, segundaMetade, tamanhoAtual)
+      : (selectedVariation?.price || selectedProduct.base_price);
     price += selectedExtras.reduce((sum, e) => sum + e.price, 0);
     // Add complement prices
     Object.values(selectedComplements).forEach(items => {
@@ -336,6 +362,7 @@ const MenuPage = () => {
         table_number: tableNumber,
         items: cartItems.map(item => ({
           product_id: item.product_id,
+          half_product_id: item.half_product_id || null,
           product_name: item.product_name,
           quantity: item.quantity,
           variation: item.variation,
@@ -357,7 +384,7 @@ const MenuPage = () => {
       setOrderSuccessOpen(true);
     } catch (err) {
       console.error('Error submitting order:', err);
-      toast.error('Erro ao enviar pedido. Tente novamente.');
+      toast.error(detalheErro(err, 'Erro ao enviar pedido. Tente novamente.'));
     } finally {
       setSubmitting(false);
     }
@@ -762,7 +789,9 @@ const MenuPage = () => {
                 />
               </div>
               <DialogHeader className="mt-4">
-                <DialogTitle className="font-heading text-2xl">{selectedProduct.name}</DialogTitle>
+                <DialogTitle className="font-heading text-2xl">
+                  {segundaMetade ? nomeMeiaMeia(selectedProduct.name, segundaMetade.name) : selectedProduct.name}
+                </DialogTitle>
               </DialogHeader>
               <p className="text-muted-foreground">{selectedProduct.description}</p>
 
@@ -803,6 +832,42 @@ const MenuPage = () => {
                       </div>
                     ))}
                   </RadioGroup>
+                </div>
+              )}
+
+              {/* Meia-meia — 2.º sabor da mesma categoria, no mesmo tamanho */}
+              {candidatosMeiaMeia.length > 0 && (
+                <div className="mt-4">
+                  <Label className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                    Meia-meia
+                  </Label>
+                  {segundaMetade ? (
+                    <div className="mt-2 flex items-center justify-between rounded-lg border border-primary/40 bg-primary/5 p-3">
+                      <span>Metade <span className="font-semibold">{segundaMetade.name}</span></span>
+                      <Button variant="ghost" size="sm" onClick={() => setSegundaMetade(null)}>Tirar</Button>
+                    </div>
+                  ) : !meiaAberta ? (
+                    <Button variant="outline" className="mt-2 w-full" onClick={() => setMeiaAberta(true)}
+                      data-testid="fazer-meia-meia">
+                      Fazer meia-meia
+                    </Button>
+                  ) : (
+                    <div className="mt-2 grid gap-2">
+                      {candidatosMeiaMeia.map((p) => (
+                        <div key={p.id}
+                          className="flex items-center justify-between p-3 rounded-lg border border-border hover:bg-secondary/50 cursor-pointer"
+                          onClick={() => { setSegundaMetade(p); setMeiaAberta(false); }}>
+                          <span>{p.name}</span>
+                          <span className="font-semibold">
+                            {isRodizio ? 'Incluído' : eur(precoNoTamanho(p, tamanhoAtual))}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!isRodizio && (
+                    <p className="mt-1 text-xs text-muted-foreground">Paga-se o preço da metade mais cara.</p>
+                  )}
                 </div>
               )}
 
@@ -1029,7 +1094,9 @@ const MenuPage = () => {
             </div>
           ) : (
             <>
-              <ScrollArea className="flex-1 -mx-6 px-6">
+              {/* O Radix põe o conteúdo num display:table que cresce com o texto; em bloco,
+                  o nome comprido (meia-meia) quebra linha e o preço não sai do ecrã. */}
+              <ScrollArea className="flex-1 -mx-6 px-6 [&>[data-radix-scroll-area-viewport]>div]:!block">
                 <div className="space-y-4 py-4">
                   {cartItems.map((item) => (
                     <div 
@@ -1044,7 +1111,7 @@ const MenuPage = () => {
                       />
                       <div className="flex-1 min-w-0">
                         <div className="flex justify-between items-start">
-                          <h4 className="font-semibold truncate pr-2">{item.product_name}</h4>
+                          <h4 className="min-w-0 break-words pr-2 font-semibold">{item.product_name}</h4>
                           <Button
                             variant="ghost"
                             size="icon"

@@ -41,6 +41,8 @@ from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
 from pos.credit_note import nc_items_from_fs
 from pos.split_plan import compute_shares, next_amount, next_unpaid_index, remaining_amount
+from pos.meia_meia import (MeiaMeiaInvalida, extras_do_catalogo, incluida_no_rodizio,
+                           montar_meia_meia, preco_unitario)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -385,7 +387,7 @@ class TableResponse(BaseModel):
 class OrderItemCreate(BaseModel):
     product_id: str
     product_name: str
-    quantity: int
+    quantity: int = Field(gt=0)  # rota pública: 0 ou negativo baixava o total
     variation: Optional[dict] = None
     extras: List[dict] = []
     selected_complements: List[dict] = []
@@ -393,6 +395,9 @@ class OrderItemCreate(BaseModel):
     notes: Optional[str] = None
     unit_price: float
     total_price: float
+    # Meia-meia: o 2.º sabor. O servidor valida, calcula o preço e monta o nome
+    # e as metades (`halves`); este campo NÃO fica gravado.
+    half_product_id: Optional[str] = None
 
 class OrderCreate(BaseModel):
     table_id: str
@@ -632,6 +637,8 @@ class ESCPOSFormatter:
             'â': 'a', 'ê': 'e', 'î': 'i', 'ô': 'o', 'û': 'u',
             'ç': 'c', 'Ç': 'C', 'ñ': 'n', 'Ñ': 'N',
             'Ã': 'A', 'Õ': 'O', 'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U',
+            'À': 'A', 'È': 'E', 'Ì': 'I', 'Ò': 'O', 'Ù': 'U',
+            'Â': 'A', 'Ê': 'E', 'Î': 'I', 'Ô': 'O', 'Û': 'U',
             '€': 'EUR', '£': 'GBP', '¥': 'JPY'
         }
         for old, new in replacements.items():
@@ -710,7 +717,15 @@ class ESCPOSFormatter:
             
             # Artigo com quantidade — letra 2×2, negrito
             data.extend(self.BOLD_ON)
-            data.extend(self._big(f"{qty}x {name}", 2, 2, indent="   "))
+            halves = item.get('halves') or []
+            if len(halves) == 2:
+                # Meia-meia: uma metade por linha (o nome composto partia-se a meio).
+                # "1/2" em ASCII — a página de código da impressora não está fixada.
+                data.extend(self._big(f"{qty}x MEIA-MEIA", 2, 2))
+                for h in halves:
+                    data.extend(self._big(f"   1/2 {h.get('product_name', '').upper()}", 2, 2, indent="   "))
+            else:
+                data.extend(self._big(f"{qty}x {name}", 2, 2, indent="   "))
             data.extend(self.BOLD_OFF)
 
             # Tamanho, extras, complementos e preferência — altura dupla
@@ -1367,8 +1382,62 @@ async def _enqueue_order_prints(order_id: str):
         logger.info(f"Order {order_id}: sem impressoras registadas — criados jobs cozinha + caixa")
 
 
+async def _montar_meia(a_id: str, b_id: str, tamanho, rodizio: bool = False):
+    """Carrega os dois sabores e a categoria do 1.º e aplica a regra pura.
+    Devolve (A, B, montar_meia_meia(...)); 400 com a mensagem em português."""
+    a = await db.products.find_one({"id": a_id}, {"_id": 0})
+    if a is None:
+        raise HTTPException(status_code=400, detail="Esta pizza já não existe no menu")
+    b = await db.products.find_one({"id": b_id}, {"_id": 0})
+    cat = await db.categories.find_one({"id": a.get("category_id")}, {"_id": 0})
+    try:
+        return a, b, montar_meia_meia(a, b, cat, tamanho, rodizio)
+    except MeiaMeiaInvalida as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def _aplicar_meias_meias(items: list, table_number) -> None:
+    """Rota PÚBLICA (QR e "Adicionar produtos" da mesa): numa meia-meia é o
+    SERVIDOR que faz a conta — metade mais cara no tamanho + extras/complementos
+    de A a preços do catálogo — e monta nome e metades. O preço do browser é
+    ignorado. A 0 € só no rodízio, com as DUAS metades incluídas no nível."""
+    sess = None
+    for it in items:
+        b_id = it.pop("half_product_id", None)
+        if not b_id:
+            continue
+        tamanho = (it.get("variation") or {}).get("name")
+        zero_euros = float(it.get("unit_price") or 0) == 0
+        a, b, m = await _montar_meia(it["product_id"], b_id, tamanho, rodizio=zero_euros)
+        try:
+            if zero_euros:
+                if sess is None:
+                    sess = await _open_session(table_number) or {}
+                nivel = sess.get("rodizio", "none")
+                if not (incluida_no_rodizio(a, nivel) and incluida_no_rodizio(b, nivel)):
+                    raise MeiaMeiaInvalida("Esta meia-meia não está incluída no rodízio desta mesa")
+                unit = 0.0
+            else:
+                # Grava os extras/complementos com os preços do catálogo (os do
+                # browser iam parar à cópia da caixa e à consulta).
+                it["extras"], it["selected_complements"] = extras_do_catalogo(
+                    a, it.get("extras"), it.get("selected_complements"))
+                unit = preco_unitario(m["base_price"], a, it["extras"], it["selected_complements"])
+        except MeiaMeiaInvalida as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        it.update({"product_name": m["product_name"], "halves": m["halves"],
+                   "unit_price": unit, "total_price": round(unit * it["quantity"], 2)})
+
+
 @api_router.post("/orders", response_model=OrderResponse)
 async def create_order(order: OrderCreate):
+    items = [item.model_dump() for item in order.items]
+    total = order.total
+    if any(i.get("half_product_id") for i in items):
+        await _aplicar_meias_meias(items, order.table_number)
+        total = round(sum(float(i.get("total_price") or 0) for i in items), 2)
+    for i in items:
+        i.pop("half_product_id", None)
     order_number = await get_next_order_number()
     order_id = str(uuid.uuid4())
     
@@ -1377,9 +1446,9 @@ async def create_order(order: OrderCreate):
         "order_number": order_number,
         "table_id": order.table_id,
         "table_number": order.table_number,
-        "items": [item.model_dump() for item in order.items],
+        "items": items,
         "notes": order.notes,
-        "total": order.total,
+        "total": total,
         "status": "received",
         "paid": False,
         "print_status": "pending",
@@ -4146,6 +4215,9 @@ class CounterOrderItem(BaseModel):
     # menu do cliente já envia: [{"name","price"}]. Os talões já os imprimem; o
     # preço do extra vem JÁ somado no `unit_price` (igual ao fluxo do cliente).
     extras: List[dict] = []
+    # Meia-meia: o 2.º sabor. O servidor valida e monta nome/metades; o preço é o
+    # do POS (`unit_price`), como para tamanhos, extras e alterações do staff.
+    half_product_id: Optional[str] = None
     # Overrides opcionais do staff (diálogo do produto no balcão). Sem eles, usa-se
     # o preço/IVA do produto e sem desconto — comportamento de venda rápida.
     unit_price: Optional[float] = None       # override do preço unitário
@@ -4159,6 +4231,25 @@ class CounterOrderRequest(BaseModel):
     # False = venda que não passa pela cozinha (bebida, produto já feito): cria
     # o pedido e vai direto à fatura, sem talão de cozinha.
     print_kitchen: bool = True
+
+
+async def _meias_do_balcao(items, ja_no_pedido=()) -> dict:
+    """Valida as meia-meias do carrinho do balcão. Devolve {índice: halves}.
+    `ja_no_pedido` (update): os itens já gravados. Uma meia-meia que já lá está
+    (mesmos sabores e tamanho) guarda as metades sem nova validação — o 2.º sabor
+    pode ter esgotado depois de a pizza ir para a cozinha, e recusar prendia o
+    pedido sem fatura. Só as meia-meias NOVAS passam pela regra."""
+    gravadas = {(g["product_id"], g["halves"][1]["product_id"], (g.get("variation") or {}).get("name")): g["halves"]
+                for g in ja_no_pedido if g.get("halves")}
+    out = {}
+    for idx, i in enumerate(items):
+        if i.half_product_id:
+            halves = gravadas.get((i.product_id, i.half_product_id, i.variation_name))
+            if halves is None:
+                _, _, m = await _montar_meia(i.product_id, i.half_product_id, i.variation_name)
+                halves = m["halves"]
+            out[idx] = halves
+    return out
 
 
 @api_router.post("/pos/counter/order")
@@ -4210,12 +4301,14 @@ async def create_counter_order(
         if i.discount_amount is not None and i.discount_amount < 0:
             raise HTTPException(status_code=400, detail="Desconto € inválido")
 
+    meias = await _meias_do_balcao(body.items)
     cart = [{
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
         "variation_name": i.variation_name, "extras": i.extras,
-    } for i in body.items]
+        "halves": meias.get(idx),
+    } for idx, i in enumerate(body.items)]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
 
     if not built["items"]:
@@ -4326,16 +4419,23 @@ async def update_counter_order(
 
     product_ids = [i.product_id for i in body.items]
     prods = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(1000)
+    # O filtro (indisponível / só rodízio) vale só para produtos NOVOS: uma linha
+    # que já está no pedido já foi para a cozinha — se o produto esgotou depois,
+    # largá-la tirava a pizza do pedido e ela nunca era faturada.
+    ja_no_pedido = {g.get("product_id") for g in order.get("items") or []}
     products_by_id = {
         p["id"]: p for p in prods
-        if not p.get("rodizio_only", False) and p.get("available", True)
+        if p["id"] in ja_no_pedido
+        or (not p.get("rodizio_only", False) and p.get("available", True))
     }
+    meias = await _meias_do_balcao(body.items, order.get("items") or [])
     cart = [{
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,
         "discount_pct": i.discount_pct, "discount_amount": i.discount_amount,
         "variation_name": i.variation_name, "extras": i.extras,
-    } for i in body.items]
+        "halves": meias.get(idx),
+    } for idx, i in enumerate(body.items)]
     built = build_counter_items(products_by_id, cart, default_tax=VENDUS_DEFAULT_TAX_ID)
     if not built["items"]:
         raise HTTPException(status_code=400, detail="Nada para faturar")

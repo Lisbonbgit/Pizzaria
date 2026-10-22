@@ -37,3 +37,32 @@ def test_observacao_comprida_parte_por_palavras():
         texto = l.split(GS + b"\x22")[-1]
         assert len(texto) <= 16, texto
     assert b"OREGAOS" in out and b"CEBOLA" in out
+
+
+def test_meia_meia_sai_com_uma_metade_por_linha():
+    out = _cozinha({"product_name": "1/2 Margherita + 1/2 Frango Com Catupiry", "quantity": 1,
+                    "variation": {"name": "Grande (8 Fatias)"},
+                    "halves": [{"product_id": "a", "product_name": "Margherita"},
+                               {"product_id": "b", "product_name": "Frango Com Catupiry"}]})
+    assert GS + b"\x11" + b"1x MEIA-MEIA" in out
+    assert b"1/2 MARGHERITA" in out and b"1/2 FRANGO COM" in out and b"CATUPIRY" in out
+    assert b"1x 1/2" not in out          # o nome composto não sai como linha do artigo
+    # cada metade em 2×2 (GS ! 0x11) e de volta ao normal (GS ! 0x00) logo a seguir
+    assert GS + b"\x11" + b"   1/2 MARGHERITA\n" + GS + b"\x00" in out
+    assert GS + b"\x11" + b"   1/2 FRANGO COM\n   CATUPIRY\n" + GS + b"\x00" in out
+
+
+def test_maiusculas_acentuadas_saem_sem_acento():
+    # as metades e a OBS vão em maiúsculas; Â/Ê/Ô/À iam crus (cp860) para uma
+    # impressora sem página de código fixada e saíam como lixo
+    out = _cozinha({"product_name": "1/2 Frango à Brás + 1/2 Pêssego", "quantity": 1,
+                    "notes": "sem côco nem pão",
+                    "halves": [{"product_id": "a", "product_name": "Frango à Brás"},
+                               {"product_id": "b", "product_name": "Pêssego Ìmpar Ûnico"}]})
+    assert b"1/2 FRANGO A BRAS" in out and b"1/2 PESSEGO IMPAR" in out and b"UNICO" in out
+    assert b"OBS: SEM COCO" in out and b"NEM PAO" in out
+    assert max(out) < 0x80, "byte fora do ASCII no talão"
+    # maiúsculas já no nome (o artigo normal não passa por upper()): "Pizza Âncora"
+    out = _cozinha({"product_name": "Âncora Èvora Òbidos Ùrsula Îlhavo", "quantity": 1})
+    assert b"1x Ancora Evora Obidos" in out and b"Ursula Ilhavo" in out
+    assert max(out) < 0x80, "byte fora do ASCII no talão"

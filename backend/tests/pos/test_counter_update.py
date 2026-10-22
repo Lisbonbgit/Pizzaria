@@ -164,3 +164,43 @@ def test_update_recusa_com_divisao_a_meio(monkeypatch):
     assert e.value.status_code == 409
     assert "ivis" in e.value.detail          # "Divisão em curso…"
     assert order["items"] == []              # e não mexeu no carrinho
+
+
+def test_update_mantem_linhas_ja_impressas_de_produto_que_esgotou(monkeypatch):
+    """A pizza inteira e a meia-meia já foram para a cozinha; depois a Calabresa e a
+    Margherita (1.º sabor) ficam indisponíveis. Acrescentar uma Coca e reimprimir
+    não pode largar as pizzas: saíam do pedido e nunca eram faturadas. Um produto
+    NOVO indisponível continua de fora."""
+    metades = [{"product_id": "p-marg", "product_name": "Margherita"},
+               {"product_id": "p-frango", "product_name": "Frango"}]
+    order = {"id": "o1", "source": "balcao", "order_number": 7, "paid": False,
+             "status": "received", "total": 37.9, "items": [
+                 {"product_id": "p-cal", "product_name": "Calabresa", "quantity": 1,
+                  "unit_price": 17.9, "total_price": 17.9, "variation": {"name": "Grande"}},
+                 {"product_id": "p-marg", "product_name": "1/2 Margherita + 1/2 Frango",
+                  "quantity": 1, "unit_price": 20.0, "total_price": 20.0,
+                  "variation": {"name": "Grande"}, "halves": metades}]}
+    products = [
+        {"id": "p-cal", "name": "Calabresa", "base_price": 13.9, "available": False},
+        {"id": "p-marg", "name": "Margherita", "base_price": 12.9, "available": False},
+        {"id": "p-frango", "name": "Frango", "base_price": 14.9},
+        {"id": "p-coca", "name": "Coca-Cola", "base_price": 3.0},
+        {"id": "p-novo", "name": "Lasanha", "base_price": 9.0, "available": False},
+    ]
+    fake = _FakeDb(order, products)
+    monkeypatch.setattr(server, "db", fake)
+    admin = create_token("admin-1", "gestor@lenhaebrasa.com")
+    req = CounterOrderRequest(items=[
+        CounterOrderItem(product_id="p-cal", quantity=1, variation_name="Grande", unit_price=17.9),
+        CounterOrderItem(product_id="p-marg", quantity=1, variation_name="Grande", unit_price=20.0,
+                         half_product_id="p-frango"),
+        CounterOrderItem(product_id="p-coca", quantity=1),
+        CounterOrderItem(product_id="p-novo", quantity=1),
+    ])
+
+    asyncio.run(update_counter_order("o1", req, authorization=f"Bearer {admin}",
+                                     x_device_token=None, x_pos_token=create_pos_token("op-1", "Ana")))
+
+    assert [i["product_id"] for i in order["items"]] == ["p-cal", "p-marg", "p-coca"]
+    assert order["items"][1]["halves"] == metades
+    assert order["total"] == 40.9                     # 17,90 + 20,00 + 3,00

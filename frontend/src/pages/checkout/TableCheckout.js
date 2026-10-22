@@ -17,10 +17,14 @@ import {
 import { toast } from 'sonner';
 import { ordersAPI, productsAPI, categoriesAPI, rodizioAPI } from '@/lib/api';
 import CatalogoProdutos from '@/components/pos/CatalogoProdutos';
+import { nomeMeiaMeia, precoBaseMeia } from '@/lib/meiaMeia';
+import { detalheErro } from '@/lib/utils';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const lineKey = (l) => `${l.order_id}:${l.idx}`;
 const lineName = (l) => l.product_name + (l.variation && l.variation.name ? ` (${l.variation.name})` : '');
+// Nome da linha "A adicionar" (meia-meia: "1/2 A + 1/2 B").
+const nomePend = (c) => (c.metade ? nomeMeiaMeia(c.product.name, c.metade.name) : c.product.name);
 
 // Checkout de mesa — Dialog de 2 painéis (total/pagamento à esquerda, itens
 // da mesa à direita) partilhado pelo admin (`AdminOrders`) e pela janela do
@@ -240,16 +244,18 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     } catch { toast.error('Erro ao reimprimir'); }
   };
 
-  // Junta um toque à lista (mesmo produto + tamanho + extras soma a quantidade).
-  // O preço da unidade já leva o tamanho e os extras, como no menu do cliente.
-  const addPend = (p, variation, extras = []) => {
-    const base = variation ? Number(variation.price) || 0 : Number(p.base_price) || 0;
+  // Junta um toque à lista (mesmo produto + 2.ª metade + tamanho + extras soma
+  // a quantidade). O preço da unidade já leva o tamanho e os extras, como no
+  // menu do cliente (meia-meia: a metade mais cara; o servidor recalcula).
+  const addPend = (p, variation, extras = [], metade = null) => {
+    const base = metade ? precoBaseMeia(p, metade, variation?.name || null)
+      : (variation ? Number(variation.price) || 0 : Number(p.base_price) || 0);
     const unitPrice = Math.round((base + extras.reduce((t, e) => t + (Number(e.price) || 0), 0)) * 100) / 100;
-    const chave = `${p.id}|${variation?.name || ''}|${extras.map((e) => e.name).sort().join(',')}`;
+    const chave = `${p.id}|${metade?.id || ''}|${variation?.name || ''}|${extras.map((e) => e.name).sort().join(',')}`;
     setPend((prev) => {
       const i = prev.findIndex((c) => c.chave === chave);
       if (i >= 0) return prev.map((c, k) => (k === i ? { ...c, qty: c.qty + 1 } : c));
-      return [...prev, { chave, product: p, variation, extras, qty: 1, unitPrice }];
+      return [...prev, { chave, product: p, variation, extras, metade, qty: 1, unitPrice }];
     });
   };
   const changePend = (i, delta) => setPend((prev) => prev
@@ -261,9 +267,12 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     setAdding(true);
     try {
       const items = pend.map((c) => ({
-        product_id: c.product.id, product_name: c.product.name, quantity: c.qty,
+        product_id: c.product.id,
+        product_name: nomePend(c),
+        quantity: c.qty,
         ...(c.variation ? { variation: { name: c.variation.name, price: Number(c.variation.price) || 0 } } : {}),
         extras: c.extras,
+        ...(c.metade ? { half_product_id: c.metade.id } : {}),
         unit_price: c.unitPrice, total_price: Math.round(c.unitPrice * c.qty * 100) / 100,
       }));
       await ordersAPI.create({
@@ -276,8 +285,8 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
       toast.success(`${n} produto${n !== 1 ? 's' : ''} adicionado${n !== 1 ? 's' : ''} à mesa`);
       loadBill(tableNumber);
       onChanged && onChanged();
-    } catch {
-      toast.error('Erro ao adicionar os produtos');
+    } catch (e) {
+      toast.error(detalheErro(e, 'Erro ao adicionar os produtos'));
     } finally {
       setAdding(false);
     }
@@ -847,7 +856,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                         }}
                         title={e.kind === 'item' ? (mode === 'split' ? 'Tocar para cobrar à parte' : 'Tocar para editar (qtd/preço/IVA/desconto)') : 'Tocar para separar'}
                         className="w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors cursor-pointer hover:bg-white/10">
-                        <span className="truncate flex items-center gap-1.5">
+                        <span className="min-w-0 break-words flex items-center gap-1.5">
                           {e.name}
                           {e.kind === 'item' && e.line?.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
                           {e.kind === 'item' && mode === 'edit' && <Pencil className="h-3 w-3 text-white/30 shrink-0" />}
@@ -883,7 +892,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                     {includedEntries.map((l) => (
                       <div key={lineKey(l)}
                         className="w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left">
-                        <span className="truncate flex items-center gap-1.5 text-white/70">
+                        <span className="min-w-0 break-words flex items-center gap-1.5 text-white/70">
                           {lineName(l)}
                           {l.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
                         </span>
@@ -988,7 +997,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   <div key={c.chave} className="px-4 py-2.5 border-b border-white/10">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium leading-snug">{c.product.name}</p>
+                        <p className="text-sm font-medium leading-snug">{nomePend(c)}</p>
                         {(c.variation || c.extras.length > 0) && (
                           <p className="text-xs text-white/60">
                             {[c.variation?.name, ...c.extras.map((e) => `+ ${e.name}`)].filter(Boolean).join(' · ')}
@@ -998,11 +1007,11 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                       <span className="text-sm tabular-nums shrink-0">{eur(c.unitPrice * c.qty)}</span>
                     </div>
                     <div className="mt-1.5 flex items-center gap-2">
-                      <Button variant="outline" size="icon" aria-label={`Menos ${c.product.name}`}
+                      <Button variant="outline" size="icon" aria-label={`Menos ${nomePend(c)}`}
                         className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
                         onClick={() => changePend(i, -1)}><Minus className="h-3.5 w-3.5" /></Button>
                       <span className="w-6 text-center tabular-nums">{c.qty}</span>
-                      <Button variant="outline" size="icon" aria-label={`Mais ${c.product.name}`}
+                      <Button variant="outline" size="icon" aria-label={`Mais ${nomePend(c)}`}
                         className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
                         onClick={() => changePend(i, 1)}><Plus className="h-3.5 w-3.5" /></Button>
                     </div>

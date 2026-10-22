@@ -1,0 +1,310 @@
+"""Meia-meia de ponta a ponta no servidor: o pedido público (QR e mesa) e o balcão.
+
+Na rota pública o SERVIDOR faz a conta (o preço do browser é ignorado) e monta o
+nome e as metades; no balcão (POS autenticado) valida e mantém o preço do POS."""
+import asyncio
+
+import pytest
+from fastapi import HTTPException
+
+import server
+from pos.counter import build_counter_items
+from server import (CounterOrderItem, CounterOrderRequest, OrderCreate, OrderItemCreate,
+                    create_counter_order, create_order, create_pos_token, create_token)
+from tests.pos.test_mesa_divisao import _Coll
+from tests.pos.test_meia_meia import COCA, FRANGO, GRANDE, MARG, MEDIA, PIZZAS, pizza
+
+CALAB = pizza("p-calab", "Calabresa", 13.9, 17.9, inc="ambos")
+
+
+class _Db:
+    def __init__(self, sessao=None):
+        self.orders = _Coll()
+        self.products = _Coll([MARG, FRANGO, CALAB, COCA])
+        self.categories = _Coll([PIZZAS, {"id": "c-beb", "name": "Bebidas", "active": True}])
+        self.table_sessions = _Coll([sessao] if sessao else [])
+        self.cash_sessions = _Coll([{"id": "cx", "status": "open"}])
+        self.split_plans = _Coll()
+
+
+@pytest.fixture
+def db(monkeypatch):
+    d = _Db()
+    monkeypatch.setattr(server, "db", d)
+
+    async def numero():
+        return 7
+
+    async def sem_impressao(order_id):
+        return None
+    monkeypatch.setattr(server, "get_next_order_number", numero)
+    monkeypatch.setattr(server, "_enqueue_order_prints", sem_impressao)
+    return d
+
+
+def _item(a=MARG, b=FRANGO, tamanho=GRANDE, preco=1.0, extras=None, qtd=1):
+    return OrderItemCreate(product_id=a["id"], product_name=a["name"], quantity=qtd,
+                           variation={"name": tamanho, "price": 0}, extras=extras or [],
+                           unit_price=preco, total_price=preco * qtd,
+                           half_product_id=b["id"] if b else None)
+
+
+def _pede(itens, total=1.0):
+    return asyncio.run(create_order(OrderCreate(table_id="t-4", table_number=4,
+                                                items=itens, total=total)))
+
+
+def test_servidor_calcula_preco_nome_e_metades(db):
+    _pede([_item(extras=[{"name": "Borda de Catupiry", "price": 0}], qtd=2)])
+    it = db.orders.docs[0]["items"][0]
+    assert it["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    assert it["halves"][1] == {"product_id": "p-frango", "product_name": "Frango Com Catupiry"}
+    assert it["unit_price"] == 21.9                  # 18,90 (Frango Grande) + 3,00 borda
+    assert it["total_price"] == 43.8
+    assert "half_product_id" not in it
+    assert db.orders.docs[0]["total"] == 43.8         # o total acompanha
+
+
+def test_pedido_sem_meia_meia_fica_como_hoje(db):
+    normal = OrderItemCreate(product_id="p-marg", product_name="Margherita", quantity=1,
+                             variation={"name": MEDIA, "price": 12.9}, unit_price=12.9, total_price=12.9)
+    _pede([normal], total=12.9)
+    it = db.orders.docs[0]["items"][0]
+    assert it["product_name"] == "Margherita" and "halves" not in it
+    assert "half_product_id" not in it                 # sem campo a None na linha
+    assert db.orders.docs[0]["total"] == 12.9
+
+
+def test_combinacao_invalida_da_400(db):
+    with pytest.raises(HTTPException) as e:
+        _pede([_item(b=COCA)])
+    assert e.value.status_code == 400 and "categoria" in e.value.detail
+    assert db.orders.docs == []
+
+
+def test_rodizio_a_zero_so_com_os_dois_incluidos(db):
+    db.table_sessions.docs.append({"table_number": 4, "status": "open", "rodizio": "simples"})
+    _pede([_item(b=CALAB, tamanho=MEDIA, preco=0.0)])          # os dois "ambos"
+    assert db.orders.docs[0]["items"][0]["unit_price"] == 0.0
+    with pytest.raises(HTTPException) as e:                     # Frango só no completo
+        _pede([_item(b=FRANGO, tamanho=MEDIA, preco=0.0)])
+    assert "rodízio" in e.value.detail
+    with pytest.raises(HTTPException) as e:                     # e também quando é o 1.º sabor
+        _pede([_item(a=FRANGO, b=CALAB, tamanho=MEDIA, preco=0.0)])
+    assert "rodízio" in e.value.detail
+
+
+def test_zero_euros_fora_do_rodizio_e_recusado(db):
+    with pytest.raises(HTTPException):
+        _pede([_item(b=CALAB, preco=0.0)])
+
+
+def test_metades_so_de_rodizio_fora_do_rodizio_sao_recusadas(db):
+    # duas pizzas só-de-rodízio (0 € no catálogo) numa mesa normal: a "metade mais
+    # cara" dava 0 € e saía uma pizza de borla
+    r1 = pizza("p-r1", "Picanha", 0, 0, inc="ambos", rodizio_only=True)
+    r2 = pizza("p-r2", "Costela", 0, 0, inc="ambos", rodizio_only=True)
+    db.products.docs += [r1, r2]
+    with pytest.raises(HTTPException) as e:
+        _pede([_item(a=r1, b=r2, preco=1.0)])
+    assert e.value.status_code == 400 and "rodízio" in e.value.detail
+    assert db.orders.docs == []
+    # no rodízio (0 €, as duas incluídas no nível) continuam a entrar
+    db.table_sessions.docs.append({"table_number": 4, "status": "open", "rodizio": "simples"})
+    _pede([_item(a=r1, b=r2, tamanho=MEDIA, preco=0.0)])
+    assert db.orders.docs[0]["items"][0]["product_name"] == "1/2 Picanha + 1/2 Costela"
+
+
+def test_primeiro_sabor_esgotado_da_400(db):
+    next(p for p in db.products.docs if p["id"] == "p-marg")["available"] = False
+    with pytest.raises(HTTPException) as e:
+        _pede([_item()])
+    assert e.value.status_code == 400 and "Margherita está esgotada" in e.value.detail
+
+
+def test_pedido_misto_o_total_soma_todas_as_linhas(db):
+    # meia-meia + pizza normal no mesmo pedido: o total é a soma das DUAS linhas
+    normal = OrderItemCreate(product_id="p-marg", product_name="Margherita", quantity=1,
+                             variation={"name": MEDIA, "price": 12.9}, unit_price=12.9, total_price=12.9)
+    _pede([_item(), normal], total=1.0)
+    itens = db.orders.docs[0]["items"]
+    assert itens[0]["unit_price"] == 18.9 and itens[1]["total_price"] == 12.9
+    assert "half_product_id" not in itens[1]           # a linha normal também
+    assert db.orders.docs[0]["total"] == round(sum(i["total_price"] for i in itens), 2) == 31.8
+
+
+def test_extras_e_complementos_gravados_ao_preco_do_catalogo(db):
+    # o servidor cobra pelo catálogo e GRAVA o catálogo: o preço forjado do browser
+    # ia parar à cópia da caixa e à consulta
+    marg = next(p for p in db.products.docs if p["id"] == "p-marg")
+    marg["complement_groups"] = [{"name": "Molho", "items": [{"name": "Picante", "price": 0.5}]}]
+    item = OrderItemCreate(product_id="p-marg", product_name="Margherita", quantity=1,
+                           variation={"name": GRANDE, "price": 0},
+                           extras=[{"name": "Borda de Catupiry", "price": 0.01}],
+                           selected_complements=[{"group_name": "Molho",
+                                                  "items": [{"name": "Picante", "price": 0.01}]}],
+                           unit_price=1.0, total_price=1.0, half_product_id="p-frango")
+    _pede([item])
+    it = db.orders.docs[0]["items"][0]
+    assert it["extras"] == [{"name": "Borda de Catupiry", "price": 3.0}]
+    assert it["selected_complements"] == [{"group_name": "Molho",
+                                           "items": [{"name": "Picante", "price": 0.5}]}]
+    assert it["unit_price"] == 22.4                  # 18,90 + 3,00 + 0,50
+
+
+def test_complemento_mal_formado_da_400_e_nao_500(db):
+    item = OrderItemCreate(product_id="p-marg", product_name="Margherita", quantity=1,
+                           variation={"name": GRANDE, "price": 0},
+                           selected_complements=[{"group_name": "Molho", "items": "Picante"}],
+                           unit_price=1.0, total_price=1.0, half_product_id="p-frango")
+    with pytest.raises(HTTPException) as e:
+        _pede([item])
+    assert e.value.status_code == 400 and "inválidos" in e.value.detail
+
+
+@pytest.mark.parametrize("qtd", [0, -2])
+def test_quantidade_zero_ou_negativa_e_recusada_422(db, qtd):
+    # rota pública: uma quantidade 0/negativa multiplicava o preço do servidor e
+    # baixava o total do pedido (com outra pizza a pagar, ficava "de borla")
+    from fastapi.testclient import TestClient
+    item = {"product_id": "p-marg", "product_name": "Margherita", "quantity": qtd,
+            "variation": {"name": GRANDE, "price": 0}, "unit_price": 18.9,
+            "total_price": 18.9 * qtd, "half_product_id": "p-frango"}
+    r = TestClient(server.app).post("/api/orders", json={
+        "table_id": "t-4", "table_number": 4, "items": [item], "total": 0})
+    assert r.status_code == 422
+    assert db.orders.docs == []
+
+
+# --- Balcão (POS autenticado): valida as metades, o preço é o do POS -------------
+
+def test_build_counter_items_monta_nome_e_guarda_metades():
+    metades = [{"product_id": "p-marg", "product_name": "Margherita"},
+               {"product_id": "p-frango", "product_name": "Frango Com Catupiry"}]
+    out = build_counter_items({"p-marg": MARG}, [{"product_id": "p-marg", "quantity": 1,
+                                                  "unit_price": 21.9, "variation_name": GRANDE,
+                                                  "halves": metades}])
+    it = out["items"][0]
+    assert it["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    assert it["halves"] == metades and it["unit_price"] == 21.9
+
+
+def _balcao(db, item):
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+    return asyncio.run(create_counter_order(
+        CounterOrderRequest(items=[item]), authorization=f"Bearer {admin}",
+        x_device_token=None, x_pos_token=create_pos_token("op-1", "Ana")))
+
+
+def test_balcao_valida_e_mantem_o_preco_do_pos(db):
+    _balcao(db, CounterOrderItem(product_id="p-marg", quantity=1, variation_name=GRANDE,
+                                 unit_price=20.0, half_product_id="p-frango"))
+    it = db.orders.docs[0]["items"][0]
+    assert it["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    assert it["unit_price"] == 20.0                 # o staff pode ter mudado o preço
+    assert len(it["halves"]) == 2
+
+
+def test_balcao_metades_ficam_na_linha_certa_com_varias_linhas(db):
+    # o índice de _meias_do_balcao tem de bater com o do carrinho: uma bebida antes
+    # da meia-meia não pode ficar com as metades (nem com o nome composto)
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+    asyncio.run(create_counter_order(
+        CounterOrderRequest(items=[
+            CounterOrderItem(product_id="p-coca", quantity=1),
+            CounterOrderItem(product_id="p-marg", quantity=1, variation_name=GRANDE,
+                             unit_price=20.0, half_product_id="p-frango")]),
+        authorization=f"Bearer {admin}", x_device_token=None,
+        x_pos_token=create_pos_token("op-1", "Ana")))
+    coca, meia = db.orders.docs[0]["items"]
+    assert coca["product_name"] == "Coca-Cola" and "halves" not in coca
+    assert meia["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    assert [h["product_id"] for h in meia["halves"]] == ["p-marg", "p-frango"]
+
+
+def test_balcao_recusa_meia_meia_invalida(db):
+    with pytest.raises(HTTPException) as e:
+        _balcao(db, CounterOrderItem(product_id="p-marg", quantity=1, variation_name=GRANDE,
+                                     unit_price=20.0, half_product_id="p-coca"))
+    assert e.value.status_code == 400
+
+
+def test_balcao_update_tambem_valida(db):
+    from server import update_counter_order
+    db.orders.docs.append({"id": "b1", "source": "balcao", "paid": False,
+                           "status": "received", "items": []})
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(update_counter_order(
+            "b1", CounterOrderRequest(items=[CounterOrderItem(
+                product_id="p-marg", quantity=1, variation_name=GRANDE, unit_price=20.0,
+                half_product_id="p-coca")]),
+            authorization=f"Bearer {admin}", x_device_token=None,
+            x_pos_token=create_pos_token("op-1", "Ana")))
+    assert e.value.status_code == 400
+
+
+def test_balcao_update_guarda_as_metades_e_o_preco_do_pos(db, monkeypatch):
+    from types import SimpleNamespace
+    from server import update_counter_order
+    db.printers, db.print_jobs = _Coll(), _Coll()
+    db.orders.docs.append({"id": "b1", "source": "balcao", "paid": False,
+                           "status": "received", "order_number": 7, "items": []})
+    escrita = db.orders.update_one
+
+    async def com_match(q, u, **k):                 # o duplo devolve None; o código lê matched_count
+        await escrita(q, u, **k)
+        return SimpleNamespace(matched_count=1)
+    monkeypatch.setattr(db.orders, "update_one", com_match)
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+    out = asyncio.run(update_counter_order(
+        "b1", CounterOrderRequest(items=[CounterOrderItem(
+            product_id="p-marg", quantity=1, variation_name=GRANDE, unit_price=20.0,
+            half_product_id="p-frango")]),
+        authorization=f"Bearer {admin}", x_device_token=None,
+        x_pos_token=create_pos_token("op-1", "Ana")))
+    it = db.orders.docs[0]["items"][0]
+    assert it["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    assert len(it["halves"]) == 2 and it["unit_price"] == 20.0
+    assert out["items"][0]["halves"] == it["halves"]
+
+
+def test_balcao_update_mantem_meia_meia_ja_no_pedido_com_2o_sabor_esgotado(db, monkeypatch):
+    # A meia-meia já foi para a cozinha; depois o Frango esgota. Acrescentar uma
+    # bebida e reimprimir não pode ser recusado (o pedido ficava preso sem fatura).
+    from types import SimpleNamespace
+    from server import update_counter_order
+    db.printers, db.print_jobs = _Coll(), _Coll()
+    metades = [{"product_id": "p-marg", "product_name": "Margherita"},
+               {"product_id": "p-frango", "product_name": "Frango Com Catupiry"}]
+    db.orders.docs.append({"id": "b1", "source": "balcao", "paid": False, "status": "received",
+                           "order_number": 7, "items": [{
+                               "product_id": "p-marg", "product_name": "1/2 Margherita + 1/2 Frango Com Catupiry",
+                               "quantity": 1, "unit_price": 20.0, "total_price": 20.0,
+                               "variation": {"name": GRANDE}, "halves": metades}]})
+    next(p for p in db.products.docs if p["id"] == "p-frango")["available"] = False
+    escrita = db.orders.update_one
+
+    async def com_match(q, u, **k):
+        await escrita(q, u, **k)
+        return SimpleNamespace(matched_count=1)
+    monkeypatch.setattr(db.orders, "update_one", com_match)
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+
+    def atualiza(tamanho):
+        return asyncio.run(update_counter_order(
+            "b1", CounterOrderRequest(items=[
+                CounterOrderItem(product_id="p-marg", quantity=1, variation_name=tamanho,
+                                 unit_price=20.0, half_product_id="p-frango"),
+                CounterOrderItem(product_id="p-coca", quantity=1)]),
+            authorization=f"Bearer {admin}", x_device_token=None,
+            x_pos_token=create_pos_token("op-1", "Ana")))
+
+    atualiza(GRANDE)
+    itens = db.orders.docs[0]["items"]
+    assert [i["product_id"] for i in itens] == ["p-marg", "p-coca"]
+    assert itens[0]["halves"] == metades
+    assert itens[0]["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    with pytest.raises(HTTPException) as e:          # meia-meia NOVA com o sabor esgotado: recusa
+        atualiza(MEDIA)
+    assert e.value.status_code == 400 and "esgotada" in e.value.detail

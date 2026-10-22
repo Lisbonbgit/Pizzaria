@@ -113,3 +113,34 @@ def test_primeiro_sabor_tambem_tem_de_existir_no_tamanho():
     with pytest.raises(MeiaMeiaInvalida) as e:
         montar_meia_meia(so_media, FRANGO, PIZZAS, GRANDE)
     assert "Margherita" in str(e.value)
+
+
+def test_complemento_e_do_seu_grupo_e_o_preco_fecha_ao_centimo():
+    # a chave é (grupo, item): o mesmo nome noutro grupo tem outro preço, e um
+    # grupo que A não tem é recusado mesmo que o nome do item exista
+    a = dict(MARG, extras=[{"name": "Oregãos", "price": 0.3}], complement_groups=[
+        {"name": "Molho", "items": [{"name": "Extra", "price": 0.15}]},
+        {"name": "Queijo", "items": [{"name": "Extra", "price": 1.25}]}])
+    molho = [{"group_name": "Molho", "items": [{"name": "Extra", "price": 0}]}]
+    assert preco_unitario(18.9, a, [], molho) == 19.05
+    assert preco_unitario(18.9, a, [], [{"group_name": "Queijo", "items": [{"name": "Extra"}]}]) == 20.15
+    with pytest.raises(MeiaMeiaInvalida):
+        preco_unitario(18.9, a, [], [{"group_name": "Outro", "items": [{"name": "Extra"}]}])
+    # 12,9 + 0,3 + 0,15 dá 13.350000000000001 em vírgula flutuante
+    assert preco_unitario(12.9, a, [{"name": "Oregãos"}], molho) == 13.35
+
+
+@pytest.mark.parametrize("extras, complementos", [
+    (["Borda de Catupiry"], []),                                      # texto em vez de objeto
+    ([{"price": 3.0}], []),                                           # extra sem nome
+    ([{"name": ["Borda"]}], []),                                      # nome que não é texto
+    ([], [{"group_name": "Molho", "items": "Picante"}]),              # itens em texto
+    ([], [{"group_name": "Molho", "items": [{"price": 0.5}]}]),       # item sem nome
+    ([], ["Molho"]),                                                  # grupo em texto
+])
+def test_extras_mal_formados_sao_recusados_sem_rebentar(extras, complementos):
+    a = dict(MARG, complement_groups=[{"name": "Molho", "items": [{"name": "Picante", "price": 0.5}]}])
+    with pytest.raises(MeiaMeiaInvalida) as e:
+        preco_unitario(18.9, a, extras, complementos)
+    assert "inválidos" in str(e.value) or "não existe" in str(e.value)
+

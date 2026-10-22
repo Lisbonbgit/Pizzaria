@@ -67,22 +67,42 @@ def montar_meia_meia(prod_a: dict, prod_b, cat_a, nome_tamanho) -> dict:
     }
 
 
-def preco_unitario(base: float, prod_a: dict, extras, complementos) -> float:
-    """Preço base + extras e complementos de A, a preços do catálogo."""
+def extras_do_catalogo(prod_a: dict, extras, complementos) -> tuple:
+    """Os extras e complementos escolhidos, com os preços do CATÁLOGO de A (os do
+    browser não contam nem ficam gravados). Um que A não tenha → MeiaMeiaInvalida;
+    mal formado (não é um dicionário, sem nome) → idem, nunca um 500."""
     precos_extra = {e.get("name"): float(e.get("price", 0) or 0) for e in prod_a.get("extras") or []}
     precos_comp = {(g.get("name"), i.get("name")): float(i.get("price", 0) or 0)
                    for g in prod_a.get("complement_groups") or [] for i in g.get("items") or []}
+    try:
+        novos_extras = []
+        for e in extras or []:
+            if e["name"] not in precos_extra:
+                raise MeiaMeiaInvalida(f"O extra \"{e['name']}\" não existe em {prod_a.get('name')}")
+            novos_extras.append({**e, "price": precos_extra[e["name"]]})
+        novos_comp = []
+        for g in complementos or []:
+            itens = []
+            for i in g.get("items") or []:
+                chave = (g.get("group_name"), i["name"])
+                if chave not in precos_comp:
+                    raise MeiaMeiaInvalida(f"\"{i['name']}\" não existe em {prod_a.get('name')}")
+                itens.append({**i, "price": precos_comp[chave]})
+            novos_comp.append({**g, "items": itens})
+    except (TypeError, AttributeError, KeyError):
+        raise MeiaMeiaInvalida("Extras ou complementos inválidos")
+    return novos_extras, novos_comp
+
+
+def preco_unitario(base: float, prod_a: dict, extras, complementos) -> float:
+    """Preço base + extras e complementos de A, a preços do catálogo."""
+    novos_extras, novos_comp = extras_do_catalogo(prod_a, extras, complementos)
     total = float(base)
-    for e in extras or []:
-        if e.get("name") not in precos_extra:
-            raise MeiaMeiaInvalida(f"O extra \"{e.get('name')}\" não existe em {prod_a.get('name')}")
-        total += precos_extra[e.get("name")]
-    for g in complementos or []:
-        for i in g.get("items") or []:
-            chave = (g.get("group_name"), i.get("name"))
-            if chave not in precos_comp:
-                raise MeiaMeiaInvalida(f"\"{i.get('name')}\" não existe em {prod_a.get('name')}")
-            total += precos_comp[chave]
+    for e in novos_extras:
+        total += e["price"]
+    for g in novos_comp:
+        for i in g["items"]:
+            total += i["price"]
     return round(total, 2)
 
 

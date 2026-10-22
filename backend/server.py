@@ -41,8 +41,8 @@ from pos.drawer import summarize_drawer_opens
 from pos.vendus_match import match_products, is_official
 from pos.credit_note import nc_items_from_fs
 from pos.split_plan import compute_shares, next_amount, next_unpaid_index, remaining_amount
-from pos.meia_meia import (MeiaMeiaInvalida, incluida_no_rodizio, montar_meia_meia,
-                           preco_unitario)
+from pos.meia_meia import (MeiaMeiaInvalida, extras_do_catalogo, incluida_no_rodizio,
+                           montar_meia_meia, preco_unitario)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1415,7 +1415,11 @@ async def _aplicar_meias_meias(items: list, table_number) -> None:
                     raise MeiaMeiaInvalida("Esta meia-meia não está incluída no rodízio desta mesa")
                 unit = 0.0
             else:
-                unit = preco_unitario(m["base_price"], a, it.get("extras"), it.get("selected_complements"))
+                # Grava os extras/complementos com os preços do catálogo (os do
+                # browser iam parar à cópia da caixa e à consulta).
+                it["extras"], it["selected_complements"] = extras_do_catalogo(
+                    a, it.get("extras"), it.get("selected_complements"))
+                unit = preco_unitario(m["base_price"], a, it["extras"], it["selected_complements"])
         except MeiaMeiaInvalida as e:
             raise HTTPException(status_code=400, detail=str(e))
         it.update({"product_name": m["product_name"], "halves": m["halves"],

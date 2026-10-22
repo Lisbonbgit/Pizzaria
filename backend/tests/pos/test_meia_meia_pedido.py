@@ -105,6 +105,35 @@ def test_pedido_misto_o_total_soma_todas_as_linhas(db):
     assert db.orders.docs[0]["total"] == round(sum(i["total_price"] for i in itens), 2) == 31.8
 
 
+def test_extras_e_complementos_gravados_ao_preco_do_catalogo(db):
+    # o servidor cobra pelo catálogo e GRAVA o catálogo: o preço forjado do browser
+    # ia parar à cópia da caixa e à consulta
+    marg = next(p for p in db.products.docs if p["id"] == "p-marg")
+    marg["complement_groups"] = [{"name": "Molho", "items": [{"name": "Picante", "price": 0.5}]}]
+    item = OrderItemCreate(product_id="p-marg", product_name="Margherita", quantity=1,
+                           variation={"name": GRANDE, "price": 0},
+                           extras=[{"name": "Borda de Catupiry", "price": 0.01}],
+                           selected_complements=[{"group_name": "Molho",
+                                                  "items": [{"name": "Picante", "price": 0.01}]}],
+                           unit_price=1.0, total_price=1.0, half_product_id="p-frango")
+    _pede([item])
+    it = db.orders.docs[0]["items"][0]
+    assert it["extras"] == [{"name": "Borda de Catupiry", "price": 3.0}]
+    assert it["selected_complements"] == [{"group_name": "Molho",
+                                           "items": [{"name": "Picante", "price": 0.5}]}]
+    assert it["unit_price"] == 22.4                  # 18,90 + 3,00 + 0,50
+
+
+def test_complemento_mal_formado_da_400_e_nao_500(db):
+    item = OrderItemCreate(product_id="p-marg", product_name="Margherita", quantity=1,
+                           variation={"name": GRANDE, "price": 0},
+                           selected_complements=[{"group_name": "Molho", "items": "Picante"}],
+                           unit_price=1.0, total_price=1.0, half_product_id="p-frango")
+    with pytest.raises(HTTPException) as e:
+        _pede([item])
+    assert e.value.status_code == 400 and "inválidos" in e.value.detail
+
+
 @pytest.mark.parametrize("qtd", [0, -2])
 def test_quantidade_zero_ou_negativa_e_recusada_422(db, qtd):
     # rota pública: uma quantidade 0/negativa multiplicava o preço do servidor e

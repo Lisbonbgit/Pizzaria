@@ -1095,7 +1095,7 @@ const MenuPage = () => {
           ) : (
             <>
               {/* O Radix põe o conteúdo num display:table que cresce com o texto; em bloco,
-                  o truncate do nome segura e o preço da linha não sai do ecrã. */}
+                  o nome comprido (meia-meia) quebra linha e o preço não sai do ecrã. */}
               <ScrollArea className="flex-1 -mx-6 px-6 [&>[data-radix-scroll-area-viewport]>div]:!block">
                 <div className="space-y-4 py-4">
                   {cartItems.map((item) => (
@@ -1111,7 +1111,7 @@ const MenuPage = () => {
                       />
                       <div className="flex-1 min-w-0">
                         <div className="flex justify-between items-start">
-                          <h4 className="font-semibold truncate pr-2">{item.product_name}</h4>
+                          <h4 className="min-w-0 break-words pr-2 font-semibold">{item.product_name}</h4>
                           <Button
                             variant="ghost"
                             size="icon"

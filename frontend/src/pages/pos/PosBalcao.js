@@ -540,7 +540,7 @@ const PosBalcao = ({ onClose }) => {
                   >
                     <span className="min-w-0">
                       <span className="flex items-center gap-1.5">
-                        <span className="truncate">
+                        <span className="min-w-0 break-words">
                           {c.name}{c.variationName ? ` · ${c.variationName}` : ''}
                           {c.extras?.length ? ` + ${c.extras.map((e) => e.name).join(', ')}` : ''}
                         </span>

@@ -854,7 +854,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                         }}
                         title={e.kind === 'item' ? (mode === 'split' ? 'Tocar para cobrar à parte' : 'Tocar para editar (qtd/preço/IVA/desconto)') : 'Tocar para separar'}
                         className="w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left transition-colors cursor-pointer hover:bg-white/10">
-                        <span className="truncate flex items-center gap-1.5">
+                        <span className="min-w-0 break-words flex items-center gap-1.5">
                           {e.name}
                           {e.kind === 'item' && e.line?.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
                           {e.kind === 'item' && mode === 'edit' && <Pencil className="h-3 w-3 text-white/30 shrink-0" />}
@@ -890,7 +890,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                     {includedEntries.map((l) => (
                       <div key={lineKey(l)}
                         className="w-full grid grid-cols-[1fr_2.5rem_5rem_2rem] gap-2 items-center px-4 py-3 border-b border-white/5 text-left">
-                        <span className="truncate flex items-center gap-1.5 text-white/70">
+                        <span className="min-w-0 break-words flex items-center gap-1.5 text-white/70">
                           {lineName(l)}
                           {l.source === 'manual' && <Store className="h-3 w-3 text-amber-300 shrink-0" />}
                         </span>

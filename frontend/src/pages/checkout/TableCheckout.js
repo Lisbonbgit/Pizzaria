@@ -23,6 +23,8 @@ import { detalheErro } from '@/lib/utils';
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const lineKey = (l) => `${l.order_id}:${l.idx}`;
 const lineName = (l) => l.product_name + (l.variation && l.variation.name ? ` (${l.variation.name})` : '');
+// Nome da linha "A adicionar" (meia-meia: "1/2 A + 1/2 B").
+const nomePend = (c) => (c.metade ? nomeMeiaMeia(c.product.name, c.metade.name) : c.product.name);
 
 // Checkout de mesa — Dialog de 2 painéis (total/pagamento à esquerda, itens
 // da mesa à direita) partilhado pelo admin (`AdminOrders`) e pela janela do
@@ -266,7 +268,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
     try {
       const items = pend.map((c) => ({
         product_id: c.product.id,
-        product_name: c.metade ? nomeMeiaMeia(c.product.name, c.metade.name) : c.product.name,
+        product_name: nomePend(c),
         quantity: c.qty,
         ...(c.variation ? { variation: { name: c.variation.name, price: Number(c.variation.price) || 0 } } : {}),
         extras: c.extras,
@@ -995,7 +997,7 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                   <div key={c.chave} className="px-4 py-2.5 border-b border-white/10">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium leading-snug">{c.metade ? nomeMeiaMeia(c.product.name, c.metade.name) : c.product.name}</p>
+                        <p className="text-sm font-medium leading-snug">{nomePend(c)}</p>
                         {(c.variation || c.extras.length > 0) && (
                           <p className="text-xs text-white/60">
                             {[c.variation?.name, ...c.extras.map((e) => `+ ${e.name}`)].filter(Boolean).join(' · ')}
@@ -1005,11 +1007,11 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
                       <span className="text-sm tabular-nums shrink-0">{eur(c.unitPrice * c.qty)}</span>
                     </div>
                     <div className="mt-1.5 flex items-center gap-2">
-                      <Button variant="outline" size="icon" aria-label={`Menos ${c.product.name}`}
+                      <Button variant="outline" size="icon" aria-label={`Menos ${nomePend(c)}`}
                         className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
                         onClick={() => changePend(i, -1)}><Minus className="h-3.5 w-3.5" /></Button>
                       <span className="w-6 text-center tabular-nums">{c.qty}</span>
-                      <Button variant="outline" size="icon" aria-label={`Mais ${c.product.name}`}
+                      <Button variant="outline" size="icon" aria-label={`Mais ${nomePend(c)}`}
                         className="h-7 w-7 bg-transparent border-white/25 text-white hover:bg-white/10 hover:text-white"
                         onClick={() => changePend(i, 1)}><Plus className="h-3.5 w-3.5" /></Button>
                     </div>

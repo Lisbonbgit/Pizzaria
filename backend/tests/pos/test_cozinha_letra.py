@@ -62,3 +62,7 @@ def test_maiusculas_acentuadas_saem_sem_acento():
     assert b"1/2 FRANGO A BRAS" in out and b"1/2 PESSEGO IMPAR" in out and b"UNICO" in out
     assert b"OBS: SEM COCO" in out and b"NEM PAO" in out
     assert max(out) < 0x80, "byte fora do ASCII no talão"
+    # maiúsculas já no nome (o artigo normal não passa por upper()): "Pizza Âncora"
+    out = _cozinha({"product_name": "Âncora Èvora Òbidos Ùrsula Îlhavo", "quantity": 1})
+    assert b"1x Ancora Evora Obidos" in out and b"Ursula Ilhavo" in out
+    assert max(out) < 0x80, "byte fora do ASCII no talão"

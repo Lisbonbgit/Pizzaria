@@ -4226,13 +4226,22 @@ class CounterOrderRequest(BaseModel):
     print_kitchen: bool = True
 
 
-async def _meias_do_balcao(items) -> dict:
-    """Valida as meia-meias do carrinho do balcão. Devolve {índice: halves}."""
+async def _meias_do_balcao(items, ja_no_pedido=()) -> dict:
+    """Valida as meia-meias do carrinho do balcão. Devolve {índice: halves}.
+    `ja_no_pedido` (update): os itens já gravados. Uma meia-meia que já lá está
+    (mesmos sabores e tamanho) guarda as metades sem nova validação — o 2.º sabor
+    pode ter esgotado depois de a pizza ir para a cozinha, e recusar prendia o
+    pedido sem fatura. Só as meia-meias NOVAS passam pela regra."""
+    gravadas = {(g["product_id"], g["halves"][1]["product_id"], (g.get("variation") or {}).get("name")): g["halves"]
+                for g in ja_no_pedido if g.get("halves")}
     out = {}
     for idx, i in enumerate(items):
         if i.half_product_id:
-            _, _, m = await _montar_meia(i.product_id, i.half_product_id, i.variation_name)
-            out[idx] = m["halves"]
+            halves = gravadas.get((i.product_id, i.half_product_id, i.variation_name))
+            if halves is None:
+                _, _, m = await _montar_meia(i.product_id, i.half_product_id, i.variation_name)
+                halves = m["halves"]
+            out[idx] = halves
     return out
 
 
@@ -4407,7 +4416,7 @@ async def update_counter_order(
         p["id"]: p for p in prods
         if not p.get("rodizio_only", False) and p.get("available", True)
     }
-    meias = await _meias_do_balcao(body.items)
+    meias = await _meias_do_balcao(body.items, order.get("items") or [])
     cart = [{
         "product_id": i.product_id, "quantity": i.quantity,
         "unit_price": i.unit_price, "vendus_tax_id": i.vendus_tax_id,

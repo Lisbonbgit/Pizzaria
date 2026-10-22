@@ -179,3 +179,44 @@ def test_balcao_update_guarda_as_metades_e_o_preco_do_pos(db, monkeypatch):
     assert it["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
     assert len(it["halves"]) == 2 and it["unit_price"] == 20.0
     assert out["items"][0]["halves"] == it["halves"]
+
+
+def test_balcao_update_mantem_meia_meia_ja_no_pedido_com_2o_sabor_esgotado(db, monkeypatch):
+    # A meia-meia já foi para a cozinha; depois o Frango esgota. Acrescentar uma
+    # bebida e reimprimir não pode ser recusado (o pedido ficava preso sem fatura).
+    from types import SimpleNamespace
+    from server import update_counter_order
+    db.printers, db.print_jobs = _Coll(), _Coll()
+    metades = [{"product_id": "p-marg", "product_name": "Margherita"},
+               {"product_id": "p-frango", "product_name": "Frango Com Catupiry"}]
+    db.orders.docs.append({"id": "b1", "source": "balcao", "paid": False, "status": "received",
+                           "order_number": 7, "items": [{
+                               "product_id": "p-marg", "product_name": "1/2 Margherita + 1/2 Frango Com Catupiry",
+                               "quantity": 1, "unit_price": 20.0, "total_price": 20.0,
+                               "variation": {"name": GRANDE}, "halves": metades}]})
+    next(p for p in db.products.docs if p["id"] == "p-frango")["available"] = False
+    escrita = db.orders.update_one
+
+    async def com_match(q, u, **k):
+        await escrita(q, u, **k)
+        return SimpleNamespace(matched_count=1)
+    monkeypatch.setattr(db.orders, "update_one", com_match)
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+
+    def atualiza(tamanho):
+        return asyncio.run(update_counter_order(
+            "b1", CounterOrderRequest(items=[
+                CounterOrderItem(product_id="p-marg", quantity=1, variation_name=tamanho,
+                                 unit_price=20.0, half_product_id="p-frango"),
+                CounterOrderItem(product_id="p-coca", quantity=1)]),
+            authorization=f"Bearer {admin}", x_device_token=None,
+            x_pos_token=create_pos_token("op-1", "Ana")))
+
+    atualiza(GRANDE)
+    itens = db.orders.docs[0]["items"]
+    assert [i["product_id"] for i in itens] == ["p-marg", "p-coca"]
+    assert itens[0]["halves"] == metades
+    assert itens[0]["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    with pytest.raises(HTTPException) as e:          # meia-meia NOVA com o sabor esgotado: recusa
+        atualiza(MEDIA)
+    assert e.value.status_code == 400 and "esgotada" in e.value.detail

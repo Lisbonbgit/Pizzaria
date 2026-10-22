@@ -190,7 +190,9 @@ export default function CatalogoProdutos({ groups, onAdd, gridRef }) {
             </>
           )}
 
-          {((sizePick?.extras || []).length > 0 || meiaOn) && (() => {
+          {/* Sem tamanhos não há botão de tamanho para tocar: a pizza que só abriu
+              a janela por causa da meia-meia também se adiciona inteira aqui. */}
+          {((sizePick?.extras || []).length > 0 || meiaOn || !(sizePick?.variations || []).length) && (() => {
             const falta = (sizePick?.variations || []).length > 0 && !pickVar
               ? 'Escolhe o tamanho' : (meiaOn && !pickHalf ? 'Escolhe a outra metade' : null);
             const base = pickHalf

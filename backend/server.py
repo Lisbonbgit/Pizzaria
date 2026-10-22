@@ -4412,9 +4412,14 @@ async def update_counter_order(
 
     product_ids = [i.product_id for i in body.items]
     prods = await db.products.find({"id": {"$in": product_ids}}, {"_id": 0}).to_list(1000)
+    # O filtro (indisponível / só rodízio) vale só para produtos NOVOS: uma linha
+    # que já está no pedido já foi para a cozinha — se o produto esgotou depois,
+    # largá-la tirava a pizza do pedido e ela nunca era faturada.
+    ja_no_pedido = {g.get("product_id") for g in order.get("items") or []}
     products_by_id = {
         p["id"]: p for p in prods
-        if not p.get("rodizio_only", False) and p.get("available", True)
+        if p["id"] in ja_no_pedido
+        or (not p.get("rodizio_only", False) and p.get("available", True))
     }
     meias = await _meias_do_balcao(body.items, order.get("items") or [])
     cart = [{

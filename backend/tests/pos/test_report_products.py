@@ -52,3 +52,14 @@ def test_meia_meia_conta_meia_pizza_a_cada_sabor():
     assert rows["Margherita"]["revenue"] == 35.25     # 25,80 + 9,45
     assert rows["Frango"]["revenue"] == 9.45
     assert "1/2 Margherita + 1/2 Frango" not in rows
+
+
+def test_meia_meia_com_centimo_impar_reparte_sem_perder_o_centimo():
+    pedidos = [{"items": [
+        {"product_name": "1/2 A + 1/2 B", "quantity": 1, "unit_price": 17.95,
+         "halves": [{"product_id": "a", "product_name": "A"},
+                    {"product_id": "b", "product_name": "B"}]},
+    ]}]
+    rows = {r["name"]: r["revenue"] for r in summarize_products(pedidos, "INT")}
+    assert rows == {"A": 8.97, "B": 8.98}
+    assert round(rows["A"] + rows["B"], 2) == 17.95

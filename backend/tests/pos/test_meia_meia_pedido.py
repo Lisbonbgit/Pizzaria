@@ -200,6 +200,23 @@ def test_balcao_valida_e_mantem_o_preco_do_pos(db):
     assert len(it["halves"]) == 2
 
 
+def test_balcao_metades_ficam_na_linha_certa_com_varias_linhas(db):
+    # o índice de _meias_do_balcao tem de bater com o do carrinho: uma bebida antes
+    # da meia-meia não pode ficar com as metades (nem com o nome composto)
+    admin = create_token("a1", "gestor@lenhaebrasa.com")
+    asyncio.run(create_counter_order(
+        CounterOrderRequest(items=[
+            CounterOrderItem(product_id="p-coca", quantity=1),
+            CounterOrderItem(product_id="p-marg", quantity=1, variation_name=GRANDE,
+                             unit_price=20.0, half_product_id="p-frango")]),
+        authorization=f"Bearer {admin}", x_device_token=None,
+        x_pos_token=create_pos_token("op-1", "Ana")))
+    coca, meia = db.orders.docs[0]["items"]
+    assert coca["product_name"] == "Coca-Cola" and "halves" not in coca
+    assert meia["product_name"] == "1/2 Margherita + 1/2 Frango Com Catupiry"
+    assert [h["product_id"] for h in meia["halves"]] == ["p-marg", "p-frango"]
+
+
 def test_balcao_recusa_meia_meia_invalida(db):
     with pytest.raises(HTTPException) as e:
         _balcao(db, CounterOrderItem(product_id="p-marg", quantity=1, variation_name=GRANDE,

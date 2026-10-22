@@ -47,6 +47,9 @@ def test_meia_meia_sai_com_uma_metade_por_linha():
     assert GS + b"\x11" + b"1x MEIA-MEIA" in out
     assert b"1/2 MARGHERITA" in out and b"1/2 FRANGO COM" in out and b"CATUPIRY" in out
     assert b"1x 1/2" not in out          # o nome composto não sai como linha do artigo
+    # cada metade em 2×2 (GS ! 0x11) e de volta ao normal (GS ! 0x00) logo a seguir
+    assert GS + b"\x11" + b"   1/2 MARGHERITA\n" + GS + b"\x00" in out
+    assert GS + b"\x11" + b"   1/2 FRANGO COM\n   CATUPIRY\n" + GS + b"\x00" in out
 
 
 def test_maiusculas_acentuadas_saem_sem_acento():

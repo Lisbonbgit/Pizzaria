@@ -18,6 +18,7 @@ import { toast } from 'sonner';
 import { ordersAPI, productsAPI, categoriesAPI, rodizioAPI } from '@/lib/api';
 import CatalogoProdutos from '@/components/pos/CatalogoProdutos';
 import { nomeMeiaMeia, precoBaseMeia } from '@/lib/meiaMeia';
+import { detalheErro } from '@/lib/utils';
 
 const eur = (v) => `€ ${Number(v || 0).toFixed(2)}`;
 const lineKey = (l) => `${l.order_id}:${l.idx}`;
@@ -282,8 +283,8 @@ const TableCheckout = ({ api, tableNumber, table, onClose, onChanged }) => {
       toast.success(`${n} produto${n !== 1 ? 's' : ''} adicionado${n !== 1 ? 's' : ''} à mesa`);
       loadBill(tableNumber);
       onChanged && onChanged();
-    } catch {
-      toast.error('Erro ao adicionar os produtos');
+    } catch (e) {
+      toast.error(detalheErro(e, 'Erro ao adicionar os produtos'));
     } finally {
       setAdding(false);
     }

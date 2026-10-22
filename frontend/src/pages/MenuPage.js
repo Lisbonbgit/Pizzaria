@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 import { useCart } from '@/context/CartContext';
 import { categoriaElegivel, candidatosMeia, nomeMeiaMeia, precoBaseMeia, precoNoTamanho } from '@/lib/meiaMeia';
 import { categoriesAPI, productsAPI, tablesAPI, ordersAPI, settingsAPI, rodizioAPI } from '@/lib/api';
+import { detalheErro } from '@/lib/utils';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -383,7 +384,7 @@ const MenuPage = () => {
       setOrderSuccessOpen(true);
     } catch (err) {
       console.error('Error submitting order:', err);
-      toast.error('Erro ao enviar pedido. Tente novamente.');
+      toast.error(detalheErro(err, 'Erro ao enviar pedido. Tente novamente.'));
     } finally {
       setSubmitting(false);
     }
